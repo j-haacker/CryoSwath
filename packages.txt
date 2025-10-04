@@ -1,1 +1,3 @@
+libodbc2
+libodbcinst2
 libgdal-dev
