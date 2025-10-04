@@ -1,4 +1,0 @@
-libodbc2
-unixodbc-common
-libodbcinst2
-libgdal-dev

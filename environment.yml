@@ -4,6 +4,7 @@ dependencies:
   - bottleneck
   - dask
   - defusedxml
+  - gdal
   - geopandas >=1.0.1
   - gitpython
   - h5netcdf
