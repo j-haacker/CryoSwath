@@ -52,7 +52,7 @@ file = "LICENSE.txt"
 # ... = "MIT"
 
 [project.optional-dependencies]
-dev = ["flit", "pip-compile", "ruff"]
+dev = ["flit", "pip-tools", "ruff"]
 docs = ["sphinx", "sphinx-rtd-theme"]
 notebooks = ["ipykernel"]
 all = ["cryoswath[dev,docs,notebooks]"]
