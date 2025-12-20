@@ -2219,7 +2219,10 @@ def repair_l2_cache(
             os.remove(tmp_h5)
 
 
-def rgi_code_translator(input: str | list[str], out_type: str = "full_name") -> str:
+def rgi_code_translator(
+    input: str | int | tuple[int, int] | list,
+    out_type: str = "full_name",
+) -> Union[str, list[str]]:
     """Translate o1 or o2 codes to region names
 
     Args:
@@ -2231,16 +2234,23 @@ def rgi_code_translator(input: str | list[str], out_type: str = "full_name") -> 
         ValueError: If input is not understood.
 
     Returns:
-        str: Either full name or RGI "long_code".
+        str | list[str]: Either full name or RGI "long_code".
     """
     if isinstance(input, list):
         return [rgi_code_translator(element, out_type) for element in input]
-    elif isinstance(input, int) or len(input) <= 2 and int(input) < 20:
+    elif (
+        isinstance(input, int) 
+        or (
+            isinstance(input, str)
+            and len(input) <= 2
+            and int(input) < 20
+        )
+    ):
         return rgi_o1region_translator(int(input), out_type)
     elif (
-            isinstance(input, tuple)
-            and len(input) == 2
-            and all([lambda x: isinstance(x, int) for x in input])
+        isinstance(input, tuple)
+        and len(input) == 2
+        and all([isinstance(x, int) for x in input])
     ):
         return rgi_o2region_translator(*input, out_type=out_type)
     elif isinstance(input, str) and re.match(r"\d\d-\d\d", input):
