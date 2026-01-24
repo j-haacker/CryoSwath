@@ -545,39 +545,38 @@ def fill_missing_coords(
     # use `rio.resolution()`: this assumes no holes which renders this
     # function obsolete
     l3_data = l3_data.sortby("x").sortby("y")  # ensure monotonix x and y
-    resx, resy = [l3_data[k].diff(k).min().values.astype("int") for k in ["x", "y"]]
-    minx, miny = int(minx + resx / 2), int(miny + resy / 2)
-    maxx, maxy = int(maxx - resx / 2), int(maxy - resy / 2)
-    if l3_data["x"].min().values < minx:
-        minx = l3_data["x"].min().values.astype("int")
+    for dim, _min, _max in [("x", minx, maxx), ("y", miny, maxy)]:
+        if len(l3_data[dim]) == 1:
+            continue
+        res = l3_data[dim].diff(dim).min().values.astype("int")
+        _min = int(_min + res / 2)
+        _max = int(_max - res / 2)
+        if l3_data[dim].min().values < minx:
+            _min = l3_data[dim].min().values.astype("int")
     else:
-        minx = int(minx + (l3_data["x"].min().values - minx) % resx - resx)
-    if l3_data["y"].min().values < miny:
-        miny = l3_data["y"].min().values.astype("int")
+            _min = int(_min + (l3_data[dim].min().values - _min) % res - res)
+        if l3_data[dim].max().values > _max:
+            _max = l3_data[dim].max().values.astype("int")
     else:
-        miny = int(miny + (l3_data["y"].min().values - miny) % resy - resy)
-    if l3_data["x"].max().values > maxx:
-        maxx = l3_data["x"].max().values.astype("int")
-    else:
-        maxx = int(maxx - (maxx - l3_data["x"].max().values) % resx + resx)
-    if l3_data["y"].max().values > maxy:
-        maxy = l3_data["y"].max().values.astype("int")
-    else:
-        maxy = int(maxy - (maxy - l3_data["y"].max().values) % resy + resy)
-    coords = {"x": range(minx, maxx + 1, resx), "y": range(miny, maxy + 1, resy)}
-    return l3_data.reindex(
-        coords,
-        method=None,
-        copy=False,
-        fill_value={
+            _max = int(_max - (_max - l3_data[dim].max().values) % res + res)
+        if hasattr(l3_data, "data_vars"):
+            fill_value = {
             _var: (
                 l3_data[_var].attrs["_FillValue"]
                 if "_FillValue" in l3_data[_var].attrs
                 else np.nan
             )
             for _var in [*l3_data.data_vars, "x", "y"]
-        },
+            }
+        else:
+            fill_value = getattr(l3_data.attrs, "_FillValue", np.nan)
+        l3_data = l3_data.reindex(
+            {dim: range(_min, _max + 1, res)},
+            method=None,
+            copy=False,
+            fill_value=fill_value,
     )
+    return l3_data
 
 
 # ! make recursive
