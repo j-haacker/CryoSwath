@@ -84,6 +84,7 @@ from scipy.stats import t as student_t
 import shapely
 import shutil
 from sklearn import linear_model, preprocessing
+import stackstac
 import sys
 from tables import NaturalNameWarning
 import time
@@ -414,58 +415,144 @@ def discard_frontal_retreat_zone(
     return ds
 
 
-def download_dem(gpd_series, provider: Literal["PGC"] = "PGC"):
+def _read_stac(item):
+    """Private helper to read ArcticDEM or REMA tiles"""
+    if "proj:code" in item.properties:
+        code = item.properties["proj:code"]
+        if code.lower().startswith("epsg:"):
+            code = int(code.split(":")[-1])
+        else:
+            raise Exception(f"Implement parsing proj:code format {code}")
+    else:
+        raise Exception(f"Implement getting crs from properties {item.properties}")
+
+    tmp = stackstac.stack(item, epsg=code)
+    # nodata and data_type are coordinates along dimension band.
+    # they are drop on conversion to dataset and must be stored
+    # before.
+    coords_band_dim = {
+        k: v
+        for k, v in tmp.coords.items()
+        if "band" in v.dims and k in ["nodata", "data_type"]
+    }
+    tmp = tmp.to_dataset("band", promote_attrs=True)
+    tmp = xr.Dataset(
+        {
+            da.name: da.assign_attrs(
+                {k: v.sel(band=da.name).item(0) for k, v in coords_band_dim.items()}
+            )
+            .drop_vars([k for k, v in tmp.coords.items() if len(v.dims) == 0])
+            .squeeze()
+            for da in tmp.data_vars.values()
+        }
+    )
+    return (
+        xr.Dataset(
+            {
+                da.name: da.drop_attrs()
+                .astype(da.attrs["data_type"])
+                .assign_attrs(encoding={"_FillValue": da.attrs["nodata"]})
+                for da in tmp.data_vars.values()
+            }
+        )
+        .drop_vars(["time", "id"])
+        .rio.write_crs(code)
+    )
+
+
+def download_dem(
+    gpd_obj: Union[gpd.GeoSeries, gpd.GeoDataFrame, gpd.array.GeometryArray],
+    provider: Literal["PGC"] = "PGC",
+):
+    """
+    Download DEM tiles that intersect the provided geometries
+
+    Parameters
+    ----------
+    gpd_obj : geopandas.GeoSeries | geopandas.GeoDataFrame | sequence[Geometry]
+        Geometries defining the area of interest. Can be a geopandas
+        geometry object (needs `.to_crs()` and `.total_bounds`). The
+        input will be reprojected to EPSG:4326 if necessary; its
+        total_bounds are used as the STAC bbox for item discovery.
+    provider : Literal['PGC'], optional
+        Data provider to query. Only "PGC" is implemented (queries the PGC STAC API at
+        https://stac.pgc.umn.edu/api/v1/). Default is "PGC".
+
+    Behavior
+    --------
+    - Searches the PGC STAC catalog for arcticdem (v4.1) and rema (v2) 32 m collections covering the
+      provided bbox.
+    - Creates a Zarr store at Path(dem_path) / '<collection_id>.zarr'. Note: the function expects a
+      caller-defined variable `dem_path` to exist and be a valid filesystem path.
+    - Initializes the store on a fixed regular grid (x,y in [-3_500_000, 3_500_000]) with 100 m
+      spacing and chunking tuned for large tile writes.
+    - For each discovered STAC item:
+      - Skips writing if the existing store already contains sufficient data for the item's bbox.
+      - Reads the item into an xarray.Dataset, reprojects/resamples it to match the store grid
+        (using rioxarray and rasterio Resampling), fills nodata values from the existing store, and
+        writes the result back into the Zarr store using region writes.
+    - Uses external libraries (stac client, rioxarray, xarray, shapely, numpy); network I/O and heavy
+      disk operations are performed.
+    """
     if provider == "PGC":
         catalog = Client.open("https://stac.pgc.umn.edu/api/v1/")
-        collections = catalog.collection_search(q="((arcticdem AND v4+1) OR (rema AND v2)) AND 32m").collections()
+        collections = catalog.collection_search(
+            q="((arcticdem AND v4+1) OR (rema AND v2)) AND 32m"
+        ).collections()
         # transforming collection extent is difficult, maybe the code behind rioxr transform_bounds helps
         limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
 
-    items = list(catalog.search(
+    items = list(
+        catalog.search(
         collections=[coll.id for coll in collections],
         # not sure how this behaves if it covers the poles
-        bbox=gpd_series.to_crs(4326).total_bounds,
-    ).items())
+            bbox=gpd_obj.to_crs(4326).total_bounds,
+        ).items()
+    )
 
-    this_dem_path = dem_path / (items[0].get_collection().id + ".zarr")  # don't .with_suffix; . in name!
+    this_dem_path = Path(dem_path) / (
+        items[0].get_collection().id + "_100m-mean.zarr"  # pyright: ignore[reportOptionalMemberAccess]
+    )  # don't .with_suffix; . in name!
     this_dem_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not this_dem_path.exists():
-        (  # init dem store
-            xr.full_like(xr.open_dataset(items[0], engine="stac", epsg=3413).load().squeeze(), np.nan)
-            .reindex({xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100) for xy in ["x", "y"]})
-            .map(lambda da: da.drop_attrs().astype(da.attrs["data_type"]).assign_attrs(encoding={"_FillValue": da.attrs["nodata"]}))
-            .drop_attrs(deep=False)
-            .drop_vars(["time", "id"])
-            .rio.write_crs(3413)
-            .chunk(x=1000, y=1000)
-            .to_zarr(this_dem_path, mode="w", compute=False)
-        )
-
     for item in items:
+        if not this_dem_path.exists():  # init dem store
+            (
+                xr.full_like(_read_stac(item), np.nan)
+                .reindex(
+                    {
+                        xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100)
+                        for xy in ["x", "y"]
+                    }
+                )
+            .chunk(x=1000, y=1000)
+            ).to_zarr(this_dem_path, mode="w", compute=False)
+
         parent = xr.open_zarr(this_dem_path, decode_coords="all", mask_and_scale=True)
-        # print(parent)
-        if parent["count"].rio.clip_box(*item.properties["proj:bbox"]).mean().compute() > 0.1:
+        if (
+            parent["count"].rio.clip_box(*item.properties["proj:bbox"]).mean().compute()
+            > 0.1
+        ):
             continue
-        if "proj:code" in item.properties:
-            code = item.properties["proj:code"]
-            if code.lower().startswith("epsg:"):
-                code = int(code.split(":")[-1])
-            else:
-                raise Exception(f"Implement parsing proj:code format {code}")
-        else:
-            raise Exception(f"Implement getting crs from properties {item.properties}")
-        ds = xr.open_dataset(item, engine="stac", epsg=code).squeeze()
+        ds = _read_stac(item)
         # # the general case:
         # x0, y0, x1, y1 = ds.rio.bounds()
         # excerpt = parent.pipe(sel_chunk_range, x=[x0, x1], y=[y0, y1]).load()
         # however, if chunks tuned to tiles:
         c = shapely.box(*item.properties["proj:bbox"]).centroid
-        excerpt = parent.pipe(sel_chunk_range, **{xy: [getattr(c, xy)] * 2 for xy in ["x", "y"]}).load()
-        add = ds.map(lambda da: da.rio.reproject_match(excerpt, resampling=Resampling.average).astype(da.attrs["data_type"]))
-        add = add.map(lambda da: da.where(da != da.attrs["_FillValue"]))
+        excerpt = parent.pipe(
+            sel_chunk_range, **{xy: [getattr(c, xy)] * 2 for xy in ["x", "y"]}
+        ).load()
+        add = ds.map(
+            lambda da: da.rio.reproject_match(
+                excerpt, resampling=Resampling.average
+            ).astype(da.dtype)
+        )
+        add = add.map(lambda da: da.where(da != da.attrs["encoding"]["_FillValue"]))
         add = add.map(lambda da: da.fillna(excerpt[da.name]))
-        add.drop_attrs().drop_vars(['time', 'id', 'spatial_ref']).to_zarr(this_dem_path, region="auto")
+        add.drop_attrs().drop_vars(["spatial_ref"]).to_zarr(
+            this_dem_path, region="auto"
+        )
 
 
 def download_file(url: str, dest: str | Path) -> str:
