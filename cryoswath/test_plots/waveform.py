@@ -248,7 +248,7 @@ def dem_transect(waveform, *,
         pass
     h_list.append(h_dem)
     ax.legend(handles=h_list)
-    ax.set_xlabel("across-track distance to nadir, km")
+    ax.set_xlabel("across-track distance to nadir, m")
     ax.set_ylabel("elevation, m")
     ax.set_title(f"id: {waveform.time_20_ku.values[0]}")
     return ax
