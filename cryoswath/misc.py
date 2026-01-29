@@ -10,6 +10,7 @@ __all__ = [
     "cs_time_to_id",
     "define_elev_band_edges",
     "discard_frontal_retreat_zone",
+    "download_file",
     "effective_sample_size",
     "extend_filename",
     "fill_missing_coords",
@@ -142,7 +143,8 @@ else:
     )
     config = {"path": {}}
 
-def _get_path(name: str, base: Path, alternative: str = None) -> bool:
+
+def _get_path(name: str, base: Path, alternative: str = None) -> str:
     key = name.lower()
     if key in config["path"]:
         _value = config["path"][key]
@@ -152,6 +154,7 @@ def _get_path(name: str, base: Path, alternative: str = None) -> bool:
             return str(base / _value)
     else:
         return str(base / (name if alternative is None else alternative))
+
 
 # data subdirs
 l1b_path = _get_path("L1b", data_path)
@@ -165,7 +168,9 @@ aux_path = Path(_get_path("aux", data_path, "auxiliary"))
 # aux subdirs
 dem_path = _get_path("DEM", aux_path)
 rgi_path = _get_path("RGI", aux_path)
-cs_ground_tracks_path = _get_path("cs_ground_tracks", aux_path, "CryoSat-2_SARIn_ground_tracks.feather")
+cs_ground_tracks_path = _get_path(
+    "cs_ground_tracks", aux_path, "CryoSat-2_SARIn_ground_tracks.feather"
+)
 
 # temporarily, (re)set types (str or Path)
 data_path = str(data_path)
@@ -203,7 +208,9 @@ nanoseconds_per_year = 365.25 * 24 * 60 * 60 * 1e9
 _norm_isf_025 = norm.isf(0.025)
 _norm_isf_25 = norm.isf(0.25)
 _norm_sf_1 = norm.sf(1)
-empty_GeoDataFrame = gpd.GeoDataFrame(columns=["dummy", "geometry"], geometry="geometry")
+empty_GeoDataFrame = gpd.GeoDataFrame(
+    columns=["dummy", "geometry"], geometry="geometry"
+)
 
 # Functions ##########################################################
 
@@ -236,7 +243,10 @@ def chunk_idx(ds, dim, values):
     def _inner(val):
         if val < ds[dim][0] or val > ds[dim][-1]:
             return None
-        return (ds[dim].isel({dim: np.cumsum(ds.chunks[dim]) - 1}) <= val).argmin().item(0)
+        return (
+            (ds[dim].isel({dim: np.cumsum(ds.chunks[dim]) - 1}) <= val).argmin().item(0)
+        )
+
     if isinstance(values, Iterable):
         return [_inner(val) for val in values]
     return _inner(values)
@@ -504,8 +514,8 @@ def download_dem(
 
     items = list(
         catalog.search(
-        collections=[coll.id for coll in collections],
-        # not sure how this behaves if it covers the poles
+            collections=[coll.id for coll in collections],
+            # not sure how this behaves if it covers the poles
             bbox=gpd_obj.to_crs(4326).total_bounds,
         ).items()
     )
@@ -525,7 +535,7 @@ def download_dem(
                         for xy in ["x", "y"]
                     }
                 )
-            .chunk(x=1000, y=1000)
+                .chunk(x=1000, y=1000)
             ).to_zarr(this_dem_path, mode="w", compute=False)
 
         parent = xr.open_zarr(this_dem_path, decode_coords="all", mask_and_scale=True)
@@ -562,13 +572,12 @@ def download_file(url: str, dest: str | Path) -> str:
     # NOTE the stream=True parameter below
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
-        with open(dest, 'wb') as f:
+        with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 # If you have chunk encoded response uncomment if
                 # and set chunk_size parameter to None.
-                #if chunk:
+                # if chunk:
                 f.write(chunk)
-__all__.append("download_file")
 
 
 def drop_small_glaciers(
@@ -640,20 +649,20 @@ def fill_missing_coords(
         _max = int(_max - res / 2)
         if l3_data[dim].min().values < minx:
             _min = l3_data[dim].min().values.astype("int")
-    else:
+        else:
             _min = int(_min + (l3_data[dim].min().values - _min) % res - res)
         if l3_data[dim].max().values > _max:
             _max = l3_data[dim].max().values.astype("int")
-    else:
+        else:
             _max = int(_max - (_max - l3_data[dim].max().values) % res + res)
         if hasattr(l3_data, "data_vars"):
             fill_value = {
-            _var: (
-                l3_data[_var].attrs["_FillValue"]
-                if "_FillValue" in l3_data[_var].attrs
-                else np.nan
-            )
-            for _var in [*l3_data.data_vars, "x", "y"]
+                _var: (
+                    l3_data[_var].attrs["_FillValue"]
+                    if "_FillValue" in l3_data[_var].attrs
+                    else np.nan
+                )
+                for _var in [*l3_data.data_vars, "x", "y"]
             }
         else:
             fill_value = getattr(l3_data.attrs, "_FillValue", np.nan)
@@ -662,7 +671,7 @@ def fill_missing_coords(
             method=None,
             copy=False,
             fill_value=fill_value,
-    )
+        )
     return l3_data
 
 
