@@ -145,9 +145,9 @@ def read_esa_l1b(
     power_threshold: tuple = ("snr", 10),
     smooth_phase_difference: bool = True,
     use_original_noise_estimates: bool = False,
-    dem_file_name_or_path: str = None,
+    dem_file_name_or_path: str | None = None,
     swath_start_kwargs: dict = {},
-) -> None:
+) -> xr.Dataset:
     """Loads ESA SARIn L1b and does initial processing
 
     Args to init:
@@ -229,7 +229,7 @@ def read_esa_l1b(
             os.remove(l1b_filename)
             download_single_file(os.path.split(l1b_filename)[-1][19:34])
     # at least until baseline E ns_20_ku needs to be made a coordinate
-    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))
+    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku)))) # pyright: ignore[reportPossiblyUnboundVariable]
     # remove data that will not be used to reduce memory footprint
     for dim in ["time_plrm_01_ku", "time_plrm_20_ku", "nlooks_ku", "space_3d"]:
         if dim in ds.dims:
@@ -421,7 +421,7 @@ def read_esa_l1b(
 
 
 @if_not_empty
-def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str = None):
+def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str | None = None):
     # !! This function causes much of the computation time. I suspect that
     # sparse memory accessing can be minimized with some tricks. However,
     # first tries sorting the spatial data, took even (much) longer.
@@ -600,6 +600,7 @@ def get_phase_jump(ds):
     ph_diff_diff = ds.ph_diff_complex_smoothed.diff("ns_20_ku")
     # ! implement choosing tolerance
     ph_diff_diff_tolerance = 0.1
+    # ! implement find loc. max. + cmp. to threshold (prevents multiple jump bins)
     jump_mask = np.logical_or(
         np.abs(ph_diff_diff) > ph_diff_diff_tolerance,
         np.abs(ph_diff_diff).rolling(ns_20_ku=2).sum()
@@ -941,6 +942,12 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
 
     Args:
         cs_l1b_ds (l1b_data): Input data.
+        poca_upper (float): Maximum distance in meter of POCA sample to
+            first sample above coherence threshold. Defaults to 10.
+        swath_start_window (tuple[float, float]): Tuple of minimum and maximum
+            distance in meter of swath start to POCA sample. If the
+            maximum is negative, swath start is set to 0, implying all
+            samples will be swath processed. Defaults to (5, 50).
 
     Returns:
         l1b_data: Data including mask.
