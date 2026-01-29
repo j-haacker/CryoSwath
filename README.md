@@ -5,6 +5,9 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14825358.svg)](https://doi.org/10.5281/zenodo.14825358)
 ![GitHub License](https://img.shields.io/github/license/j-haacker/cryoswath)
 
+![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/cryoswath?logo=anaconda)
+![PyPI - Downloads](https://img.shields.io/pypi/dm/cryoswath?logo=pypi)
+
 CryoSwath is a python package containing processing pipelines, a tool
 library, and some pre-assembled data to retrieve and study CryoSat-2
 data.
@@ -128,12 +131,12 @@ You can cite this package using bibtex:
 ```bibtex
 @software{cryoswath,
   author       = {Haacker, Jan},
-  title        = {CryoSwath: v0.2.3},
-  month        = jul,
+  title        = {CryoSwath: v0.2.4},
+  month        = aug,
   year         = 2025,
   publisher    = {Zenodo},
-  version      = {v0.2.3},
-  doi          = {10.5281/zenodo.15809596}
+  version      = {v0.2.4},
+  doi          = {10.5281/zenodo.17011635}
 }
 ```
 
