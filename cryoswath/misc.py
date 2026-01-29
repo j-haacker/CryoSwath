@@ -1987,9 +1987,9 @@ def load_glacier_outlines(
         out = out.to_crs(crs)
     if union:  # former default
         try:
-            out = out.union_all(method="coverage")
+            out = out.make_valid().union_all(method="coverage")
         except:  # TODO specify exception # noqa: E722
-            out = out.union_all(method="unary")
+            out = out.make_valid().union_all(method="unary")
     return out
 
 
