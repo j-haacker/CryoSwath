@@ -779,7 +779,7 @@ def find_region_id(location: any, scope: str = "o2") -> str:
                 raise Exception(
                     f"Location {location} is in multiple subregions (N,W,SW,SE,E)."
                 )
-            out = f"05-1{int(sub_o2[contains_location].index.values) + 1}"
+            out = f"05-1{contains_location.argmax() + 1}"
         return out
     elif scope == "basin":
         rgi_glacier_gpdf = _load_o2region(rgi_region["o2region"].values[0], "glaciers")
