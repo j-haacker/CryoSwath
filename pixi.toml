@@ -1,0 +1,12 @@
+[workspace]
+name = "cryoswath"
+description = "CryoSwath environment using pixi"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = ">=3.9,<3.12"
+pip = "*"
+
+[pypi-dependencies]
+cryoswath = { path = ".", editable = true }
