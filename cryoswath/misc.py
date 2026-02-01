@@ -1015,9 +1015,9 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
     if lat > 0:
         dem_filename = "arcticdem_mosaic_100m_v4.1_dem.tif"
         if not (dem_path / dem_filename).is_file():
-            dem_filename = "arcticdem-mosaics-v4.1-32m.zarr"
+            dem_filename = "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
     else:
-        dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem.tif"
+        dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem_100m-mean.tif"
         if not (dem_path / dem_filename).is_file():
             dem_filename = "rema-mosaics-v2.0-32m.zarr"
     if not (dem_path / dem_filename).exists():
