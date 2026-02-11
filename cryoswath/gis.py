@@ -114,7 +114,10 @@ def find_planar_crs(
         with warnings.catch_warnings(action="ignore"):
             shp = load_glacier_outlines(region_id)
     elif shp is None:
-        shp = shapely.MultiPoint([(lon, lat) for lon, lat in zip(lon, lat)])
+        if np.isscalar(lon) and np.isscalar(lat):
+            shp = shapely.Point(lon, lat)
+        else:
+            shp = shapely.MultiPoint([(x, y) for x, y in zip(lon, lat)])
     shp = shp.centroid
     if shp.y > 75:
         return CRS.from_epsg(3413)
