@@ -759,6 +759,8 @@ def find_region_id(location: any, scope: str = "o2") -> str:
         os.path.join(rgi_path, "RGI2000-v7.0-o2regions.feather")
     )
     rgi_region = rgi_o2_gpdf[rgi_o2_gpdf.contains(location.centroid)]
+    if rgi_region.empty:
+        raise ValueError(f"Location {location} is not in any RGI o2 region.")
     if scope == "o1":
         return rgi_region["o1region"].values[0]
     elif scope == "o2":
