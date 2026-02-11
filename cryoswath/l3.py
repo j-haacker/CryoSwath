@@ -472,10 +472,9 @@ def build_dataset(
         elif l2_type == "poca":
             h5["poca"].visititems(collect_chunk_names)
         elif l2_type in ["all", "both"]:
-            Exception(
+            raise NotImplementedError(
                 "Joined swath and poca aggregation is not completely implemented."
             )
-            h5.visititems(collect_chunk_names)
     print("processing queue contains:\n", node_list)
     print("\nGridding the data. Each chunk at a time...")
     # for the loop below, multiprocessing could be used. however, the
