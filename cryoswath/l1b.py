@@ -196,7 +196,7 @@ def read_esa_l1b(
             "version": xr.__version__,
             "rules": [
                 {"version": "2024.3", "comperator": operator.lt, "action": "skip"},
-                {"version": "2025.4", "comperator": operator.ge, "action": "skip"},
+                {"version": "2025.3", "comperator": operator.ge, "action": "skip"},
             ],
         },
         {
@@ -205,7 +205,7 @@ def read_esa_l1b(
             "replacement": patched_xr_decode_tDel,
             "version": xr.__version__,
             "rules": [
-                {"version": "2025", "comperator": operator.lt, "action": "skip"},
+                {"version": "2025.3", "comperator": operator.lt, "action": "skip"},
                 {"version": "2025.4", "comperator": operator.ge, "action": "skip"},
             ],
         },
