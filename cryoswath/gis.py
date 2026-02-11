@@ -141,9 +141,10 @@ def points_on_glacier(points: gpd.GeoSeries) -> pd.Index:
     o2regions = gpd.read_feather(
         os.path.join(rgi_path, "RGI2000-v7.0-o2regions.feather")
     )
-    o2code = o2regions[o2regions.geometry.contains(shapely.box(*points.total_bounds))][
-        "o2region"
-    ].values[0]
+    o2_match = o2regions[o2regions.geometry.contains(shapely.box(*points.total_bounds))]
+    if o2_match.empty:
+        raise ValueError("Input points do not intersect any RGI o2 region bounds.")
+    o2code = o2_match["o2region"].values[0]
     buffered_glaciered_area_polygon = load_glacier_outlines(o2code)
     import time
 
