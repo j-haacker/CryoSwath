@@ -874,12 +874,13 @@ def elevation_trend_raster_from_l3(
         model_vals = xr.apply_ufunc(
             trend_with_seasons,
             ds.time.astype("int"),
-            *[fit_res.sel(param=p) for p in fit_res.param],
+            *[
+                fit_res.curvefit_coefficients.sel(param=p)
+                for p in fit_res.curvefit_coefficients.param
+            ],
             dask="allowed",
         )
-        residuals = (
-            ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-        )
+        residuals = ds._median - model_vals
         res_std = residuals.std("time")
         outlier = np.abs(residuals) - 2 * res_std > 0
         fit_rm_outl_res = (
@@ -909,12 +910,13 @@ def elevation_trend_raster_from_l3(
         model_vals = xr.apply_ufunc(
             trend_with_seasons,
             ds.time.astype("int"),
-            *[fit_rm_outl_res.sel(param=p) for p in fit_rm_outl_res.param],
+            *[
+                fit_rm_outl_res.curvefit_coefficients.sel(param=p)
+                for p in fit_rm_outl_res.curvefit_coefficients.param
+            ],
             dask="allowed",
         )
-        residuals = (
-            ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-        )
+        residuals = ds._median - model_vals
         fit_rm_outl_res["RMSE"] = (residuals**2).mean("time") ** 0.5
         fit_rm_outl_res.to_zarr(interm_res_path, mode="w")
     else:
@@ -992,12 +994,13 @@ def fit_trend__seasons_removed(l3_ds: xr.Dataset) -> xr.Dataset:
     model_vals = xr.apply_ufunc(
         trend_with_seasons,
         l3_ds.time.astype("int"),
-        *[fit_res.sel(param=p) for p in fit_res.param],
+        *[
+            fit_res.curvefit_coefficients.sel(param=p)
+            for p in fit_res.curvefit_coefficients.param
+        ],
         dask="allowed",
     )
-    residuals = (
-        l3_ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-    )
+    residuals = l3_ds._median - model_vals
     res_std = residuals.std("time")
     outlier = np.abs(residuals) - 2 * res_std > 0
     fit_rm_outl_res = (
@@ -1027,12 +1030,13 @@ def fit_trend__seasons_removed(l3_ds: xr.Dataset) -> xr.Dataset:
     model_vals = xr.apply_ufunc(
         trend_with_seasons,
         l3_ds.time.astype("int"),
-        *[fit_rm_outl_res.sel(param=p) for p in fit_rm_outl_res.param],
+        *[
+            fit_rm_outl_res.curvefit_coefficients.sel(param=p)
+            for p in fit_rm_outl_res.curvefit_coefficients.param
+        ],
         dask="allowed",
     )
-    residuals = (
-        l3_ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-    )
+    residuals = l3_ds._median - model_vals
     fit_rm_outl_res["RMSE"] = (residuals**2).mean("time") ** 0.5
     return fit_rm_outl_res.rio.write_crs(l3_ds.rio.crs)
 
