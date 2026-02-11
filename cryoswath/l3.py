@@ -482,12 +482,12 @@ def build_dataset(
     for chunk_name in node_list:
         print("-----\n\nnext chunk:", chunk_name)
         with h5py.File(cache_fullname, "r") as h5:
-            period_list = list(h5["/".join(["swath"] + chunk_name)].keys())
+            period_list = list(h5["/".join([l2_type] + chunk_name)].keys())
         l2_df = pd.concat(
             [
                 pd.read_hdf(
                     cache_fullname,
-                    "/".join(["swath"] + chunk_name + [period]),
+                    "/".join([l2_type] + chunk_name + [period]),
                     mode="r",
                 )
                 for period in sorted(period_list)
