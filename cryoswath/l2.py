@@ -452,13 +452,15 @@ def from_processed_l1b(
         tmp.index = tmp.index.set_levels(
             pd.DatetimeIndex(tmp["time"].groupby(level=0).first(), tz="UTC"), level=0
         )
-    elif tmp.index.name[:4].lower() == "time":
-        tmp.rename_axis(("time"), inplace=True)
-        tmp.index = pd.DatetimeIndex(tmp["time"], tz="UTC")
-    elif tmp.index.name[:2].lower() == "ns":
-        tmp.rename_axis(("sample"), inplace=True)
     else:
-        warnings.warn("Unexpected index name. May lead to issues.")
+        index_name = tmp.index.name if isinstance(tmp.index.name, str) else ""
+        if index_name[:4].lower() == "time":
+            tmp.rename_axis(("time"), inplace=True)
+            tmp.index = pd.DatetimeIndex(tmp["time"], tz="UTC")
+        elif index_name[:2].lower() == "ns":
+            tmp.rename_axis(("sample"), inplace=True)
+        else:
+            warnings.warn("Unexpected index name. May lead to issues.")
     tmp.drop(
         columns=[col for col in ["time", "sample"] if col in tmp.columns], inplace=True
     )
