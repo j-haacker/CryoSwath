@@ -507,7 +507,7 @@ def grid(
     # reason: it seemed that index accessing time increases much for
     # large data sets. remember it is not a database index (pandas
     # doesn't whether it is sorted)
-    n_split = int((l2_data.shape[0] / 0.5e6) ** 0.5)
+    n_split = max(1, int((l2_data.shape[0] / 0.5e6) ** 0.5))
     minx, miny, maxx, maxy = l2_data.total_bounds
     delx = (
         maxx - minx
