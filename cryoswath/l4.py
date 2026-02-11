@@ -534,7 +534,10 @@ def fill_voids(
             dim="time", method="linear", max_gap=pd.Timedelta(days=367)
         )
         _interpolated = np.logical_and(ds[main_var].isnull(), ~_new_main.isnull())
-        ds[filled_flag] = xr.where(~_interpolated, ds[filled_flag], 4, keep_attrs=True)
+        if filled_flag is not None:
+            ds[filled_flag] = xr.where(
+                ~_interpolated, ds[filled_flag], 4, keep_attrs=True
+            )
         ds[error] = ds[error].interpolate_na(
             dim="time", method="nearest", max_gap=pd.Timedelta(days=367)
         )
@@ -583,7 +586,10 @@ def fill_voids(
         )
         _interpolated = np.logical_and(~ds[main_var].isnull(), _void)
         ds[error] = xr.where(~_interpolated, ds[error], 50)
-        ds[filled_flag] = xr.where(~_interpolated, ds[filled_flag], 6, keep_attrs=True)
+        if filled_flag is not None:
+            ds[filled_flag] = xr.where(
+                ~_interpolated, ds[filled_flag], 6, keep_attrs=True
+            )
     ds = fill_missing_coords(
         ds.unstack(
             "stacked_x_y",
