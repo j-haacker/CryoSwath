@@ -610,22 +610,24 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             #     os.stat(os.path.join(l2_swath_path, current_subdir,
             #                          l2_paths.loc[idx, "swath"])).st_mtime,
             #     unit="s"))
-            assert reprocess < pd.Timestamp(
+            if reprocess >= pd.Timestamp(
                 os.stat(
                     os.path.join(
                         l2_swath_path, current_subdir, l2_paths.loc[idx, "swath"]
                     )
                 ).st_mtime,
                 unit="s",
-            )
-            assert reprocess < pd.Timestamp(
+            ):
+                raise RuntimeError("Existing L2 file outdated.")
+            if reprocess >= pd.Timestamp(
                 os.stat(
                     os.path.join(
                         l2_poca_path, current_subdir, l2_paths.loc[idx, "poca"]
                     )
                 ).st_mtime,
                 unit="s",
-            )
+            ):
+                raise RuntimeError("Existing L2 file outdated.")
         if save_or_return != "save":
             swath_poca_tuple = (
                 gpd.read_feather(
@@ -639,7 +641,7 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
                     )
                 ),
             )
-    except (KeyError, FileNotFoundError, AssertionError, ArrowInvalid):
+    except (KeyError, FileNotFoundError, RuntimeError, ArrowInvalid):
         # print("debug 0", idx, flush=True)
         if "cs_full_file_names" in kwargs:
             cs_full_file_names = kwargs["cs_full_file_names"]
