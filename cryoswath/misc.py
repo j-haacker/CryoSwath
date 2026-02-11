@@ -148,7 +148,7 @@ def _get_path(name: str, base: Path, alternative: str = None) -> str:
     key = name.lower()
     if key in config["path"]:
         _value = config["path"][key]
-        if Path().is_absolute():
+        if Path(_value).is_absolute():
             return _value
         else:
             return str(base / _value)
