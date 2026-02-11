@@ -16,6 +16,7 @@ import geopandas as gpd
 import numpy as np
 import os
 import pandas as pd
+from pathlib import Path
 from pyproj import Transformer
 from pyproj.crs import CRS
 import rasterio
@@ -95,9 +96,11 @@ def ensure_pyproj_crs(crs: CRS) -> CRS:
 
 
 def esri_to_feather(file_path: str = None) -> None:
-    if file_path.split(os.path.extsep)[-1].lower() == "shp":
-        basename = os.path.extsep.join(file_path.split(os.path.extsep)[:-1])
-    gpd.read_file(file_path).to_feather(basename + os.path.extsep + "feather")
+    if file_path is None:
+        raise ValueError("file_path is required.")
+    source_path = Path(file_path)
+    target_path = source_path.with_suffix(".feather")
+    gpd.read_file(source_path).to_feather(target_path)
 
 
 def find_planar_crs(
