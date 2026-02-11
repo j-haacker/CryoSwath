@@ -42,6 +42,17 @@ def _med_iqr_cnt(data):
     )
 
 
+def _ensure_odd_window_ntimesteps(window_ntimesteps: int) -> int:
+    if window_ntimesteps % 2 == 0:
+        old_window = window_ntimesteps
+        window_ntimesteps = window_ntimesteps + 1
+        warnings.warn(
+            "The window should be a uneven number of time steps. You asked for "
+            f"{old_window}, but it has been changed to {window_ntimesteps}."
+        )
+    return window_ntimesteps
+
+
 def cache_l2_data(
     region_of_interest: str | shapely.Polygon,
     start_datetime: str | pd.Timestamp,
@@ -97,13 +108,7 @@ def cache_l2_data(
         Warning: If the `window_ntimesteps` is not an odd number, it is adjusted
             and a warning is issued.
     """
-    if window_ntimesteps % 2 - 1:
-        old_window = window_ntimesteps
-        window_ntimesteps = window_ntimesteps // 2 + 1
-        warnings.warn(
-            f"The window should be a uneven number of time steps. You asked for "
-            f"{old_window}, but it has been changed to {window_ntimesteps}."
-        )
+    window_ntimesteps = _ensure_odd_window_ntimesteps(window_ntimesteps)
     # ! end time step should be included.
     start_datetime, end_datetime = pd.to_datetime([start_datetime, end_datetime])
     # this function only makes sense for multiple months, so assume input
@@ -300,13 +305,7 @@ def build_dataset(
         - Intermediate results are saved to ensure progress is not lost in case
           of interruptions.
     """
-    if window_ntimesteps % 2 - 1:
-        old_window = window_ntimesteps
-        window_ntimesteps = window_ntimesteps // 2 + 1
-        warnings.warn(
-            "The window should be a uneven number of time steps. You asked for "
-            f"{old_window}, but it has been changed to {window_ntimesteps}."
-        )
+    window_ntimesteps = _ensure_odd_window_ntimesteps(window_ntimesteps)
     # ! end time step should be included.
     start_datetime, end_datetime = pd.to_datetime([start_datetime, end_datetime])
     # this function only makes sense for multiple months, so assume input
