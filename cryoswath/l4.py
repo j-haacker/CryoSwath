@@ -761,7 +761,7 @@ def difference_to_reference_dem(
     basin_shapes: gpd.GeoDataFrame = None,
 ) -> xr.Dataset:
     if (np.abs(l3_data._median) < 150).any():
-        Exception("_median deviates more than 150 m from reference")
+        raise Exception("_median deviates more than 150 m from reference")
     for _var in ["_median", "_iqr", "_count"]:
         l3_data[_var] = l3_data[_var].astype("f4")
     res = fill_voids(
