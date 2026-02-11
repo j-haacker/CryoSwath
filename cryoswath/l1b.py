@@ -926,9 +926,13 @@ def append_exclude_mask(cs_l1b_ds: xr.Dataset) -> xr.Dataset:
         l1b_data: Data including mask.
     """
     # for now require tuple. could be some auto recognition in future.
-    assert isinstance(cs_l1b_ds.power_threshold, tuple)
+    if not isinstance(cs_l1b_ds.power_threshold, tuple):
+        raise TypeError("power_threshold must be a tuple.")
     # only signal-to-noise-ratio implemented
-    assert cs_l1b_ds.power_threshold[0] == "snr"
+    if cs_l1b_ds.power_threshold[0] != "snr":
+        raise NotImplementedError(
+            'Only power_threshold mode "snr" is currently implemented.'
+        )
     power_threshold = cs_l1b_ds.noise_power_20_ku * cs_l1b_ds.power_threshold[1]
     cs_l1b_ds["exclude_mask"] = np.logical_or(
         cs_l1b_ds.power_waveform_20_ku < power_threshold,
