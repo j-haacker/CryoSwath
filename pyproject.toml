@@ -55,7 +55,8 @@ file = "LICENSE.txt"
 dev = ["flit", "pip-tools", "ruff"]
 docs = ["sphinx", "sphinx-rtd-theme"]
 notebooks = ["ipykernel"]
-all = ["cryoswath[dev,docs,notebooks]"]
+production = ["xarray[accel]", "dask[distributed]"]
+all = ["cryoswath[dev,docs,notebooks,production]"]
 
 [project.urls]
 Repository = "https://github.com/j-haacker/cryoswath.git"
