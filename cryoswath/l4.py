@@ -1057,7 +1057,7 @@ def differential_change(
         "time", how="all"
     ) ** 0.5
     if "ref_elev" not in data:
-        data = l3.append_elevation_reference(data, ref_elev_name="ref_elev")
+        data = append_elevation_reference(data, ref_elev_name="ref_elev")
     data = xr.merge(
         [
             differences.rename("elev_change"),
@@ -1124,7 +1124,7 @@ def relative_change(
         l3_data._iqr**2 + reference._iqr.sel(month=l3_data.time.dt.month) ** 2
     ).drop("month") ** 0.5
     if "ref_elev" not in l3_data:
-        l3_data = l3.append_elevation_reference(l3_data, ref_elev_name="ref_elev")
+        l3_data = append_elevation_reference(l3_data, ref_elev_name="ref_elev")
     l3_data = xr.merge(
         [values.rename("elevation"), uncertainties.rename("error"), l3_data.ref_elev]
     )
