@@ -284,6 +284,8 @@ def convert_all_esri_to_feather(dir_path: str = None) -> None:
     Args:
         dir_path (str, optional): Root directory. Defaults to None.
     """
+    if dir_path is None:
+        dir_path = "."
     for shp_file in glob.glob("*.shp", root_dir=dir_path):
         try:
             gis.esri_to_feather(os.path.join(dir_path, shp_file))
