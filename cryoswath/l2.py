@@ -500,6 +500,9 @@ def grid(
         pd.DataFrame: A DataFrame containing aggregated data for each grid cell. The
         index includes the x and y coordinates of the grid cell and time.
     """
+    if l2_data.empty:
+        return pd.DataFrame()
+
     # define how to grid
     def cell_bounds(number: float):
         floor = np.floor(number / spatial_res_meter) * spatial_res_meter
@@ -546,6 +549,8 @@ def grid(
                 )
             )
         # consider saving a backup to disk after each parent_cell
+    if not gridded_list:
+        return pd.DataFrame()
     return pd.concat(gridded_list)
 
 
