@@ -219,13 +219,7 @@ def from_id(
                                     idx,
                                     reprocess,
                                     l2_paths,
-                                    [
-                                        (
-                                            "return"
-                                            if save_or_return == "return"
-                                            else "both"
-                                        )
-                                    ],
+                                    "return" if save_or_return == "return" else "both",
                                     current_subdir,
                                     kwargs.copy(),
                                 )
@@ -241,7 +235,7 @@ def from_id(
                             idx,
                             reprocess,
                             l2_paths,
-                            ["return" if save_or_return == "return" else "both"],
+                            "return" if save_or_return == "return" else "both",
                             current_subdir,
                             kwargs.copy(),
                         )
