@@ -7,6 +7,10 @@ Installation
 The recommended setup for development and reproducible workflows is an
 isolated Python environment (``conda/mamba``, ``venv``, ``pixi``, etc.).
 
+.. warning::
+   CryoSwath has a broad dependency tree. To avoid future dependency
+   incompatibilities, install it in a dedicated environment.
+
 Install from source:
 
 .. code-block:: sh
@@ -24,6 +28,16 @@ Then initialize your project directory:
 
 ``cryoswath-init`` creates a project layout (``data/``, ``scripts/``) and
 writes ``scripts/config.ini`` that stores your base data path.
+
+Access requirements
+-------------------
+
+.. warning::
+   Starting **Monday, February 16, 2026**, downloading CryoSat resources
+   via CryoSwath requires an
+   `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
+
+Set up your ESA credentials before running download workflows.
 
 Data dependencies
 -----------------

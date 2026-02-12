@@ -10,3 +10,58 @@ pip = "*"
 
 [pypi-dependencies]
 cryoswath = { path = ".", editable = true }
+
+[feature.test]
+channels = ["conda-forge", "bioconda", "nodefaults"]
+
+[feature.test.dependencies]
+bottleneck = "*"
+dask = "*"
+defusedxml = "*"
+distributed = "*"
+geopandas = ">=1.0.1"
+gitpython = "*"
+h5netcdf = "*"
+h5py = "*"
+ipykernel = "*"
+matplotlib = "*"
+nbconvert = "*"
+numpy = "*"
+packaging = "*"
+pandas = "*"
+papermill = "*"
+pyarrow = "*"
+pyogrio = "*"
+pyproj = "*"
+pystac-client = "*"
+pytables = "*"
+python-dateutil = "*"
+rasterio = "*"
+rioxarray = "*"
+scikit-learn = "*"
+scipy = "*"
+shapely = "*"
+snakemake = "*"
+stackstac = "*"
+statsmodels = "*"
+tqdm = "*"
+xarray = "*"
+xpystac = ">=0.4,<0.5"
+zarr = "*"
+
+[feature.docs]
+channels = ["conda-forge", "nodefaults"]
+
+[feature.docs.dependencies]
+sphinx = "*"
+sphinx-rtd-theme = "*"
+
+[tasks]
+test-notebooks = "cd tests/reports && PYTHONPATH=../.. snakemake --snakefile Snakefile --cores 1 --use-conda"
+sync-test-feature = "pixi import --format conda-env --feature test --environment test environment.yml"
+docs-build = "python -m sphinx -b html docs docs/_build/html"
+docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
+
+[environments]
+test = { features = ["test"] }
+docs = { features = ["docs"] }

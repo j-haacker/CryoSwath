@@ -4,129 +4,106 @@
 ![Conda Version](https://img.shields.io/conda/vn/conda-forge/cryoswath)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14825358.svg)](https://doi.org/10.5281/zenodo.14825358)
 ![GitHub License](https://img.shields.io/github/license/j-haacker/cryoswath)
-
 ![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/cryoswath?logo=anaconda)
 ![PyPI - Downloads](https://img.shields.io/pypi/dm/cryoswath?logo=pypi)
 
-CryoSwath is a python package containing processing pipelines, a tool
-library, and some pre-assembled data to retrieve and study CryoSat-2
-data.
+CryoSwath is a Python package for processing CryoSat-2 SARIn data,
+from waveform-level processing to gridded elevation products.
 
-Adaptability lies at its core. The user can access many options simply
-by passing arguments to functions; everything else can be customized
-changing the concerned function or adding a new one.
+## What CryoSwath provides
 
-## 🌱 state
+- discovery of CryoSat-2 tracks over a region of interest
+- L1b download and preprocessing
+- swath and POCA elevation retrieval
+- aggregation to regular spatial/temporal grids
+- gap filling and trend estimation workflows
 
-CryoSwath is being developed. Branch `main` is the release branch,
-`scripts` contains tutorials, and `data` contains auxiliary data and the
-required directory structure. You can have everything setup
-automatically (see "getting started"). Other branches are for
-development.
+## Important notes
 
-## ✨ features
+- Install CryoSwath in a dedicated environment (`conda`/`mamba`,
+  `venv`, or `pixi`). The dependency tree is broad, and future
+  dependency conflicts are otherwise likely.
+- Starting **Monday, February 16, 2026**, downloading CryoSat resources
+  requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
+- Install `xarray` and `zarr` together to avoid version mismatches.
 
-- find all CryoSat-2 tracks passing over your region of interest
-- download L1b data from ESA
-- retrieve swath elevation estimates
-- aggregate point data to gridded data
-- fill data gaps using tested methods
-- calculate change rates
+## Installation
 
-## 🚀 getting started
+For full setup details, see the docs:
+[cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
 
-There is a number of ways you can start off, including installing from
-"source", pypi, conda-forge, or docker. Please find more details in the
-[docs
-(prerequisites)](https://cryoswath.readthedocs.io/en/latest/prerequisites.html).
-I show two approaches, installing from conda-forge and a mixture of methods.
-
-### simply with mamba/conda 🐍
-
-advantage: simple and most stable dependency resolution
-
-First, choose an environment name and either define `$env_name`, e.g.,
-`env_name=cryoswath`, or adapt the create and activate commands
-accordingly.
-
-`mamba create -n $env_name conda-forge::cryoswath`
-
-Continue below at "init project".
-
-### clone 🐙, mamba 🐍, pip 📦
-
-advantage: allows modifications and easy updates
-
-Like the above, first, choose an environment name and either define
-`$env_name`, e.g., `env_name=cryoswath`, or adapt the create and
-activate commands accordingly. You will also need the path to your
-environment. That will be something ending in `.../envs/env_name`. If
-you are not sure, find it viewing `mamba env list`. Further, I assume
-you'll clone into a directory named `cryoswath`.
+### Option 1: install from conda-forge
 
 ```sh
-git clone https://github.com/j-haacker/cryoswath.git cryoswath
-mamba env create -n $env_name -f cryoswath/environment.yml
-mamba activate $env_name
+mamba create -n cryoswath conda-forge::cryoswath
+mamba activate cryoswath
+```
+
+### Option 2: editable install from source
+
+```sh
+git clone https://github.com/j-haacker/cryoswath.git
+mamba env create -n cryoswath -f cryoswath/environment.yml
+mamba activate cryoswath
 mamba install pip
 pip install --editable cryoswath
 ```
 
-### init project
+### Optional: Docker image
 
-CryoSwath will deal with data that is not meant to reside in the
-installation directory. The command `cryoswath-init` will set up a
-directory structure and download some auxiliary files. Please choose a
-project name of you liking and replace `proj_dir` in the following.
+If local dependency resolution fails, you can use Docker:
 
 ```sh
-mkdir proj_dir
-cd proj_dir
+docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly
+```
+
+## Initialize a project
+
+CryoSwath expects project data outside the package install directory.
+Run `cryoswath-init` inside a new project folder:
+
+```sh
+mkdir <proj_dir>
+cd <proj_dir>
 cryoswath-init
 ```
 
-This, among others, creates a file `scripts/config.ini` that contains
-the base path of your project. This allows CryoSwath to find the data -
-if you wish to run scripts from different directories, copy this file
-there.
+`cryoswath-init` sets up the expected data structure and writes
+`scripts/config.ini` with your base data path. The paths can be
+reconfigured in `config.ini` if you use a different layout.
 
-### if everything fails: Docker 🐳
+## Tutorials and documentation
 
-advantage: will almost always work
+- Main docs: [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
+- General workflow tutorial:
+  [`scripts/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb)
+- First waveform tutorial:
+  [`scripts/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb)
+- First swath tutorial:
+  [`scripts/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb)
 
-*note*: the first time running the docker image requires to download ~ 1 Gb
+## External dependencies and data
 
-1. `docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly`
-2. You will receive an address including a token with which you can connect to the jupyterlab using your browser
-3. Start doing your things or get started with the installed tutorial notebooks!
+CryoSwath relies on:
 
-## 📖 documentation
+- Python dependencies: [requirements.txt](https://github.com/j-haacker/cryoswath/blob/main/requirements.txt)
+- reference elevation models
+- RGI glacier outlines
 
-[cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
+The package points to required external resources during setup and use.
 
-## dependencies
+## Known limitations
 
-- [requirements.txt](https://github.com/j-haacker/cryoswath/blob/main/requirements.txt)
-- reference elevation model
-- glacier outlines
+- ESA's data server is not reachable from all internet service providers.
+- Projected RGI basin geometries can sometimes be invalid;
+  use `.make_valid()` where required.
+- Most testing and validation has focused on the Arctic.
 
-*Always install xarray and Zarr at the same time.* Otherwise xarray
-might not support the install Zarr version.
+Further details: [open issues](https://github.com/j-haacker/cryoswath/issues)
 
-cryoswath will point you to the required resources.
+## Citation and attribution
 
-## 🐛 known issues
-
-- ESA's data server is not available from all internet service providers
-- projected RGI basins sometimes "invalid"
-    -> add `.make_valid()` if it is missing somewhere
-- it has mostly been tested for the Arctic
-
-  Further: see [open issues](https://github.com/j-haacker/cryoswath/issues).
-
-## citation and attribution
-
-You can cite this package using bibtex:
+If you use CryoSwath, please cite:
 
 ```bibtex
 @software{cryoswath,
@@ -140,13 +117,15 @@ You can cite this package using bibtex:
 }
 ```
 
-Please mind that you likely used other resources on the way.
+Please also acknowledge upstream data/resources used in your workflow:
 
-- ESA provides the L1b data under [these Terms and Conditions](https://github.com/j-haacker/cryoswath/blob/main/data/L1b/Terms-and-Conditions-for-the-use-of-ESA-Data.pdf)
-- RGI data is distributed under [CC-BY-4.0 license](https://creativecommons.org/licenses/by/4.0/)
-- if you (likely) used DEMs of the PGC, see their [Acknowledgement Policy](https://www.pgc.umn.edu/guides/user-services/acknowledgement-policy/)
-- the many python packages and libraries this package depends on; some of which are indispensable.
+- ESA L1b data terms:
+  [Terms and Conditions for the use of ESA Data](https://github.com/j-haacker/cryoswath/blob/main/data/L1b/Terms-and-Conditions-for-the-use-of-ESA-Data.pdf)
+- RGI data license:
+  [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/)
+- PGC DEM acknowledgement guidance:
+  [Acknowledgement Policy](https://www.pgc.umn.edu/guides/user-services/acknowledgement-policy/)
 
-## 📜 license
+## License
 
 MIT. See [LICENSE.txt](https://github.com/j-haacker/cryoswath/blob/main/LICENSE.txt).

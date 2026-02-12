@@ -16,6 +16,15 @@ Quick checklist
 Then open ``scripts/config.ini`` in your project directory and confirm
 that the ``[path]`` section points to the intended ``data`` location.
 
+.. warning::
+   Use a dedicated environment for CryoSwath. Installing into a shared
+   Python environment can break either CryoSwath or unrelated packages.
+
+.. warning::
+   Starting **Monday, February 16, 2026**, users need an
+   `ESA EO account <https://eoiam-idp.eo.esa.int/>`_
+   before running CryoSat download workflows.
+
 
 Processing the first waveform
 -----------------------------
