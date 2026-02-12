@@ -54,7 +54,7 @@ channels = ["conda-forge", "nodefaults"]
 
 [feature.docs.dependencies]
 sphinx = "*"
-sphinx-rtd-theme = "*"
+pydata-sphinx-theme = "*"
 
 [tasks]
 test-notebooks = "cd tests/reports && PYTHONPATH=../.. snakemake --snakefile Snakefile --cores 1 --use-conda"

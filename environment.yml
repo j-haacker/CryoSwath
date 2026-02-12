@@ -27,7 +27,7 @@ dependencies:
   - scipy
   - shapely
   - sphinx
-  - sphinx-rtd-theme
+  - pydata-sphinx-theme
   - stackstac
   - statsmodels
   - tqdm

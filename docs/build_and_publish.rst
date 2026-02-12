@@ -18,7 +18,7 @@ Sphinx project configuration
 
 - API autodoc via ``sphinx.ext.autodoc`` and ``sphinx.ext.napoleon``
 - GitHub source links via ``sphinx.ext.linkcode``
-- RTD theme via ``sphinx_rtd_theme``
+- HTML theme via ``pydata_sphinx_theme``
 
 The documentation imports local package sources by adding the project
 root to ``sys.path``.

@@ -53,7 +53,7 @@ file = "LICENSE.txt"
 
 [project.optional-dependencies]
 dev = ["flit", "pip-tools", "ruff"]
-docs = ["sphinx", "sphinx-rtd-theme"]
+docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
 production = ["xarray[accel]", "dask[distributed]"]
 all = ["cryoswath[dev,docs,notebooks,production]"]

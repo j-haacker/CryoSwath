@@ -41,6 +41,7 @@ except Exception:
         release = cryoswath.__version__
     except Exception:
         release = "unknown"
+version = release
 
 
 # -- General configuration ---------------------------------------------------
@@ -145,13 +146,23 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'sphinx_rtd_theme'
+html_theme = 'pydata_sphinx_theme'
 html_theme_options = {
-    "collapse_navigation": False,
-    "navigation_depth": 3,
-    "titles_only": True,
-    "style_external_links": True,
+    "logo": {"text": f"CryoSwath v{release}"},
+    "show_nav_level": 2,
+    "navigation_with_keys": True,
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/j-haacker/cryoswath",
+            "icon": "fa-brands fa-github",
+            "type": "fontawesome",
+        }
+    ],
 }
+
+# Remove the empty "Section Navigation" panel from the left sidebar.
+html_sidebars = {"**": []}
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
