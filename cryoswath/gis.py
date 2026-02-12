@@ -1,4 +1,4 @@
-"""Geospatial processing focused helper functions"""
+"""Geospatial helper functions used throughout CryoSwath workflows."""
 
 __all__ = [
     "find_planar_crs",
@@ -35,6 +35,11 @@ rgi_o1_epsg_dict = dict()
 def buffer_4326_shp(
     shp: shapely.Geometry, radius: float, simplify: bool = True
 ) -> shapely.MultiPolygon:
+    """Buffer lon/lat geometries by ``radius`` meters.
+
+    The geometry is temporarily projected to a locally suitable planar
+    CRS, buffered there, and transformed back to EPSG:4326.
+    """
     # the algorithm splits a multi-geomerty like MultiPolygon into its
     # parts, simplifies them if requested, buffers them, and joins them
     # finally.
@@ -84,6 +89,7 @@ def buffer_4326_shp(
 
 
 def ensure_pyproj_crs(crs: CRS) -> CRS:
+    """Return a :class:`pyproj.crs.CRS` instance for ``crs``."""
     # Token function to convert (any?) CRS object to a pyproj.crs.CRS
     # For now using from_epsg as it smells safest.
     if not isinstance(crs, CRS):
@@ -96,6 +102,7 @@ def ensure_pyproj_crs(crs: CRS) -> CRS:
 
 
 def esri_to_feather(file_path: str = None) -> None:
+    """Convert a vector file readable by GeoPandas to Feather format."""
     if file_path is None:
         raise ValueError("file_path is required.")
     source_path = Path(file_path)
@@ -110,6 +117,7 @@ def find_planar_crs(
     lon: float = None,
     region_id: str = None,
 ):
+    """Choose a planar CRS for a geometry or coordinate set."""
     if region_id is not None:
         with warnings.catch_warnings(action="ignore"):
             shp = load_glacier_outlines(region_id)
@@ -128,16 +136,19 @@ def find_planar_crs(
 
 
 def get_lon_origin(crs):
+    """Return longitude of origin for a projected CRS."""
     # Extract Longitude of origin
     # May turn out not to be very robust.
     return ensure_pyproj_crs(crs).coordinate_operation.params[1].value
 
 
 def get_4326_to_dem_Transformer(crs: int | CRS) -> Transformer:
+    """Build a transformer from EPSG:4326 to the provided CRS."""
     return Transformer.from_crs("EPSG:4326", ensure_pyproj_crs(crs))
 
 
 def points_on_glacier(points: gpd.GeoSeries) -> pd.Index:
+    """Return index positions of points located on buffered glacier area."""
     o2regions = gpd.read_feather(
         os.path.join(rgi_path, "RGI2000-v7.0-o2regions.feather")
     )
@@ -170,6 +181,7 @@ def points_on_glacier(points: gpd.GeoSeries) -> pd.Index:
 def simplify_4326_shp(
     shp: shapely.Geometry, tolerance: float = None
 ) -> shapely.Geometry:
+    """Simplify a lon/lat geometry using a locally projected CRS."""
     if tolerance is None:
         if shp.length >= 20_000:  # 5 x 5 km
             tolerance = 1000

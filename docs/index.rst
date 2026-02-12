@@ -1,23 +1,28 @@
-.. CryoSwath documentation master file, created by
-   sphinx-quickstart on Wed Sep 11 11:18:27 2024.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+CryoSwath Documentation
+=======================
 
-Welcome to CryoSwath's documentation!
-=====================================
+CryoSwath is a Python toolbox to process CryoSat-2 SARIn data from raw
+L1b waveforms to gridded elevation products.
 
-Find the associated GitHub repository at https://github.com/j-haacker/cryoswath.
-To set up a working/testing environment, follow the steps discribed in :doc:`prerequisites`.
-See the quickstart guide in :doc:`Getting started <getting_started>`, if needed.
+Project repository:
+`github.com/j-haacker/cryoswath <https://github.com/j-haacker/cryoswath>`_
 
 .. toctree::
    :maxdepth: 1
-   :caption: Contents:
+   :caption: User Guide
 
    prerequisites
    getting_started
    tutorials
    tests
+   build_and_publish
+   api_overview
+
+.. toctree::
+   :maxdepth: 1
+   :caption: API Reference
+
+   cryoswath
    cryoswath.l1b
    cryoswath.l2
    cryoswath.l3

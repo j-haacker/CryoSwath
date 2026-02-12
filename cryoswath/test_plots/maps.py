@@ -23,6 +23,7 @@ def coverage(
         "2010-10-01", "2023-10-01", freq="12MS"
     ),
 ) -> mpl.figure.Figure:
+    """Plot L3 coverage diagnostics (IQR distribution and map)."""
     if isinstance(l3_data_or_filepath, str):
         l3_data = xr.open_dataset(l3_data_or_filepath, decode_coords="all")
     else:
@@ -75,6 +76,7 @@ def l2(
     ax: mpl.axes.Axes = None,
     cmap: mpl.colors.Colormap = mpl.cm.plasma,
 ) -> mpl.axes.Axes:
+    """Plot L2 swath/POCA point elevations with optional glacier context."""
     if ax is None:
         ax = plt.axes()
     if glaciers is not None:

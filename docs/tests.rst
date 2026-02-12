@@ -1,25 +1,31 @@
 Tests
 =====
 
-In the directory ``tests/reports`` you can find notebooks that are build to evaluate CryoSwath.
-If you modify the core components of CryoSwath, which you are encouraged to do(!), you shoud run the notebooks to verify that your results are resonable.
-This test is only a first step.
-If you are satisfied, do a broader validation campaign.
+Validation notebooks are located in ``tests/reports`` and provide
+regression/sanity checks for key processing steps.
 
-`tests/reports/l1b_swath_start.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l1b_swath_start.ipynb>`_
-tests edge cases for finding the start of the swath domain. This is 
+Recommended checks after changing core processing logic:
 
-`tests/reports/l1b_waveform.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l1b_waveform.ipynb>`_
-shows the estimated surface elevations for a waveform overlayed by the
-crosssection of the glacier.
+1. `tests/reports/l1b_swath_start.ipynb
+   <https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l1b_swath_start.ipynb>`_
+   Edge cases for identifying swath start.
+2. `tests/reports/l1b_waveform.ipynb
+   <https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l1b_waveform.ipynb>`_
+   Waveform-level geometry and elevation sanity checks.
+3. `tests/reports/l2_dem_comparison.ipynb
+   <https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l2_dem_comparison.ipynb>`_
+   L2 elevation comparison against the reference DEM.
+4. `tests/reports/l2_tested_data_comparison.ipynb
+   <https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l2_tested_data_comparison.ipynb>`_
+   Comparison against validated reference output.
 
-`tests/reports/l2_dem_comparison.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l2_dem_comparison.ipynb>`_
-compares many elevation estimates to a reference elevation model.
+Run all report notebooks through Snakemake with Pixi:
 
-`tests/reports/l2_tested_data_comparison.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l2_tested_data_comparison.ipynb>`_
-compares the elevation estimates against the results of CryoSwath's
-mother implementation that was thoroughly tested.
+.. code-block:: bash
+
+   pixi run -e test test-notebooks
+
+Notebooks starting with ``0-l4_`` are intentionally excluded from this workflow.
+
+These notebooks are smoke/regression tests, not a full scientific
+validation campaign.

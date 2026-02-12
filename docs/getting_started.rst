@@ -1,8 +1,20 @@
 Getting started
 ===============
 
-If you haven't done so already, read :doc:`prerequisites` and follow the
-applicable steps.
+If you have not completed setup yet, read :doc:`prerequisites` first.
+
+Quick checklist
+---------------
+
+.. code-block:: sh
+
+   pip install --editable ./cryoswath
+   mkdir <project_dir>
+   cd <project_dir>
+   cryoswath-init
+
+Then open ``scripts/config.ini`` in your project directory and confirm
+that the ``[path]`` section points to the intended ``data`` location.
 
 
 Processing the first waveform
@@ -14,8 +26,9 @@ not the kind of data that you will need to analyze a glaciers evolution,
 this is its foundation. Knowledge about the smallest parts of the data
 can help you understand the larger picture.
 
-Find the tutorial in `scripts/tutorial__process_first_waveform.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb>`_.
+Notebook:
+`scripts/tutorial__process_first_waveform.ipynb
+<https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb>`_
 
 
 Processing the first swath
@@ -26,6 +39,7 @@ a single track look like. Again, a single track will not tell you much
 about a glacier's evolution, but it may help to understand higher level
 data.
 
+Notebook:
 `scripts/tutorial__process_first_swath.ipynb
 <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb>`_
 will give you a hand using CryoSwath to process a single track and
@@ -39,5 +53,6 @@ The general step-by-step tutorial takes you from processing a waveform
 to producing a map of elevation change trends. It balances understanding
 the background processes with quickly enabling to use CryoSwath.
 
-Find the notebook in `scripts/tutorial__general_step-by-step.ipynb
+Notebook:
+`scripts/tutorial__general_step-by-step.ipynb
 <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb>`_.

@@ -1,3 +1,5 @@
+"""Quick-look waveform plots for coherence, power, and DEM transects."""
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +37,7 @@ def coherence(waveform, *,
                                         edgecolor="xkcd:light grey",
                                         facecolor=None))
             ):
+    """Visualize waveform coherence with swath/POCA annotations."""
     if ax is None:
         ax = plt.subplots()[1]
     h_smooth = gauss_filter_DataArray(waveform.coherence_waveform_20_ku, "ns_20_ku", 35, 35).plot(c=".7", label="smooth")[0]
@@ -115,6 +118,7 @@ def power(waveform, *,
                                         edgecolor="xkcd:light grey",
                                         facecolor=None))
             ):
+    """Visualize waveform power with threshold and mask annotations."""
     if ax is None:
         ax = plt.subplots()[1]
     if logarithmic:
@@ -209,6 +213,7 @@ def dem_transect(waveform, *,
                  selected_phase_only: bool = True,
                  dem_file_name_or_path: str = None,
                  ):
+    """Plot cross-track elevation candidates against sampled DEM profile."""
     if ax is None:
         ax = plt.subplots()[1]
     dem_reader = get_dem_reader((waveform if dem_file_name_or_path is None else dem_file_name_or_path))

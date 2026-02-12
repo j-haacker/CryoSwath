@@ -1,3 +1,5 @@
+"""Top-level package for CryoSwath."""
+
 __all__ = [
     "__version__",
     "misc",

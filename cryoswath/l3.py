@@ -1,4 +1,4 @@
-"""Functions to aggregate point elevation estimates into a regular grid"""
+"""Aggregate L2 point elevations into regular spatio-temporal L3 grids."""
 
 __all__ = [
     "cache_l2_data",
@@ -35,6 +35,7 @@ from cryoswath.gis import buffer_4326_shp, ensure_pyproj_crs, find_planar_crs
 
 # numba does not do help here easily. using the numpy functions is as fast as it gets.
 def _med_iqr_cnt(data):
+    """Return median, IQR, and sample count for one grouped series."""
     quartiles = np.quantile(data, [0.25, 0.5, 0.75])
     return pd.DataFrame(
         [[quartiles[1], quartiles[2] - quartiles[0], len(data)]],
@@ -43,6 +44,7 @@ def _med_iqr_cnt(data):
 
 
 def _ensure_odd_window_ntimesteps(window_ntimesteps: int) -> int:
+    """Ensure rolling-window width is odd."""
     if window_ntimesteps % 2 == 0:
         old_window = window_ntimesteps
         window_ntimesteps = window_ntimesteps + 1
@@ -213,6 +215,7 @@ def cache_l2_data(
 
 
 def _preallocate_zarr(path, bbox, crs, time_index, data_vars) -> None:
+    """Create an empty chunked zarr layout for future L3 writes."""
     x_dummy = np.arange(
         (bbox.bounds[0] // 500 + 0.5) * 500, bbox.bounds[2], 500, dtype="i4"
     )
@@ -614,6 +617,7 @@ def build_dataset(
 def _build_path(
     region_of_interest, timestep_months, spatial_res_meter, aggregation_period=None
 ):
+    """Build output zarr path for an L3 product."""
     # ! implement parsing aggregation period
     if not isinstance(region_of_interest, str):
         region_id = find_region_id(region_of_interest)

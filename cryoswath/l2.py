@@ -1,4 +1,4 @@
-"""Functions to have level 2 (L2) data produced"""
+"""Convert processed CryoSat L1b data to L2 point-elevation products."""
 
 __all__ = [
     "from_id",
@@ -555,6 +555,7 @@ def grid(
 
 
 def limit_filter(data: pd.DataFrame, column: str, limit: float) -> pd.DataFrame:
+    """Filter rows where ``abs(data[column])`` exceeds ``limit``."""
     if np.isnan(limit) or limit <= 0:
         return data
     res = data[np.abs(data[column]) < limit]
@@ -605,6 +606,7 @@ def process_and_save(
 
 # local helper function. can't be defined where it is needed because of namespace issues
 def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwargs):
+    """Process one track index and optionally persist/read cached L2 files."""
     print("getting", idx, flush=True)
     # print("kwargs", wargs)
     try:

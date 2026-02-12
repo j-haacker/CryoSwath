@@ -1,4 +1,4 @@
-"""Miscellaneous helper functions"""
+"""Shared utilities for paths, I/O, interpolation, and compatibility patches."""
 
 __all__ = [
     # classes
@@ -99,6 +99,7 @@ from cryoswath import gis
 
 
 def init_project():
+    """Initialize a project directory with data/scripts scaffolding."""
     if not (os.path.exists("data") or os.path.exists("scripts")):
         try:
             from git.repo import Repo
@@ -145,6 +146,7 @@ else:
 
 
 def _get_path(name: str, base: Path, alternative: str = None) -> str:
+    """Resolve configured project path with fallback to default."""
     key = name.lower()
     if key in config["path"]:
         _value = config["path"][key]
@@ -240,6 +242,7 @@ class binary_chache:
 
 
 def chunk_idx(ds, dim, values):
+    """Map coordinate value(s) to chunk index along ``dim``."""
     def _inner(val):
         if val < ds[dim][0] or val > ds[dim][-1]:
             return None
@@ -307,10 +310,12 @@ def convert_all_esri_to_feather(dir_path: str = None) -> None:
 
 
 def dataframe_to_rioxr(df, crs):
+    """Convert tabular gridded data to CRS-aware xarray dataset."""
     return fill_missing_coords(df.to_xarray()).rio.write_crs(crs)
 
 
 def define_elev_band_edges(elevations: xr.DataArray) -> np.ndarray:
+    """Derive elevation-band edges from robust elevation spread."""
     elev_range_80pctl = float(
         elevations.quantile([0.1, 0.9]).diff(dim="quantile").values.item(0)
     )
@@ -343,15 +348,21 @@ def discard_frontal_retreat_zone(
     glacier-free surface.
 
     Args:
-        ds (_type_): _description_
-        replace_vars (list): _description_
-        main_var (str, optional): _description_. Defaults to "_median".
-        elev (str, optional): _description_. Defaults to "ref_elev".
-        mode (str, optional): _description_. Defaults to None.
-        threshold (float, optional): _description_. Defaults to None.
+        ds (xr.Dataset): Input data with ``main_var`` and ``elev``.
+        replace_vars (list[str]): Variables to set to ``NaN`` in
+            detected retreat zones.
+        main_var (str, optional): Variable used to detect anomalous
+            low-elevation behavior. Defaults to ``"_median"``.
+        elev (str, optional): Elevation reference variable used for
+            banding. Defaults to ``"ref_elev"``.
+        mode (str, optional): ``"temporal"`` (analyze per time step) or
+            ``"trend"`` (analyze long-term trend). If ``None``, mode is
+            inferred from the presence of a ``time`` dimension.
+        threshold (float, optional): Detection threshold. If ``None``,
+            defaults depend on ``mode``.
 
     Returns:
-        xr.Dataset: _description_
+        xr.Dataset: Dataset with flagged retreat-zone values masked.
     """
 
     if mode is None:
@@ -568,6 +579,7 @@ def download_dem(
 
 
 def download_file(url: str, dest: str | Path) -> str:
+    """Download ``url`` to ``dest`` using streamed HTTP requests."""
     # snippet adapted from https://stackoverflow.com/a/16696317
     # authors: https://stackoverflow.com/users/427457/roman-podlinov
     #      and https://stackoverflow.com/users/12641442/jenia
@@ -613,7 +625,7 @@ def effective_sample_size(weights: np.ndarray | xr.DataArray):
         weights (np.ndarray | xr.DataArray): Weights
 
     Returns:
-        _type_: Effective sample size as scalar of type equal to input.
+        float | xr.DataArray: Effective sample size.
     """
     return weights.sum() ** 2 / (weights**2).sum()
 
@@ -637,6 +649,7 @@ def extend_filename(file_name: str, extension: str) -> str:
 def fill_missing_coords(
     l3_data, minx: int = 9e7, miny: int = 9e7, maxx: int = -9e7, maxy: int = -9e7
 ) -> xr.Dataset:
+    """Reindex x/y coordinates to fill missing grid cells."""
     # previous version inspired by user9413641
     # https://stackoverflow.com/questions/68207994/fill-in-missing-index-positions-in-xarray-dataarray
     # ! resx, resy = [int(r) for r in l3_data.rio.resolution()] don't
@@ -896,6 +909,7 @@ def flag_translator(cs_l1b_flag):
 
 @contextmanager
 def ftp_cs2_server(**kwargs):
+    """Yield authenticated FTP connection to ESA CryoSat server."""
     try:
         config = ConfigParser()
         config.read("config.ini")
@@ -931,7 +945,7 @@ def gauss_filter_DataArray(
         std (int): Standard deviation of gauss-filter.
 
     Returns:
-        xr.DataArray: _description_
+        xr.DataArray: Filtered array, preserving input dimensions.
     """
     # force window_extent to be uneven to ensure center to be where expected
     half_window_extent = window_extent // 2
@@ -2135,6 +2149,7 @@ def monkeypatch(dictlist: list[dict]):
 def patched_xr_decode_scaling(
     data, scale_factor, add_offset, dtype: np.typing.DTypeLike
 ):
+    """Compatibility patch for xarray scale/offset decoding."""
     data = data.astype(dtype=dtype, copy=True)
     if scale_factor is not None:
         data = data * scale_factor
@@ -2416,6 +2431,7 @@ def rgi_o2region_translator(o1: int, o2: int, out_type: str = "full_name") -> st
 
 @contextmanager
 def sandbox_write_to(target: str):
+    """Guard writes by refusing to run with stale backup artifacts."""
     # ! other functions depend on the "__backup" extension
     if os.path.isfile(target + "__backup"):
         raise Exception(
@@ -2430,17 +2446,20 @@ def sandbox_write_to(target: str):
 
 
 def sel_chunk_idx_range(ds, dim, start, stop):
+    """Select a range of dask chunks by index along one dimension."""
     chunk_borders = np.cumsum([0] + list(ds.chunks[dim]))
     return ds.isel({dim: slice(*chunk_borders[[start, stop + 1]])})
 
 
 def sel_chunk_range(ds, **dim_intervals):
+    """Select chunk range by coordinate intervals per dimension."""
     for dim, interval in dim_intervals.items():
         ds = sel_chunk_idx_range(ds, dim, *chunk_idx(ds, dim, interval))
     return ds
 
 
 def update_email(email: str = None):
+    """Store email credential in local ``config.ini`` for ESA FTP access."""
     if email is None:
         email = input("Enter your email")
     if re.fullmatch(r"[^@]+@[^@]+\.[a-z]{2,9}", email.strip().lower()):
@@ -2460,6 +2479,7 @@ def update_email(email: str = None):
 
 
 def update_track_database() -> None:
+    """Refresh cached ground-track and filename lookup tables."""
     from argparse import ArgumentParser
 
     ArgumentParser(
@@ -2473,6 +2493,7 @@ def update_track_database() -> None:
 
 # CREDIT: mgab https://stackoverflow.com/a/22376126
 def warn_with_traceback(message, category, filename, lineno, file=None, line=None):
+    """Warning hook that appends stack trace to warning output."""
     log = file if hasattr(file, "write") else sys.stderr
     traceback.print_stack(file=log)
     log.write(warnings.formatwarning(message, category, filename, lineno, line))

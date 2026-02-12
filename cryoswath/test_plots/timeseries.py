@@ -26,6 +26,7 @@ def elevation_change(
     add_legend: bool = True,
     despine: dict[str, Any] = dict(trim=True),
 ) -> plt.Axes:
+    """Plot regional mean elevation-change series with optional transforms."""
     if ax is None:
         ax = plt.gca()
     data = tuple(data)

@@ -12,6 +12,13 @@
 #
 import os
 import sys
+from datetime import datetime
+from pathlib import Path
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
 sys.path.insert(0, os.path.abspath('..'))
 # sys.path.insert(0, os.path.abspath(os.path.join('..', 'cryoswath')))
 # print(sys.path)
@@ -20,11 +27,20 @@ sys.path.insert(0, os.path.abspath('..'))
 # -- Project information -----------------------------------------------------
 
 project = 'cryoswath'
-copyright = '2024-%Y, Jan Haacker'
-author = 'Jan Haacker'
+copyright = f"2024-{datetime.now().year}, Jan Haacker"
+author = "Jan Haacker"
 
 # The full version, including alpha/beta/rc tags
-release = '0.2.1-a630abb'
+try:
+    with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as f:
+        release = tomllib.load(f)["project"]["version"]
+except Exception:
+    try:
+        import cryoswath
+
+        release = cryoswath.__version__
+    except Exception:
+        release = "unknown"
 
 
 # -- General configuration ---------------------------------------------------
@@ -39,6 +55,8 @@ extensions = [
     'sphinx.ext.linkcode',
     # 'myst_parser'
 ]
+
+autodoc_typehints = "description"
 
 
 # for extension linkcode to work
