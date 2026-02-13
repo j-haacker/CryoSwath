@@ -1,4 +1,4 @@
-"""Geospatial processing focused helper functions"""
+"""Geospatial helper functions used throughout CryoSwath workflows."""
 
 __all__ = [
     "find_planar_crs",
@@ -16,6 +16,7 @@ import geopandas as gpd
 import numpy as np
 import os
 import pandas as pd
+from pathlib import Path
 from pyproj import Transformer
 from pyproj.crs import CRS
 import rasterio
@@ -34,6 +35,11 @@ rgi_o1_epsg_dict = dict()
 def buffer_4326_shp(
     shp: shapely.Geometry, radius: float, simplify: bool = True
 ) -> shapely.MultiPolygon:
+    """Buffer lon/lat geometries by ``radius`` meters.
+
+    The geometry is temporarily projected to a locally suitable planar
+    CRS, buffered there, and transformed back to EPSG:4326.
+    """
     # the algorithm splits a multi-geomerty like MultiPolygon into its
     # parts, simplifies them if requested, buffers them, and joins them
     # finally.
@@ -83,6 +89,7 @@ def buffer_4326_shp(
 
 
 def ensure_pyproj_crs(crs: CRS) -> CRS:
+    """Return a :class:`pyproj.crs.CRS` instance for ``crs``."""
     # Token function to convert (any?) CRS object to a pyproj.crs.CRS
     # For now using from_epsg as it smells safest.
     if not isinstance(crs, CRS):
@@ -95,9 +102,12 @@ def ensure_pyproj_crs(crs: CRS) -> CRS:
 
 
 def esri_to_feather(file_path: str = None) -> None:
-    if file_path.split(os.path.extsep)[-1].lower() == "shp":
-        basename = os.path.extsep.join(file_path.split(os.path.extsep)[:-1])
-    gpd.read_file(file_path).to_feather(basename + os.path.extsep + "feather")
+    """Convert a vector file readable by GeoPandas to Feather format."""
+    if file_path is None:
+        raise ValueError("file_path is required.")
+    source_path = Path(file_path)
+    target_path = source_path.with_suffix(".feather")
+    gpd.read_file(source_path).to_feather(target_path)
 
 
 def find_planar_crs(
@@ -107,11 +117,15 @@ def find_planar_crs(
     lon: float = None,
     region_id: str = None,
 ):
+    """Choose a planar CRS for a geometry or coordinate set."""
     if region_id is not None:
         with warnings.catch_warnings(action="ignore"):
             shp = load_glacier_outlines(region_id)
     elif shp is None:
-        shp = shapely.MultiPoint([(lon, lat) for lon, lat in zip(lon, lat)])
+        if np.isscalar(lon) and np.isscalar(lat):
+            shp = shapely.Point(lon, lat)
+        else:
+            shp = shapely.MultiPoint([(x, y) for x, y in zip(lon, lat)])
     shp = shp.centroid
     if shp.y > 75:
         return CRS.from_epsg(3413)
@@ -122,22 +136,26 @@ def find_planar_crs(
 
 
 def get_lon_origin(crs):
+    """Return longitude of origin for a projected CRS."""
     # Extract Longitude of origin
     # May turn out not to be very robust.
     return ensure_pyproj_crs(crs).coordinate_operation.params[1].value
 
 
 def get_4326_to_dem_Transformer(crs: int | CRS) -> Transformer:
+    """Build a transformer from EPSG:4326 to the provided CRS."""
     return Transformer.from_crs("EPSG:4326", ensure_pyproj_crs(crs))
 
 
 def points_on_glacier(points: gpd.GeoSeries) -> pd.Index:
+    """Return index positions of points located on buffered glacier area."""
     o2regions = gpd.read_feather(
         os.path.join(rgi_path, "RGI2000-v7.0-o2regions.feather")
     )
-    o2code = o2regions[o2regions.geometry.contains(shapely.box(*points.total_bounds))][
-        "o2region"
-    ].values[0]
+    o2_match = o2regions[o2regions.geometry.contains(shapely.box(*points.total_bounds))]
+    if o2_match.empty:
+        raise ValueError("Input points do not intersect any RGI o2 region bounds.")
+    o2code = o2_match["o2region"].values[0]
     buffered_glaciered_area_polygon = load_glacier_outlines(o2code)
     import time
 
@@ -163,6 +181,7 @@ def points_on_glacier(points: gpd.GeoSeries) -> pd.Index:
 def simplify_4326_shp(
     shp: shapely.Geometry, tolerance: float = None
 ) -> shapely.Geometry:
+    """Simplify a lon/lat geometry using a locally projected CRS."""
     if tolerance is None:
         if shp.length >= 20_000:  # 5 x 5 km
             tolerance = 1000

@@ -1,7 +1,9 @@
 """cryoswath.l1b module
 
-It mainly contains the L1bData class, that allows to process ESA
-CryoSat-2 SARIn L1b data to point elevation estimate (L2 data).
+Read and preprocess ESA CryoSat-2 SARIn L1b tracks.
+
+This module covers waveform-level preprocessing, ambiguity handling, DEM
+referencing, and conversion-ready outputs for L2 generation.
 """
 
 __all__ = [
@@ -83,6 +85,8 @@ from cryoswath.l2 import from_processed_l1b as l2_from_processed_l1b
 
 
 def if_not_empty(func):
+    """Skip processing helpers for tracks without waveforms."""
+
     def wrapper(l1b_data, *args, **kwargs):
         if len(l1b_data.time_20_ku) == 0:
             return l1b_data
@@ -145,9 +149,9 @@ def read_esa_l1b(
     power_threshold: tuple = ("snr", 10),
     smooth_phase_difference: bool = True,
     use_original_noise_estimates: bool = False,
-    dem_file_name_or_path: str = None,
+    dem_file_name_or_path: str | None = None,
     swath_start_kwargs: dict = {},
-) -> None:
+) -> xr.Dataset:
     """Loads ESA SARIn L1b and does initial processing
 
     Args to init:
@@ -196,7 +200,7 @@ def read_esa_l1b(
             "version": xr.__version__,
             "rules": [
                 {"version": "2024.3", "comperator": operator.lt, "action": "skip"},
-                {"version": "2025.4", "comperator": operator.ge, "action": "skip"},
+                {"version": "2025.3", "comperator": operator.ge, "action": "skip"},
             ],
         },
         {
@@ -205,7 +209,7 @@ def read_esa_l1b(
             "replacement": patched_xr_decode_tDel,
             "version": xr.__version__,
             "rules": [
-                {"version": "2025", "comperator": operator.lt, "action": "skip"},
+                {"version": "2025.3", "comperator": operator.lt, "action": "skip"},
                 {"version": "2025.4", "comperator": operator.ge, "action": "skip"},
             ],
         },
@@ -229,7 +233,7 @@ def read_esa_l1b(
             os.remove(l1b_filename)
             download_single_file(os.path.split(l1b_filename)[-1][19:34])
     # at least until baseline E ns_20_ku needs to be made a coordinate
-    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))
+    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku)))) # pyright: ignore[reportPossiblyUnboundVariable]
     # remove data that will not be used to reduce memory footprint
     for dim in ["time_plrm_01_ku", "time_plrm_20_ku", "nlooks_ku", "space_3d"]:
         if dim in ds.dims:
@@ -421,7 +425,8 @@ def read_esa_l1b(
 
 
 @if_not_empty
-def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str = None):
+def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str | None = None):
+    """Sample DEM elevation for each ambiguous phase-wrapping solution."""
     # !! This function causes much of the computation time. I suspect that
     # sparse memory accessing can be minimized with some tricks. However,
     # first tries sorting the spatial data, took even (much) longer.
@@ -540,6 +545,7 @@ def append_best_fit_phase_index(ds, best_column: callable = None) -> xr.Dataset:
 
 @if_not_empty
 def append_elev_diff_to_ref(ds):
+    """Append elevation differences between candidates and reference DEM."""
     if "xph_ref_elevs" not in ds.data_vars:
         ds = append_ambiguous_reference_elevation(ds)
     ds["xph_elev_diffs"] = ds.xph_elevs - ds.xph_ref_elevs
@@ -547,6 +553,7 @@ def append_elev_diff_to_ref(ds):
 
 
 def from_id(track_id: str | pd.Timestamp, **kwargs) -> xr.Dataset:
+    """Load and preprocess a single track by CryoSat time ID."""
     track_id = pd.Timestamp(track_id)
     # edge cases with exactly 0 nanoseconds may fail. however, since this is
     # only relevant for detail inspection, edge cases are ignored
@@ -597,9 +604,11 @@ def get_rgi_o2(ds) -> str:
 
 @if_not_empty
 def get_phase_jump(ds):
+    """Detect phase jumps along waveform samples."""
     ph_diff_diff = ds.ph_diff_complex_smoothed.diff("ns_20_ku")
     # ! implement choosing tolerance
     ph_diff_diff_tolerance = 0.1
+    # ! implement find loc. max. + cmp. to threshold (prevents multiple jump bins)
     jump_mask = np.logical_or(
         np.abs(ph_diff_diff) > ph_diff_diff_tolerance,
         np.abs(ph_diff_diff).rolling(ns_20_ku=2).sum()
@@ -612,6 +621,7 @@ def get_phase_jump(ds):
 
 @if_not_empty
 def get_phase_outlier(ds, tol: float | None = None):
+    """Flag phase samples that deviate from the smoothed complex phase."""
     # inputs have to be complex unit vectors
     # if no tol provided calc equivalent of 300 m at nadir
     if tol is None:
@@ -925,9 +935,13 @@ def append_exclude_mask(cs_l1b_ds: xr.Dataset) -> xr.Dataset:
         l1b_data: Data including mask.
     """
     # for now require tuple. could be some auto recognition in future.
-    assert isinstance(cs_l1b_ds.power_threshold, tuple)
+    if not isinstance(cs_l1b_ds.power_threshold, tuple):
+        raise TypeError("power_threshold must be a tuple.")
     # only signal-to-noise-ratio implemented
-    assert cs_l1b_ds.power_threshold[0] == "snr"
+    if cs_l1b_ds.power_threshold[0] != "snr":
+        raise NotImplementedError(
+            'Only power_threshold mode "snr" is currently implemented.'
+        )
     power_threshold = cs_l1b_ds.noise_power_20_ku * cs_l1b_ds.power_threshold[1]
     cs_l1b_ds["exclude_mask"] = np.logical_or(
         cs_l1b_ds.power_waveform_20_ku < power_threshold,
@@ -941,6 +955,12 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
 
     Args:
         cs_l1b_ds (l1b_data): Input data.
+        poca_upper (float): Maximum distance in meter of POCA sample to
+            first sample above coherence threshold. Defaults to 10.
+        swath_start_window (tuple[float, float]): Tuple of minimum and maximum
+            distance in meter of swath start to POCA sample. If the
+            maximum is negative, swath start is set to 0, implying all
+            samples will be swath processed. Defaults to (5, 50).
 
     Returns:
         l1b_data: Data including mask.
@@ -1010,6 +1030,7 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
 
 
 def append_smoothed_complex_phase(cs_l1b_ds: xr.Dataset, window_extent: int = 21, std: float = 5) -> xr.Dataset:
+    """Append low-pass filtered complex phase representation."""
     cs_l1b_ds["ph_diff_complex_smoothed"] = gauss_filter_DataArray(
         np.exp(1j * cs_l1b_ds.ph_diff_waveform_20_ku),
         dim="ns_20_ku",
@@ -1164,6 +1185,7 @@ def download_files(
     stop_event: Event = None,
     # baseline: str = "latest",
 ):
+    """Download all missing monthly L1b files for ``track_idx``."""
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
     for year_month_str in year_month_str_list:
         print("scanning", year_month_str, end=" ")
@@ -1209,6 +1231,7 @@ def download_files(
 
 
 def download_single_file(track_id: str) -> str:
+    """Download one L1b file for a single CryoSat track ID."""
     # currently only CryoSat-2
     retries = 10
     while retries > 0:

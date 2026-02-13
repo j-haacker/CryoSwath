@@ -1,4 +1,4 @@
-"""Miscellaneous helper functions"""
+"""Shared utilities for paths, I/O, interpolation, and compatibility patches."""
 
 __all__ = [
     # classes
@@ -10,6 +10,7 @@ __all__ = [
     "cs_time_to_id",
     "define_elev_band_edges",
     "discard_frontal_retreat_zone",
+    "download_file",
     "effective_sample_size",
     "extend_filename",
     "fill_missing_coords",
@@ -84,6 +85,7 @@ from scipy.stats import t as student_t
 import shapely
 import shutil
 from sklearn import linear_model, preprocessing
+import stackstac
 import sys
 from tables import NaturalNameWarning
 import time
@@ -97,6 +99,7 @@ from cryoswath import gis
 
 
 def init_project():
+    """Initialize a project directory with data/scripts scaffolding."""
     if not (os.path.exists("data") or os.path.exists("scripts")):
         try:
             from git.repo import Repo
@@ -141,16 +144,19 @@ else:
     )
     config = {"path": {}}
 
-def _get_path(name: str, base: Path, alternative: str = None) -> bool:
+
+def _get_path(name: str, base: Path, alternative: str = None) -> str:
+    """Resolve configured project path with fallback to default."""
     key = name.lower()
     if key in config["path"]:
         _value = config["path"][key]
-        if Path().is_absolute():
+        if Path(_value).is_absolute():
             return _value
         else:
             return str(base / _value)
     else:
         return str(base / (name if alternative is None else alternative))
+
 
 # data subdirs
 l1b_path = _get_path("L1b", data_path)
@@ -164,7 +170,9 @@ aux_path = Path(_get_path("aux", data_path, "auxiliary"))
 # aux subdirs
 dem_path = _get_path("DEM", aux_path)
 rgi_path = _get_path("RGI", aux_path)
-cs_ground_tracks_path = _get_path("cs_ground_tracks", aux_path, "CryoSat-2_SARIn_ground_tracks.feather")
+cs_ground_tracks_path = _get_path(
+    "cs_ground_tracks", aux_path, "CryoSat-2_SARIn_ground_tracks.feather"
+)
 
 # temporarily, (re)set types (str or Path)
 data_path = str(data_path)
@@ -202,7 +210,9 @@ nanoseconds_per_year = 365.25 * 24 * 60 * 60 * 1e9
 _norm_isf_025 = norm.isf(0.025)
 _norm_isf_25 = norm.isf(0.25)
 _norm_sf_1 = norm.sf(1)
-empty_GeoDataFrame = gpd.GeoDataFrame(columns=["dummy", "geometry"], geometry="geometry")
+empty_GeoDataFrame = gpd.GeoDataFrame(
+    columns=["dummy", "geometry"], geometry="geometry"
+)
 
 # Functions ##########################################################
 
@@ -232,10 +242,14 @@ class binary_chache:
 
 
 def chunk_idx(ds, dim, values):
+    """Map coordinate value(s) to chunk index along ``dim``."""
     def _inner(val):
         if val < ds[dim][0] or val > ds[dim][-1]:
             return None
-        return (ds[dim].isel({dim: np.cumsum(ds.chunks[dim]) - 1}) <= val).argmin().item(0)
+        return (
+            (ds[dim].isel({dim: np.cumsum(ds.chunks[dim]) - 1}) <= val).argmin().item(0)
+        )
+
     if isinstance(values, Iterable):
         return [_inner(val) for val in values]
     return _inner(values)
@@ -273,6 +287,8 @@ def convert_all_esri_to_feather(dir_path: str = None) -> None:
     Args:
         dir_path (str, optional): Root directory. Defaults to None.
     """
+    if dir_path is None:
+        dir_path = "."
     for shp_file in glob.glob("*.shp", root_dir=dir_path):
         try:
             gis.esri_to_feather(os.path.join(dir_path, shp_file))
@@ -294,10 +310,12 @@ def convert_all_esri_to_feather(dir_path: str = None) -> None:
 
 
 def dataframe_to_rioxr(df, crs):
+    """Convert tabular gridded data to CRS-aware xarray dataset."""
     return fill_missing_coords(df.to_xarray()).rio.write_crs(crs)
 
 
 def define_elev_band_edges(elevations: xr.DataArray) -> np.ndarray:
+    """Derive elevation-band edges from robust elevation spread."""
     elev_range_80pctl = float(
         elevations.quantile([0.1, 0.9]).diff(dim="quantile").values.item(0)
     )
@@ -330,15 +348,21 @@ def discard_frontal_retreat_zone(
     glacier-free surface.
 
     Args:
-        ds (_type_): _description_
-        replace_vars (list): _description_
-        main_var (str, optional): _description_. Defaults to "_median".
-        elev (str, optional): _description_. Defaults to "ref_elev".
-        mode (str, optional): _description_. Defaults to None.
-        threshold (float, optional): _description_. Defaults to None.
+        ds (xr.Dataset): Input data with ``main_var`` and ``elev``.
+        replace_vars (list[str]): Variables to set to ``NaN`` in
+            detected retreat zones.
+        main_var (str, optional): Variable used to detect anomalous
+            low-elevation behavior. Defaults to ``"_median"``.
+        elev (str, optional): Elevation reference variable used for
+            banding. Defaults to ``"ref_elev"``.
+        mode (str, optional): ``"temporal"`` (analyze per time step) or
+            ``"trend"`` (analyze long-term trend). If ``None``, mode is
+            inferred from the presence of a ``time`` dimension.
+        threshold (float, optional): Detection threshold. If ``None``,
+            defaults depend on ``mode``.
 
     Returns:
-        xr.Dataset: _description_
+        xr.Dataset: Dataset with flagged retreat-zone values masked.
     """
 
     if mode is None:
@@ -414,74 +438,160 @@ def discard_frontal_retreat_zone(
     return ds
 
 
-def download_dem(gpd_series, provider: Literal["PGC"] = "PGC"):
+def _read_stac(item):
+    """Private helper to read ArcticDEM or REMA tiles"""
+    if "proj:code" in item.properties:
+        code = item.properties["proj:code"]
+        if code.lower().startswith("epsg:"):
+            code = int(code.split(":")[-1])
+        else:
+            raise Exception(f"Implement parsing proj:code format {code}")
+    else:
+        raise Exception(f"Implement getting crs from properties {item.properties}")
+
+    tmp = stackstac.stack(item, epsg=code)
+    # nodata and data_type are coordinates along dimension band.
+    # they are drop on conversion to dataset and must be stored
+    # before.
+    coords_band_dim = {
+        k: v
+        for k, v in tmp.coords.items()
+        if "band" in v.dims and k in ["nodata", "data_type"]
+    }
+    tmp = tmp.to_dataset("band", promote_attrs=True)
+    tmp = xr.Dataset(
+        {
+            da.name: da.assign_attrs(
+                {k: v.sel(band=da.name).item(0) for k, v in coords_band_dim.items()}
+            )
+            .drop_vars([k for k, v in tmp.coords.items() if len(v.dims) == 0])
+            .squeeze()
+            for da in tmp.data_vars.values()
+        }
+    )
+    return (
+        xr.Dataset(
+            {
+                da.name: da.drop_attrs()
+                .astype(da.attrs["data_type"])
+                .assign_attrs(encoding={"_FillValue": da.attrs["nodata"]})
+                for da in tmp.data_vars.values()
+            }
+        )
+        .drop_vars(["time", "id"])
+        .rio.write_crs(code)
+    )
+
+
+def download_dem(
+    gpd_obj: Union[gpd.GeoSeries, gpd.GeoDataFrame, gpd.array.GeometryArray],
+    provider: Literal["PGC"] = "PGC",
+):
+    """
+    Download DEM tiles that intersect the provided geometries
+
+    Parameters
+    ----------
+    gpd_obj : geopandas.GeoSeries | geopandas.GeoDataFrame | sequence[Geometry]
+        Geometries defining the area of interest. Can be a geopandas
+        geometry object (needs `.to_crs()` and `.total_bounds`). The
+        input will be reprojected to EPSG:4326 if necessary; its
+        total_bounds are used as the STAC bbox for item discovery.
+    provider : Literal['PGC'], optional
+        Data provider to query. Only "PGC" is implemented (queries the PGC STAC API at
+        https://stac.pgc.umn.edu/api/v1/). Default is "PGC".
+
+    Behavior
+    --------
+    - Searches the PGC STAC catalog for arcticdem (v4.1) and rema (v2) 32 m collections covering the
+      provided bbox.
+    - Creates a Zarr store at Path(dem_path) / '<collection_id>.zarr'. Note: the function expects a
+      caller-defined variable `dem_path` to exist and be a valid filesystem path.
+    - Initializes the store on a fixed regular grid (x,y in [-3_500_000, 3_500_000]) with 100 m
+      spacing and chunking tuned for large tile writes.
+    - For each discovered STAC item:
+      - Skips writing if the existing store already contains sufficient data for the item's bbox.
+      - Reads the item into an xarray.Dataset, reprojects/resamples it to match the store grid
+        (using rioxarray and rasterio Resampling), fills nodata values from the existing store, and
+        writes the result back into the Zarr store using region writes.
+    - Uses external libraries (stac client, rioxarray, xarray, shapely, numpy); network I/O and heavy
+      disk operations are performed.
+    """
     if provider == "PGC":
         catalog = Client.open("https://stac.pgc.umn.edu/api/v1/")
-        collections = catalog.collection_search(q="((arcticdem AND v4+1) OR (rema AND v2)) AND 32m").collections()
+        collections = catalog.collection_search(
+            q="((arcticdem AND v4+1) OR (rema AND v2)) AND 32m"
+        ).collections()
         # transforming collection extent is difficult, maybe the code behind rioxr transform_bounds helps
         limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
 
-    items = list(catalog.search(
-        collections=[coll.id for coll in collections],
-        # not sure how this behaves if it covers the poles
-        bbox=gpd_series.to_crs(4326).total_bounds,
-    ).items())
+    items = list(
+        catalog.search(
+            collections=[coll.id for coll in collections],
+            # not sure how this behaves if it covers the poles
+            bbox=gpd_obj.to_crs(4326).total_bounds,
+        ).items()
+    )
 
-    this_dem_path = dem_path / (items[0].get_collection().id + ".zarr")  # don't .with_suffix; . in name!
+    this_dem_path = Path(dem_path) / (
+        items[0].get_collection().id + "_100m-mean.zarr"  # pyright: ignore[reportOptionalMemberAccess]
+    )  # don't .with_suffix; . in name!
     this_dem_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not this_dem_path.exists():
-        (  # init dem store
-            xr.full_like(xr.open_dataset(items[0], engine="stac", epsg=3413).load().squeeze(), np.nan)
-            .reindex({xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100) for xy in ["x", "y"]})
-            .map(lambda da: da.drop_attrs().astype(da.attrs["data_type"]).assign_attrs(encoding={"_FillValue": da.attrs["nodata"]}))
-            .drop_attrs(deep=False)
-            .drop_vars(["time", "id"])
-            .rio.write_crs(3413)
-            .chunk(x=1000, y=1000)
-            .to_zarr(this_dem_path, mode="w", compute=False)
-        )
-
     for item in items:
+        if not this_dem_path.exists():  # init dem store
+            (
+                xr.full_like(_read_stac(item), np.nan)
+                .reindex(
+                    {
+                        xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100)
+                        for xy in ["x", "y"]
+                    }
+                )
+                .chunk(x=1000, y=1000)
+            ).to_zarr(this_dem_path, mode="w", compute=False)
+
         parent = xr.open_zarr(this_dem_path, decode_coords="all", mask_and_scale=True)
-        # print(parent)
-        if parent["count"].rio.clip_box(*item.properties["proj:bbox"]).mean().compute() > 0.1:
+        if (
+            parent["count"].rio.clip_box(*item.properties["proj:bbox"]).mean().compute()
+            > 0.1
+        ):
             continue
-        if "proj:code" in item.properties:
-            code = item.properties["proj:code"]
-            if code.lower().startswith("epsg:"):
-                code = int(code.split(":")[-1])
-            else:
-                raise Exception(f"Implement parsing proj:code format {code}")
-        else:
-            raise Exception(f"Implement getting crs from properties {item.properties}")
-        ds = xr.open_dataset(item, engine="stac", epsg=code).squeeze()
+        ds = _read_stac(item)
         # # the general case:
         # x0, y0, x1, y1 = ds.rio.bounds()
         # excerpt = parent.pipe(sel_chunk_range, x=[x0, x1], y=[y0, y1]).load()
         # however, if chunks tuned to tiles:
         c = shapely.box(*item.properties["proj:bbox"]).centroid
-        excerpt = parent.pipe(sel_chunk_range, **{xy: [getattr(c, xy)] * 2 for xy in ["x", "y"]}).load()
-        add = ds.map(lambda da: da.rio.reproject_match(excerpt, resampling=Resampling.average).astype(da.attrs["data_type"]))
-        add = add.map(lambda da: da.where(da != da.attrs["_FillValue"]))
+        excerpt = parent.pipe(
+            sel_chunk_range, **{xy: [getattr(c, xy)] * 2 for xy in ["x", "y"]}
+        ).load()
+        add = ds.map(
+            lambda da: da.rio.reproject_match(
+                excerpt, resampling=Resampling.average
+            ).astype(da.dtype)
+        )
+        add = add.map(lambda da: da.where(da != da.attrs["encoding"]["_FillValue"]))
         add = add.map(lambda da: da.fillna(excerpt[da.name]))
-        add.drop_attrs().drop_vars(['time', 'id', 'spatial_ref']).to_zarr(this_dem_path, region="auto")
+        add.drop_attrs().drop_vars(["spatial_ref"]).to_zarr(
+            this_dem_path, region="auto"
+        )
 
 
 def download_file(url: str, dest: str | Path) -> str:
+    """Download ``url`` to ``dest`` using streamed HTTP requests."""
     # snippet adapted from https://stackoverflow.com/a/16696317
     # authors: https://stackoverflow.com/users/427457/roman-podlinov
     #      and https://stackoverflow.com/users/12641442/jenia
     # NOTE the stream=True parameter below
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
-        with open(dest, 'wb') as f:
+        with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 # If you have chunk encoded response uncomment if
                 # and set chunk_size parameter to None.
-                #if chunk:
+                # if chunk:
                 f.write(chunk)
-__all__.append("download_file")
 
 
 def drop_small_glaciers(
@@ -515,7 +625,7 @@ def effective_sample_size(weights: np.ndarray | xr.DataArray):
         weights (np.ndarray | xr.DataArray): Weights
 
     Returns:
-        _type_: Effective sample size as scalar of type equal to input.
+        float | xr.DataArray: Effective sample size.
     """
     return weights.sum() ** 2 / (weights**2).sum()
 
@@ -539,45 +649,45 @@ def extend_filename(file_name: str, extension: str) -> str:
 def fill_missing_coords(
     l3_data, minx: int = 9e7, miny: int = 9e7, maxx: int = -9e7, maxy: int = -9e7
 ) -> xr.Dataset:
+    """Reindex x/y coordinates to fill missing grid cells."""
     # previous version inspired by user9413641
     # https://stackoverflow.com/questions/68207994/fill-in-missing-index-positions-in-xarray-dataarray
     # ! resx, resy = [int(r) for r in l3_data.rio.resolution()] don't
     # use `rio.resolution()`: this assumes no holes which renders this
     # function obsolete
     l3_data = l3_data.sortby("x").sortby("y")  # ensure monotonix x and y
-    resx, resy = [l3_data[k].diff(k).min().values.astype("int") for k in ["x", "y"]]
-    minx, miny = int(minx + resx / 2), int(miny + resy / 2)
-    maxx, maxy = int(maxx - resx / 2), int(maxy - resy / 2)
-    if l3_data["x"].min().values < minx:
-        minx = l3_data["x"].min().values.astype("int")
-    else:
-        minx = int(minx + (l3_data["x"].min().values - minx) % resx - resx)
-    if l3_data["y"].min().values < miny:
-        miny = l3_data["y"].min().values.astype("int")
-    else:
-        miny = int(miny + (l3_data["y"].min().values - miny) % resy - resy)
-    if l3_data["x"].max().values > maxx:
-        maxx = l3_data["x"].max().values.astype("int")
-    else:
-        maxx = int(maxx - (maxx - l3_data["x"].max().values) % resx + resx)
-    if l3_data["y"].max().values > maxy:
-        maxy = l3_data["y"].max().values.astype("int")
-    else:
-        maxy = int(maxy - (maxy - l3_data["y"].max().values) % resy + resy)
-    coords = {"x": range(minx, maxx + 1, resx), "y": range(miny, maxy + 1, resy)}
-    return l3_data.reindex(
-        coords,
-        method=None,
-        copy=False,
-        fill_value={
-            _var: (
-                l3_data[_var].attrs["_FillValue"]
-                if "_FillValue" in l3_data[_var].attrs
-                else np.nan
-            )
-            for _var in [*l3_data.data_vars, "x", "y"]
-        },
-    )
+    for dim, _min, _max in [("x", minx, maxx), ("y", miny, maxy)]:
+        if len(l3_data[dim]) == 1:
+            continue
+        res = l3_data[dim].diff(dim).min().values.astype("int")
+        _min = int(_min + res / 2)
+        _max = int(_max - res / 2)
+        if l3_data[dim].min().values < minx:
+            _min = l3_data[dim].min().values.astype("int")
+        else:
+            _min = int(_min + (l3_data[dim].min().values - _min) % res - res)
+        if l3_data[dim].max().values > _max:
+            _max = l3_data[dim].max().values.astype("int")
+        else:
+            _max = int(_max - (_max - l3_data[dim].max().values) % res + res)
+        if hasattr(l3_data, "data_vars"):
+            fill_value = {
+                _var: (
+                    l3_data[_var].attrs["_FillValue"]
+                    if "_FillValue" in l3_data[_var].attrs
+                    else np.nan
+                )
+                for _var in [*l3_data.data_vars, "x", "y"]
+            }
+        else:
+            fill_value = getattr(l3_data.attrs, "_FillValue", np.nan)
+        l3_data = l3_data.reindex(
+            {dim: range(_min, _max + 1, res)},
+            method=None,
+            copy=False,
+            fill_value=fill_value,
+        )
+    return l3_data
 
 
 # ! make recursive
@@ -662,6 +772,8 @@ def find_region_id(location: any, scope: str = "o2") -> str:
         os.path.join(rgi_path, "RGI2000-v7.0-o2regions.feather")
     )
     rgi_region = rgi_o2_gpdf[rgi_o2_gpdf.contains(location.centroid)]
+    if rgi_region.empty:
+        raise ValueError(f"Location {location} is not in any RGI o2 region.")
     if scope == "o1":
         return rgi_region["o1region"].values[0]
     elif scope == "o2":
@@ -684,7 +796,7 @@ def find_region_id(location: any, scope: str = "o2") -> str:
                 raise Exception(
                     f"Location {location} is in multiple subregions (N,W,SW,SE,E)."
                 )
-            out = f"05-1{int(sub_o2[contains_location].index.values) + 1}"
+            out = f"05-1{contains_location.argmax() + 1}"
         return out
     elif scope == "basin":
         rgi_glacier_gpdf = _load_o2region(rgi_region["o2region"].values[0], "glaciers")
@@ -797,6 +909,7 @@ def flag_translator(cs_l1b_flag):
 
 @contextmanager
 def ftp_cs2_server(**kwargs):
+    """Yield authenticated FTP connection to ESA CryoSat server."""
     try:
         config = ConfigParser()
         config.read("config.ini")
@@ -832,7 +945,7 @@ def gauss_filter_DataArray(
         std (int): Standard deviation of gauss-filter.
 
     Returns:
-        xr.DataArray: _description_
+        xr.DataArray: Filtered array, preserving input dimensions.
     """
     # force window_extent to be uneven to ensure center to be where expected
     half_window_extent = window_extent // 2
@@ -920,9 +1033,9 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
     if lat > 0:
         dem_filename = "arcticdem_mosaic_100m_v4.1_dem.tif"
         if not (dem_path / dem_filename).is_file():
-            dem_filename = "arcticdem-mosaics-v4.1-32m.zarr"
+            dem_filename = "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
     else:
-        dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem.tif"
+        dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem_100m-mean.tif"
         if not (dem_path / dem_filename).is_file():
             dem_filename = "rema-mosaics-v2.0-32m.zarr"
     if not (dem_path / dem_filename).exists():
@@ -1901,9 +2014,9 @@ def load_glacier_outlines(
         out = out.to_crs(crs)
     if union:  # former default
         try:
-            out = out.union_all(method="coverage")
+            out = out.make_valid().union_all(method="coverage")
         except:  # TODO specify exception # noqa: E722
-            out = out.union_all(method="unary")
+            out = out.make_valid().union_all(method="unary")
     return out
 
 
@@ -2036,6 +2149,7 @@ def monkeypatch(dictlist: list[dict]):
 def patched_xr_decode_scaling(
     data, scale_factor, add_offset, dtype: np.typing.DTypeLike
 ):
+    """Compatibility patch for xarray scale/offset decoding."""
     data = data.astype(dtype=dtype, copy=True)
     if scale_factor is not None:
         data = data * scale_factor
@@ -2219,7 +2333,10 @@ def repair_l2_cache(
             os.remove(tmp_h5)
 
 
-def rgi_code_translator(input: str | list[str], out_type: str = "full_name") -> str:
+def rgi_code_translator(
+    input: str | int | tuple[int, int] | list,
+    out_type: str = "full_name",
+) -> Union[str, list[str]]:
     """Translate o1 or o2 codes to region names
 
     Args:
@@ -2231,13 +2348,26 @@ def rgi_code_translator(input: str | list[str], out_type: str = "full_name") -> 
         ValueError: If input is not understood.
 
     Returns:
-        str: Either full name or RGI "long_code".
+        str | list[str]: Either full name or RGI "long_code".
     """
     if isinstance(input, list):
         return [rgi_code_translator(element, out_type) for element in input]
-    if isinstance(input, int) or len(input) <= 2 and int(input) < 20:
+    elif (
+        isinstance(input, int) 
+        or (
+            isinstance(input, str)
+            and len(input) <= 2
+            and int(input) < 20
+        )
+    ):
         return rgi_o1region_translator(int(input), out_type)
-    if re.match(r"\d\d-\d\d", input):
+    elif (
+        isinstance(input, tuple)
+        and len(input) == 2
+        and all([isinstance(x, int) for x in input])
+    ):
+        return rgi_o2region_translator(*input, out_type=out_type)
+    elif isinstance(input, str) and re.match(r"\d\d-\d\d", input):
         return rgi_o2region_translator(
             *[int(x) for x in input.split("-")], out_type=out_type
         )
@@ -2301,6 +2431,7 @@ def rgi_o2region_translator(o1: int, o2: int, out_type: str = "full_name") -> st
 
 @contextmanager
 def sandbox_write_to(target: str):
+    """Guard writes by refusing to run with stale backup artifacts."""
     # ! other functions depend on the "__backup" extension
     if os.path.isfile(target + "__backup"):
         raise Exception(
@@ -2315,17 +2446,20 @@ def sandbox_write_to(target: str):
 
 
 def sel_chunk_idx_range(ds, dim, start, stop):
+    """Select a range of dask chunks by index along one dimension."""
     chunk_borders = np.cumsum([0] + list(ds.chunks[dim]))
     return ds.isel({dim: slice(*chunk_borders[[start, stop + 1]])})
 
 
 def sel_chunk_range(ds, **dim_intervals):
+    """Select chunk range by coordinate intervals per dimension."""
     for dim, interval in dim_intervals.items():
         ds = sel_chunk_idx_range(ds, dim, *chunk_idx(ds, dim, interval))
     return ds
 
 
 def update_email(email: str = None):
+    """Store email credential in local ``config.ini`` for ESA FTP access."""
     if email is None:
         email = input("Enter your email")
     if re.fullmatch(r"[^@]+@[^@]+\.[a-z]{2,9}", email.strip().lower()):
@@ -2345,6 +2479,7 @@ def update_email(email: str = None):
 
 
 def update_track_database() -> None:
+    """Refresh cached ground-track and filename lookup tables."""
     from argparse import ArgumentParser
 
     ArgumentParser(
@@ -2358,6 +2493,7 @@ def update_track_database() -> None:
 
 # CREDIT: mgab https://stackoverflow.com/a/22376126
 def warn_with_traceback(message, category, filename, lineno, file=None, line=None):
+    """Warning hook that appends stack trace to warning output."""
     log = file if hasattr(file, "write") else sys.stderr
     traceback.print_stack(file=log)
     log.write(warnings.formatwarning(message, category, filename, lineno, line))

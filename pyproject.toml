@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "cryoswath"
-version = "0.2.3.post1"
+version = "0.2.4"
 authors = [
   { name="Jan Haacker", email="j.m.haacker@tudelft.nl" },
 ]
@@ -52,10 +52,11 @@ file = "LICENSE.txt"
 # ... = "MIT"
 
 [project.optional-dependencies]
-dev = ["flit", "pip-compile", "ruff"]
-docs = ["sphinx", "sphinx-rtd-theme"]
+dev = ["flit", "pip-tools", "ruff"]
+docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
-all = ["cryoswath[dev,docs,notebooks]"]
+production = ["xarray[accel]", "dask[distributed]"]
+all = ["cryoswath[dev,docs,notebooks,production]"]
 
 [project.urls]
 Repository = "https://github.com/j-haacker/cryoswath.git"

@@ -1,0 +1,13 @@
+/* Slightly cleaner reading layout without changing the docs structure. */
+.wy-nav-content {
+  max-width: 1100px;
+}
+
+.rst-content code.literal,
+.rst-content tt.literal {
+  border-radius: 3px;
+}
+
+.rst-content dl:not(.docutils) {
+  margin-bottom: 1rem;
+}

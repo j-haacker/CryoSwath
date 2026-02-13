@@ -1,4 +1,4 @@
-"""Functions to have level 2 (L2) data produced"""
+"""Convert processed CryoSat L1b data to L2 point-elevation products."""
 
 __all__ = [
     "from_id",
@@ -219,13 +219,7 @@ def from_id(
                                     idx,
                                     reprocess,
                                     l2_paths,
-                                    [
-                                        (
-                                            "return"
-                                            if save_or_return == "return"
-                                            else "both"
-                                        )
-                                    ],
+                                    "return" if save_or_return == "return" else "both",
                                     current_subdir,
                                     kwargs.copy(),
                                 )
@@ -241,7 +235,7 @@ def from_id(
                             idx,
                             reprocess,
                             l2_paths,
-                            ["return" if save_or_return == "return" else "both"],
+                            "return" if save_or_return == "return" else "both",
                             current_subdir,
                             kwargs.copy(),
                         )
@@ -458,13 +452,15 @@ def from_processed_l1b(
         tmp.index = tmp.index.set_levels(
             pd.DatetimeIndex(tmp["time"].groupby(level=0).first(), tz="UTC"), level=0
         )
-    elif tmp.index.name[:4].lower() == "time":
-        tmp.rename_axis(("time"), inplace=True)
-        tmp.index = pd.DatetimeIndex(tmp["time"], tz="UTC")
-    elif tmp.index.name[:2].lower() == "ns":
-        tmp.rename_axis(("sample"), inplace=True)
     else:
-        warnings.warn("Unexpected index name. May lead to issues.")
+        index_name = tmp.index.name if isinstance(tmp.index.name, str) else ""
+        if index_name[:4].lower() == "time":
+            tmp.rename_axis(("time"), inplace=True)
+            tmp.index = pd.DatetimeIndex(tmp["time"], tz="UTC")
+        elif index_name[:2].lower() == "ns":
+            tmp.rename_axis(("sample"), inplace=True)
+        else:
+            warnings.warn("Unexpected index name. May lead to issues.")
     tmp.drop(
         columns=[col for col in ["time", "sample"] if col in tmp.columns], inplace=True
     )
@@ -504,6 +500,9 @@ def grid(
         pd.DataFrame: A DataFrame containing aggregated data for each grid cell. The
         index includes the x and y coordinates of the grid cell and time.
     """
+    if l2_data.empty:
+        return pd.DataFrame()
+
     # define how to grid
     def cell_bounds(number: float):
         floor = np.floor(number / spatial_res_meter) * spatial_res_meter
@@ -513,7 +512,7 @@ def grid(
     # reason: it seemed that index accessing time increases much for
     # large data sets. remember it is not a database index (pandas
     # doesn't whether it is sorted)
-    n_split = int((l2_data.shape[0] / 0.5e6) ** 0.5)
+    n_split = max(1, int((l2_data.shape[0] / 0.5e6) ** 0.5))
     minx, miny, maxx, maxy = l2_data.total_bounds
     delx = (
         maxx - minx
@@ -550,10 +549,13 @@ def grid(
                 )
             )
         # consider saving a backup to disk after each parent_cell
+    if not gridded_list:
+        return pd.DataFrame()
     return pd.concat(gridded_list)
 
 
 def limit_filter(data: pd.DataFrame, column: str, limit: float) -> pd.DataFrame:
+    """Filter rows where ``abs(data[column])`` exceeds ``limit``."""
     if np.isnan(limit) or limit <= 0:
         return data
     res = data[np.abs(data[column]) < limit]
@@ -604,6 +606,7 @@ def process_and_save(
 
 # local helper function. can't be defined where it is needed because of namespace issues
 def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwargs):
+    """Process one track index and optionally persist/read cached L2 files."""
     print("getting", idx, flush=True)
     # print("kwargs", wargs)
     try:
@@ -616,22 +619,24 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             #     os.stat(os.path.join(l2_swath_path, current_subdir,
             #                          l2_paths.loc[idx, "swath"])).st_mtime,
             #     unit="s"))
-            assert reprocess < pd.Timestamp(
+            if reprocess >= pd.Timestamp(
                 os.stat(
                     os.path.join(
                         l2_swath_path, current_subdir, l2_paths.loc[idx, "swath"]
                     )
                 ).st_mtime,
                 unit="s",
-            )
-            assert reprocess < pd.Timestamp(
+            ):
+                raise RuntimeError("Existing L2 file outdated.")
+            if reprocess >= pd.Timestamp(
                 os.stat(
                     os.path.join(
                         l2_poca_path, current_subdir, l2_paths.loc[idx, "poca"]
                     )
                 ).st_mtime,
                 unit="s",
-            )
+            ):
+                raise RuntimeError("Existing L2 file outdated.")
         if save_or_return != "save":
             swath_poca_tuple = (
                 gpd.read_feather(
@@ -645,7 +650,7 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
                     )
                 ),
             )
-    except (KeyError, FileNotFoundError, AssertionError, ArrowInvalid):
+    except (KeyError, FileNotFoundError, RuntimeError, ArrowInvalid):
         # print("debug 0", idx, flush=True)
         if "cs_full_file_names" in kwargs:
             cs_full_file_names = kwargs["cs_full_file_names"]

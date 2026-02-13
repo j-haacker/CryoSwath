@@ -1,27 +1,21 @@
 Tutorials
 =========
 
-There is a small number of tutorials that will be extended if I find
-support. Those are Jupyter notebooks on the branch "scripts" with
-names starting with "tutorial". The notebooks will be available locally
-in a directory named "scripts" after installing CryoSwath and running
-cryoswath-init. Otherwise, you can view them online by selecting the
-"scripts" branch on GitHub's project main page.
+Tutorials are provided as Jupyter notebooks in ``scripts/``. After
+running ``cryoswath-init``, they are available locally in your project
+directory. They can also be viewed on GitHub.
 
-`tutorial__general_step-by-step.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__general_step-by-step.ipynb>`_
-contains a step-by-step guide to retrieve gridded glacier surface
-elevation trends from raw (L1b) data.
+Available notebooks
+-------------------
 
-`tutorial__process_first_waveform.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_waveform.ipynb>`_
-explains how to visualize single waveforms.
+1. `tutorial__general_step-by-step.ipynb <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb>`_
+   End-to-end walkthrough from L1b to gridded trend products.
+2. `tutorial__process_first_waveform.ipynb <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb>`_
+   Inspect and understand a single waveform.
+3. `tutorial__process_first_swath.ipynb <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb>`_
+   Process and visualize one track as swath data.
+4. `tutorial__poca.ipynb <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__poca.ipynb>`_
+   Retrieve and inspect POCA solutions.
 
-`tutorial__process_first_swath.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_swath.ipynb>`_
-teaches the retrieval of elevation estimates for a ceratin satellite track.
-
-`tutorial__poca.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__poca.ipynb>`_
-shows how the points of closest approach (POCA), that have a special
-meaning, can be retrieved.
+These notebooks are intended as practical guides and reference examples
+for configuring your own workflows.

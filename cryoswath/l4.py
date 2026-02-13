@@ -1,4 +1,4 @@
-"""Library of functions to produce level 4 (L4) data"""
+"""Higher-level post-processing for L3 products (gap filling and trends)."""
 
 __all__ = [
     "difference_to_reference_dem",
@@ -11,7 +11,7 @@ __all__ = [
     "fill_l3_voids",
     "fit_trend",
     "fit_trend__seasons_removed",
-    "timeseries_form_gridded",
+    "timeseries_from_gridded",
     "trend_with_seasons",
     # "differential_change",
     # "relative_change",
@@ -285,6 +285,7 @@ def append_basin_id(
     ds: xr.DataArray | xr.Dataset,
     basin_gdf: gpd.GeoDataFrame = None,
 ) -> xr.Dataset:
+    """Append per-cell basin identifier derived from glacier polygons."""
     if basin_gdf is None:
         raise NotImplementedError("Automatic basin loading is not yet implemented.")
     if isinstance(ds, xr.DataArray):
@@ -315,6 +316,7 @@ def append_basin_group(
     ds: xr.DataArray | xr.Dataset,
     basin_gdf: gpd.GeoDataFrame = None,
 ) -> xr.Dataset:
+    """Append per-cell basin-group identifier for grouped interpolation."""
     if basin_gdf is None:
         raise NotImplementedError("Automatic basin loading is not yet implemented.")
     if isinstance(ds, xr.DataArray):
@@ -374,6 +376,7 @@ def append_elevation_reference(
     ref_elev_name: str = "ref_elev",
     dem_file_name_or_path: str = None,
 ) -> xr.Dataset:
+    """Append DEM-based elevation reference resampled to dataset grid."""
     if isinstance(geospatial_ds, xr.DataArray):
         geospatial_ds = geospatial_ds.to_dataset()
     # finding a latitude to determine the reference DEM like below may be prone to bugs
@@ -415,6 +418,7 @@ def fill_voids(
     fit_sanity_check: dict = None,
     filled_flag: str = None,
 ) -> xr.Dataset:
+    """Fill spatial/temporal gaps using hierarchical hypsometric strategies."""
     # mention memory footprint in docstring: reindexing leaks and takes a s**t ton of
     # memory. roughly 5-10x l3_data size in total.
     if any([grouper not in ["basin", "basin_group"] for grouper in per]):
@@ -534,7 +538,10 @@ def fill_voids(
             dim="time", method="linear", max_gap=pd.Timedelta(days=367)
         )
         _interpolated = np.logical_and(ds[main_var].isnull(), ~_new_main.isnull())
-        ds[filled_flag] = xr.where(~_interpolated, ds[filled_flag], 4, keep_attrs=True)
+        if filled_flag is not None:
+            ds[filled_flag] = xr.where(
+                ~_interpolated, ds[filled_flag], 4, keep_attrs=True
+            )
         ds[error] = ds[error].interpolate_na(
             dim="time", method="nearest", max_gap=pd.Timedelta(days=367)
         )
@@ -583,7 +590,10 @@ def fill_voids(
         )
         _interpolated = np.logical_and(~ds[main_var].isnull(), _void)
         ds[error] = xr.where(~_interpolated, ds[error], 50)
-        ds[filled_flag] = xr.where(~_interpolated, ds[filled_flag], 6, keep_attrs=True)
+        if filled_flag is not None:
+            ds[filled_flag] = xr.where(
+                ~_interpolated, ds[filled_flag], 6, keep_attrs=True
+            )
     ds = fill_missing_coords(
         ds.unstack(
             "stacked_x_y",
@@ -703,6 +713,7 @@ def fit_trend(
     timestep_months: int = 12,
     return_raw: bool = False,
 ) -> xr.Dataset:
+    """Fit linear trend (and uncertainty) for regularly sampled time series."""
     # using resample(time="...").nearest(pd.Timedelta(..., "days"))\
     #   .dropna("time", "all")
     # it could theoretically be implemented to select a valid value in the
@@ -754,8 +765,9 @@ def difference_to_reference_dem(
     save_to_disk: str | bool = True,
     basin_shapes: gpd.GeoDataFrame = None,
 ) -> xr.Dataset:
+    """Fill L3 gaps and return elevation differences relative to DEM."""
     if (np.abs(l3_data._median) < 150).any():
-        Exception("_median deviates more than 150 m from reference")
+        raise Exception("_median deviates more than 150 m from reference")
     for _var in ["_median", "_iqr", "_count"]:
         l3_data[_var] = l3_data[_var].astype("f4")
     res = fill_voids(
@@ -868,12 +880,13 @@ def elevation_trend_raster_from_l3(
         model_vals = xr.apply_ufunc(
             trend_with_seasons,
             ds.time.astype("int"),
-            *[fit_res.sel(param=p) for p in fit_res.param],
+            *[
+                fit_res.curvefit_coefficients.sel(param=p)
+                for p in fit_res.curvefit_coefficients.param
+            ],
             dask="allowed",
         )
-        residuals = (
-            ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-        )
+        residuals = ds._median - model_vals
         res_std = residuals.std("time")
         outlier = np.abs(residuals) - 2 * res_std > 0
         fit_rm_outl_res = (
@@ -903,12 +916,13 @@ def elevation_trend_raster_from_l3(
         model_vals = xr.apply_ufunc(
             trend_with_seasons,
             ds.time.astype("int"),
-            *[fit_rm_outl_res.sel(param=p) for p in fit_rm_outl_res.param],
+            *[
+                fit_rm_outl_res.curvefit_coefficients.sel(param=p)
+                for p in fit_rm_outl_res.curvefit_coefficients.param
+            ],
             dask="allowed",
         )
-        residuals = (
-            ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-        )
+        residuals = ds._median - model_vals
         fit_rm_outl_res["RMSE"] = (residuals**2).mean("time") ** 0.5
         fit_rm_outl_res.to_zarr(interm_res_path, mode="w")
     else:
@@ -956,6 +970,7 @@ def elevation_trend_raster_from_l3(
 
 
 def fit_trend__seasons_removed(l3_ds: xr.Dataset) -> xr.Dataset:
+    """Fit a trend-plus-season model after masking low-quality cells."""
     l3_ds = l3_ds.where(
         np.logical_and(
             (~l3_ds._median.isel(time=slice(None, 30)).isnull()).sum("time") > 5,
@@ -986,12 +1001,13 @@ def fit_trend__seasons_removed(l3_ds: xr.Dataset) -> xr.Dataset:
     model_vals = xr.apply_ufunc(
         trend_with_seasons,
         l3_ds.time.astype("int"),
-        *[fit_res.sel(param=p) for p in fit_res.param],
+        *[
+            fit_res.curvefit_coefficients.sel(param=p)
+            for p in fit_res.curvefit_coefficients.param
+        ],
         dask="allowed",
     )
-    residuals = (
-        l3_ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-    )
+    residuals = l3_ds._median - model_vals
     res_std = residuals.std("time")
     outlier = np.abs(residuals) - 2 * res_std > 0
     fit_rm_outl_res = (
@@ -1021,12 +1037,13 @@ def fit_trend__seasons_removed(l3_ds: xr.Dataset) -> xr.Dataset:
     model_vals = xr.apply_ufunc(
         trend_with_seasons,
         l3_ds.time.astype("int"),
-        *[fit_rm_outl_res.sel(param=p) for p in fit_rm_outl_res.param],
+        *[
+            fit_rm_outl_res.curvefit_coefficients.sel(param=p)
+            for p in fit_rm_outl_res.curvefit_coefficients.param
+        ],
         dask="allowed",
     )
-    residuals = (
-        l3_ds._median - model_vals.rename({"curvefit_coefficients": "_median"})._median
-    )
+    residuals = l3_ds._median - model_vals
     fit_rm_outl_res["RMSE"] = (residuals**2).mean("time") ** 0.5
     return fit_rm_outl_res.rio.write_crs(l3_ds.rio.crs)
 
@@ -1035,6 +1052,7 @@ def differential_change(
     data: xr.Dataset,
     save_to_disk: str | bool = True,
 ) -> xr.Dataset:
+    """Estimate year-to-year differential elevation change fields."""
     # ! needs to be tested again
 
     # roughly filter data
@@ -1051,7 +1069,7 @@ def differential_change(
         "time", how="all"
     ) ** 0.5
     if "ref_elev" not in data:
-        data = l3.append_elevation_reference(data, ref_elev_name="ref_elev")
+        data = append_elevation_reference(data, ref_elev_name="ref_elev")
     data = xr.merge(
         [
             differences.rename("elev_change"),
@@ -1091,6 +1109,7 @@ def relative_change(
     pivot_month: int = 9,
     save_to_disk: str | bool = True,
 ) -> xr.Dataset:
+    """Compute elevations relative to a seasonal reference year."""
     # ! needs to be tested
 
     if isinstance(basin_shapes, str):
@@ -1118,7 +1137,7 @@ def relative_change(
         l3_data._iqr**2 + reference._iqr.sel(month=l3_data.time.dt.month) ** 2
     ).drop("month") ** 0.5
     if "ref_elev" not in l3_data:
-        l3_data = l3.append_elevation_reference(l3_data, ref_elev_name="ref_elev")
+        l3_data = append_elevation_reference(l3_data, ref_elev_name="ref_elev")
     l3_data = xr.merge(
         [values.rename("elevation"), uncertainties.rename("error"), l3_data.ref_elev]
     )
@@ -1314,6 +1333,7 @@ def timeseries_from_gridded(
 def trend_with_seasons(
     t_ns, trend, offset, amp_yearly, phase_yearly, amp_semiyr, phase_semiyr
 ):
+    """Linear trend plus annual and semi-annual harmonic components."""
     t_yr = t_ns / (365.25 * 24 * 60 * 60 * 1e9)
     return (
         offset

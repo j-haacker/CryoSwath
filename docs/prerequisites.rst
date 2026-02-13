@@ -1,61 +1,68 @@
 Prerequisites
 =============
 
-.. _install:
-
 Installation
 ------------
 
-To install CryoSwath, clone the GitHub repository.
+The recommended setup for development and reproducible workflows is an
+isolated Python environment (``conda/mamba``, ``venv``, ``uv``, etc.).
 
-``git clone git@github.com/j-haacker/cryoswath.git``
+.. warning::
+   CryoSwath has a broad dependency tree. To avoid future dependency
+   incompatibilities, install it in a dedicated environment.
 
-Then install it into your projects virtual environment. If you don't use
-virtual environments, please do so for this project to ensure all
-dependencies can be satisfied. You can install CryoSwath by running:
+Install from source:
 
-``pip install --editable <path that you cloned into>``
+.. code-block:: sh
 
-Supplying the ``--editable`` flag allows you to update and modify
-CryoSwath.
+   git clone https://github.com/j-haacker/cryoswath.git
+   pip install --editable ./cryoswath
 
-Continue by running ``cryoswath-init``.
+Then initialize your project directory:
 
-This will setup a directory structure, download the package, and
-download some small auxiliary files. Large resource dependency need to
-be downloaded manually.
+.. code-block:: sh
 
-The above installation is the recommended. Refer to the readme for a
-variety of alternatives that may help incase of issues. Among the
-alternatives, there is a fallback strategy using a docker container.
+   mkdir <project_dir>
+   cd <project_dir>
+   cryoswath-init
+
+``cryoswath-init`` creates a project layout (``data/``, ``scripts/``) and
+writes ``scripts/config.ini`` that stores your base data path.
+
+Access requirements
+-------------------
+
+.. warning::
+   Starting **Monday, February 16, 2026**, downloading CryoSat resources
+   via CryoSwath requires an
+   `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
+
+Set up your ESA credentials before running download workflows.
 
 Data dependencies
 -----------------
 
-CryoSwath needs a reference elevation model. Currently, ArcticDEM and
-REMA of the Polar Geospatial Center, University of Minnesota
-(https://www.pgc.umn.edu/data/) are supported. To use other sources, add
-their paths to :func:`cryoswath.misc.get_dem_reader`. Deposit them in
-``data/auxiliary/DEM`` or change ``dem_path`` in :mod:`cryoswath.misc`
-to your needs.
+CryoSwath requires:
 
-Further, if you would like to take advantage of the basin shapes
-provided in the Randolph Glacier Inventory, download them as needed.
-Make sure to download both products, "G" (glaciers/basins) and "C"
-(complexes). CryoSwath will give you hints, if any data is missing, as
-you go. Deposit the shape files in ``data/auxiliary/RGI`` or change
-``rgi_path`` in :mod:`cryoswath.misc` to your needs. If you already know
-what data you need, find them at the `nsidc repository
-<https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/>`_.
+1. A reference DEM (currently ArcticDEM/REMA via
+   :func:`cryoswath.misc.get_dem_reader`).
+2. RGI v7 glacier/region geometries for most region-based workflows.
+
+Expected default locations:
+
+- DEMs: ``data/auxiliary/DEM``
+- RGI files: ``data/auxiliary/RGI``
+
+You can override paths in ``config.ini`` or by adapting path handling in
+:mod:`cryoswath.misc`.
 
 Software dependencies
 ---------------------
 
-The software dependencies should have been installed when you ran ``pip
-install --editable ./cryoswath`` (see above). The dependencies can be
-found in the ``pyproject.toml``. There is a historic `requirements.txt
-<https://github.com/j-haacker/cryoswath/blob/main/requirements.txt>`_
-that used to list dependencies that are needed or beneficial to run
-CryoSwath. However, it is not well maintained.
-Note, that the package names are "conda" names; "pip" names my be
-slightly different.
+Python package dependencies are defined in ``pyproject.toml``.
+
+- Runtime dependencies: ``[project.dependencies]``
+- Optional docs/dev extras: ``[project.optional-dependencies]``
+
+The root ``requirements.txt`` is kept for compatibility but is not the
+primary dependency source.
