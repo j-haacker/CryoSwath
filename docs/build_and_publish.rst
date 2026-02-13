@@ -19,6 +19,9 @@ Sphinx project configuration
 - API autodoc via ``sphinx.ext.autodoc`` and ``sphinx.ext.napoleon``
 - GitHub source links via ``sphinx.ext.linkcode``
 - HTML theme via ``pydata_sphinx_theme``
+- Source-link git ref resolution with fallbacks:
+  ``READTHEDOCS_GIT_COMMIT_HASH`` -> ``git rev-parse HEAD`` ->
+  ``READTHEDOCS_GIT_IDENTIFIER`` -> ``main``
 
 The documentation imports local package sources by adding the project
 root to ``sys.path``.

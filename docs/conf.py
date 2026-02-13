@@ -11,6 +11,8 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
+import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +60,56 @@ extensions = [
 ]
 
 autodoc_typehints = "description"
+
+
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _valid_git_sha(value):
+    """Return a normalized SHA if value looks like a git commit hash."""
+    if not value:
+        return None
+    value = value.strip()
+    return value if _GIT_SHA_RE.fullmatch(value) else None
+
+
+def _git_head_ref():
+    """Return git HEAD commit hash for this repository, if available."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    return _valid_git_sha(result.stdout)
+
+
+def _resolve_source_ref(env=None, git_head_resolver=None):
+    """Resolve source URL git ref using commit hash + fallback chain."""
+    env = os.environ if env is None else env
+    git_head_resolver = _git_head_ref if git_head_resolver is None else git_head_resolver
+
+    commit_hash = _valid_git_sha(env.get("READTHEDOCS_GIT_COMMIT_HASH"))
+    if commit_hash:
+        return commit_hash
+
+    head_hash = git_head_resolver()
+    if head_hash:
+        return head_hash
+
+    git_identifier = (env.get("READTHEDOCS_GIT_IDENTIFIER") or "").strip()
+    if git_identifier:
+        return git_identifier
+
+    return "main"
+
+
+# Resolve once so all links within one docs build point to the same ref.
+SOURCE_CODE_GIT_REF = _resolve_source_ref()
 
 
 # for extension linkcode to work
@@ -123,13 +175,11 @@ def linkcode_resolve(domain, info):
     else:
         linespec = ""
 
-    # maybe restructure in future: have doc "stable" point to main, "latest" to develop
-    if 'dev' in cryoswath.__version__:
-        return "https://github.com/j-haacker/cryoswath/blob/develop/cryoswath/%s%s" % (
-           fn, linespec)  # should actually refer to "main"
-    else:
-        return "https://github.com/j-haacker/cryoswath/blob/v%s/cryoswath/%s%s" % (
-           cryoswath.__version__, fn, linespec)
+    return "https://github.com/j-haacker/cryoswath/blob/%s/cryoswath/%s%s" % (
+        SOURCE_CODE_GIT_REF,
+        fn,
+        linespec,
+    )
 
 
 # Add any paths that contain templates here, relative to this directory.
