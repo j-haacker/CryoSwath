@@ -21,7 +21,7 @@ from waveform-level processing to gridded elevation products.
 ## Important notes
 
 - Install CryoSwath in a dedicated environment (`conda`/`mamba`,
-  `venv`, or `pixi`). The dependency tree is broad, and future
+  `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
 - Starting **Monday, February 16, 2026**, downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.

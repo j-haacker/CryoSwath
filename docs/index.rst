@@ -8,11 +8,6 @@ Project repository:
 `github.com/j-haacker/cryoswath <https://github.com/j-haacker/cryoswath>`_
 
 .. warning::
-   CryoSwath depends on many third-party packages. Dependency conflicts
-   can appear over time, so install and run it in an isolated environment
-   (``conda/mamba``, ``venv``, or ``pixi``).
-
-.. warning::
    Starting **Monday, February 16, 2026**, users need an
    `ESA EO account <https://eoiam-idp.eo.esa.int/>`_
    to download CryoSat resources through CryoSwath.

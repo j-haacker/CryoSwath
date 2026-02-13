@@ -5,7 +5,7 @@ Installation
 ------------
 
 The recommended setup for development and reproducible workflows is an
-isolated Python environment (``conda/mamba``, ``venv``, ``pixi``, etc.).
+isolated Python environment (``conda/mamba``, ``venv``, ``uv``, etc.).
 
 .. warning::
    CryoSwath has a broad dependency tree. To avoid future dependency
