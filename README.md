@@ -23,9 +23,18 @@ from waveform-level processing to gridded elevation products.
 - Install CryoSwath in a dedicated environment (`conda`/`mamba`,
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
+- Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
 - Starting **Monday, February 16, 2026**, downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
 - Install `xarray` and `zarr` together to avoid version mismatches.
+
+## Dependency policy
+
+- Flexible package bounds (for pip/uv users): `xarray>=2025.3,<2025.12`.
+- Stable environment (recommended for reproducible runs): use the
+  checked-in lock/environment files (`pixi.lock`, `environment.yml`).
+- Compatibility window in this repository was last audited on
+  **February 14, 2026**.
 
 ## Installation
 
@@ -48,6 +57,18 @@ mamba activate cryoswath
 mamba install pip
 pip install --editable cryoswath
 ```
+
+### Option 3: reproducible Pixi environment
+
+```sh
+git clone https://github.com/j-haacker/cryoswath.git
+cd cryoswath
+pixi install -e test
+pixi shell -e test
+```
+
+This uses the lock file and is the most robust option when dependency
+resolvers disagree.
 
 ### Optional: Docker image
 

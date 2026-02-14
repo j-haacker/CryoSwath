@@ -63,6 +63,20 @@ Python package dependencies are defined in ``pyproject.toml``.
 
 - Runtime dependencies: ``[project.dependencies]``
 - Optional docs/dev extras: ``[project.optional-dependencies]``
+- Supported Python version: ``>=3.11`` (regularly tested on 3.11 and 3.12)
+- Supported xarray window: ``>=2025.3,<2025.12``
 
 The root ``requirements.txt`` is kept for compatibility but is not the
 primary dependency source.
+
+Dependency strategy
+-------------------
+
+CryoSwath supports two installation modes:
+
+1. Stable/reproducible: use ``pixi.lock`` or ``environment.yml``.
+2. Flexible: install from ``pyproject.toml`` bounds (pip/uv workflows).
+
+Use the stable mode for tutorials, bug reports, and scientific
+reproducibility. Use the flexible mode when integrating CryoSwath into
+an existing environment.

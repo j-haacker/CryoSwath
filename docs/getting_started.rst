@@ -19,6 +19,8 @@ that the ``[path]`` section points to the intended ``data`` location.
 .. warning::
    Use a dedicated environment for CryoSwath. Installing into a shared
    Python environment can break either CryoSwath or unrelated packages.
+   Supported Python version is 3.11 or newer. Regular testing currently
+   covers Python 3.11 and 3.12.
 
 .. warning::
    Starting **Monday, February 16, 2026**, users need an

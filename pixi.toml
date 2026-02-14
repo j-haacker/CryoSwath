@@ -5,7 +5,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [dependencies]
-python = ">=3.9,<3.12"
+python = ">=3.11"
 pip = "*"
 
 [pypi-dependencies]
@@ -45,7 +45,7 @@ snakemake = "*"
 stackstac = "*"
 statsmodels = "*"
 tqdm = "*"
-xarray = "<2025.12"
+xarray = ">=2025.3,<2025.12"
 xpystac = ">=0.4,<0.5"
 zarr = "*"
 

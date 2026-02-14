@@ -13,6 +13,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "License :: OSI Approved :: MIT License",
 ]
@@ -43,7 +46,7 @@ dependencies = [
     "statsmodels",
     "tables",
     "tqdm",
-    "xarray<2025.12",
+    "xarray>=2025.3,<2025.12",
     "zarr"
 ]
 
@@ -55,7 +58,7 @@ file = "LICENSE.txt"
 dev = ["flit", "pip-tools", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
-production = ["xarray[accel]<2025.12", "dask[distributed]"]
+production = ["xarray[accel]>=2025.3,<2025.12", "dask[distributed]"]
 all = ["cryoswath[dev,docs,notebooks,production]"]
 
 [project.urls]

@@ -1,0 +1,95 @@
+name: Dependency Matrix
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  compatibility:
+    name: "${{ matrix.name }} (py${{ matrix.python }}, xr=${{ matrix.xarray }})"
+    continue-on-error: ${{ matrix.experimental }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: min-supported
+            python: "3.11"
+            xarray: "2025.3.*"
+            experimental: false
+          - name: max-supported
+            python: "3.12"
+            xarray: "2025.11.*"
+            experimental: false
+          - name: py313-observe
+            python: "3.13"
+            xarray: "2025.11.*"
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "xarray==${{ matrix.xarray }}"
+          python -m pip install --editable .
+          python -m pip check
+
+      - name: Smoke test imports
+        run: |
+          python - <<'PY'
+          import platform
+          import xarray as xr
+          import cryoswath
+          from cryoswath import l1b
+          print("python:", platform.python_version())
+          print("xarray:", xr.__version__)
+          print("cryoswath:", cryoswath.__version__)
+          print("l1b module:", l1b.__name__)
+          PY
+
+  latest-canary:
+    name: latest-canary (non-blocking)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install baseline project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --editable .
+
+      - name: Upgrade xarray beyond pinned range (canary)
+        run: |
+          python -m pip install --upgrade xarray
+
+      - name: Canary smoke test
+        run: |
+          python - <<'PY'
+          import platform
+          import xarray as xr
+          import cryoswath
+          from cryoswath import l1b
+          print("python:", platform.python_version())
+          print("xarray:", xr.__version__)
+          print("cryoswath:", cryoswath.__version__)
+          print("l1b module:", l1b.__name__)
+          PY

@@ -27,7 +27,7 @@ scipy
 shapely
 statsmodels
 tqdm
-xarray<2025.12
+xarray>=2025.3,<2025.12
 
 ## CryoSwath optional #################################################
 # bottleneck # for numpy: speeds up NaN-skipping and rolling window aggregations by a large factor
