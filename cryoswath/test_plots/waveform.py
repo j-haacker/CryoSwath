@@ -220,12 +220,12 @@ def dem_transect(waveform, *,
     trans_4326_to_dem_crs = get_4326_to_dem_Transformer(dem_reader.rio.crs if isinstance(dem_reader, xr.DataArray) else dem_reader.crs)
     sampling_dist = np.arange(-30000, 30000+1, 100)
     num_samples = len(sampling_dist)
-    lats, lons = WGS84_ellpsoid.fwd(lons=[waveform.lon_20_ku]*num_samples,
-                                    lats=[waveform.lat_20_ku]*num_samples,
-                                    az=[waveform.azimuth+90]*num_samples,
+    lats, lons = WGS84_ellpsoid.fwd(lons=[waveform.lon_20_ku.item()]*num_samples,
+                                    lats=[waveform.lat_20_ku.item()]*num_samples,
+                                    az=[waveform.azimuth.item()+90]*num_samples,
                                     dist=sampling_dist)[1::-1]
     xs, ys = trans_4326_to_dem_crs.transform(lats, lons)
-    ref_elevs = np.fromiter(dem_reader.sample([(x, y) for x, y in zip(xs, ys)]), "float32")
+    ref_elevs = np.fromiter((vals[0] for vals in dem_reader.sample([(x, y) for x, y in zip(xs, ys)])), "float32")
     ref_elevs = np.where(ref_elevs!=dem_reader.nodata, ref_elevs, np.nan)
     ax.fill_between(sampling_dist, ref_elevs, **line_properties["dem"], label="DEM")
     h_dem = ax.get_legend_handles_labels()[0][0]
