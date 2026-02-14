@@ -1,19 +1,17 @@
-"""CryoSat L1b to L2 processing tutorial"""
+"""CryoSat L1b to L2 processing tutorial."""
 
-from cryoswath.l1b import (
-    append_best_fit_phase_index,
+from st_l1_aux import (
     append_ambiguous_reference_elevation,
+    append_best_fit_phase_index,
+    dem_transect,
+    download_dem,
     read_esa_l1b,
     to_l2,
 )
-from cryoswath.misc import download_dem
-from cryoswath.test_plots.waveform import dem_transect
-import geopandas as gpd
 import matplotlib.pyplot as plt
 import mpld3
 from pathlib import Path
 import requests
-from shapely import box
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -27,7 +25,7 @@ def _process(coh, pwr, poca_upper, swath_start_window, smooth):
         with open("CS_LTA__SIR_SIN_1B_20191206T003639_20191206T003855_E001.nc", "wb") as f:
             f.write(response.content)
     if not Path("arcticdem-mosaics-v4.1-32m.zarr").exists():
-        download_dem(gpd.GeoSeries(box(586700.0, -2197200.0, 694900.0, -2138600.0), crs=3413))
+        download_dem((586700.0, -2197200.0, 694900.0, -2138600.0), crs=3413)
     ds = (
         read_esa_l1b(
             "CS_LTA__SIR_SIN_1B_20191206T003639_20191206T003855_E001.nc",
