@@ -135,6 +135,38 @@ def _normalize_initial_dem_array(da: xr.DataArray) -> xr.DataArray:
         clean = clean.assign_attrs(encoding={"_FillValue": nodata})
     return clean
 
+
+def _compute_track_azimuth(ds: xr.Dataset) -> np.ndarray:
+    """Compute along-track azimuth robustly, even for short selections."""
+    n_time = len(ds.time_20_ku)
+    if n_time == 0:
+        return np.empty(0, dtype="float64")
+    if n_time == 1:
+        return np.zeros(1, dtype="float64")
+
+    bearings = np.asarray(
+        WGS84_ellpsoid.inv(
+            lats1=ds.lat_20_ku[:-1],
+            lons1=ds.lon_20_ku[:-1],
+            lats2=ds.lat_20_ku[1:],
+            lons2=ds.lon_20_ku[1:],
+        )[0],
+        dtype="float64",
+    )
+    x = np.arange(bearings.size, dtype="float64")
+    valid = np.isfinite(bearings)
+    if valid.sum() == 0:
+        return np.zeros(n_time, dtype="float64")
+    if valid.sum() == 1:
+        return np.full(n_time, float(bearings[valid][0] % 360), dtype="float64")
+
+    x = x[valid]
+    bearings = bearings[valid]
+    degree = int(min(3, valid.sum() - 1))
+    poly3fit_params = np.polyfit(x, bearings, degree)
+    azimuth = np.poly1d(poly3fit_params)(np.arange(n_time, dtype="float64")) % 360
+    return np.asarray(azimuth, dtype="float64")
+
 def get_dem_reader(data: any = None):
     """Determines which DEM to use based on location or filename.
     
@@ -371,6 +403,10 @@ def read_esa_l1b(
     ds = xr.open_dataset(l1b_filename)
     ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))
 
+    # Calculate azimuth bearing before optional subsetting so single-waveform
+    # selections still get a valid local track direction.
+    ds = ds.assign(azimuth=("time_20_ku", _compute_track_azimuth(ds)))
+
     # Handle waveform selection exactly as in original cryoswath
     if waveform_selection is not None:
         if (
@@ -386,24 +422,6 @@ def read_esa_l1b(
             ds = ds.isel(time_20_ku=waveform_selection)
         else:
             ds = ds.sel(time_20_ku=waveform_selection)
-    
-    # Calculate azimuth bearing
-    poly3fit_params = np.polyfit(
-        np.arange(len(ds.time_20_ku) - 1),
-        WGS84_ellpsoid.inv(
-            lats1=ds.lat_20_ku[:-1],
-            lons1=ds.lon_20_ku[:-1],
-            lats2=ds.lat_20_ku[1:],
-            lons2=ds.lon_20_ku[1:],
-        )[0],
-        3,
-    )
-    ds = ds.assign(
-        azimuth=(
-            "time_20_ku",
-            np.poly1d(poly3fit_params)(np.arange(len(ds.time_20_ku) - 0.5)) % 360,
-        )
-    )
 
     # Power waveform calculation
     ds["power_waveform_20_ku"] = (
