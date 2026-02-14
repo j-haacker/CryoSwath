@@ -4,6 +4,7 @@ channels:
 dependencies:
   - python >=3.11,<3.12
   - h5netcdf
+  - h5py
   - matplotlib-base
   - mpld3
   - numpy >=1.23,<3
