@@ -1,7 +1,0 @@
-build-essential
-gdal-bin
-libgdal-dev
-libgeos-dev
-libproj-dev
-pkg-config
-python3-dev
