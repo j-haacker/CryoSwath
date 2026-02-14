@@ -43,7 +43,7 @@ dependencies = [
     "statsmodels",
     "tables",
     "tqdm",
-    "xarray",
+    "xarray<2025.12",
     "zarr"
 ]
 
@@ -55,7 +55,7 @@ file = "LICENSE.txt"
 dev = ["flit", "pip-tools", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
-production = ["xarray[accel]", "dask[distributed]"]
+production = ["xarray[accel]<2025.12", "dask[distributed]"]
 all = ["cryoswath[dev,docs,notebooks,production]"]
 
 [project.urls]
