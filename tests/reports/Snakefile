@@ -1,0 +1,46 @@
+from pathlib import Path
+
+from snakemake.exceptions import WorkflowError
+
+REPORT_DIR = Path(workflow.basedir).resolve()
+CURRENT_DIR = Path.cwd().resolve()
+NOTEBOOK_STEMS = sorted(
+    path.name.removesuffix(".py.ipynb")
+    for path in REPORT_DIR.glob("*.py.ipynb")
+    if not path.name.startswith("0-l4_")
+)
+
+if CURRENT_DIR != REPORT_DIR:
+    raise WorkflowError(
+        f"Run snakemake from {REPORT_DIR} (current directory: {CURRENT_DIR})"
+    )
+
+if not NOTEBOOK_STEMS:
+    raise WorkflowError(f"No report notebooks found in {REPORT_DIR}")
+
+
+rule all:
+    input:
+        expand(".snakemake/notebooks/{notebook}.done", notebook=NOTEBOOK_STEMS)
+
+
+rule prepare_artifact_dirs:
+    output:
+        touch(".snakemake/artifacts/.prepared"),
+    shell:
+        "mkdir -p artifacts/benchmarks artifacts/processed_notebooks .snakemake/notebooks && touch {output}"
+
+
+rule run_report_notebook:
+    input:
+        prepared=".snakemake/artifacts/.prepared",
+    output:
+        touch(".snakemake/notebooks/{notebook}.done"),
+    conda:
+        "cryoswath-test.yaml"
+    benchmark:
+        "artifacts/benchmarks/{notebook}.tsv"
+    log:
+        notebook="artifacts/processed_notebooks/{notebook}.py.ipynb"
+    notebook:
+        "{wildcards.notebook}.py.ipynb"
