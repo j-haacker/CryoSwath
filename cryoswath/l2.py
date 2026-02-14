@@ -10,7 +10,7 @@ __all__ = [
 
 import geopandas as gpd
 import h5py
-from multiprocessing import Pool
+import multiprocessing as mp
 import numpy as np
 import os
 import pandas as pd
@@ -39,6 +39,11 @@ from cryoswath.misc import (
     xycut,
 )
 from cryoswath import l1b
+
+
+def _get_parallel_pool():
+    """Return a spawn-based pool constructor for multiprocessing."""
+    return mp.get_context("spawn").Pool
 
 
 def from_id(
@@ -209,7 +214,7 @@ def from_id(
 
         for batch in batched(current_track_indices, cores):
             if cores > 1 and len(batch) > 1:
-                with Pool(processes=cores) as p:
+                with _get_parallel_pool()(processes=cores) as p:
                     # function is defined at the bottom of this module
                     collective_swath_poca_list.extend(
                         p.starmap(
