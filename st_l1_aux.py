@@ -1,6 +1,7 @@
 """CryoSat L1b to L2 processing auxiliary functions"""
 
 import fnmatch
+import json
 import numpy as np
 import rioxarray
 import warnings
@@ -19,6 +20,38 @@ import glob
 
 # Define DEM path
 dem_path = Path('data/auxiliary/DEM')
+
+
+def _json_safe_attr(value):
+    """Convert xarray attrs to JSON-serializable values for zarr metadata."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, set):
+        return sorted(_json_safe_attr(v) for v in value)
+    if isinstance(value, tuple):
+        return [_json_safe_attr(v) for v in value]
+    if isinstance(value, list):
+        return [_json_safe_attr(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_attr(v) for k, v in value.items()}
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return str(value)
+
+
+def _sanitize_attrs_for_zarr(ds: xr.Dataset) -> xr.Dataset:
+    """Sanitize all attrs in dataset variables/coords before writing to zarr."""
+    ds = ds.copy(deep=False)
+    ds.attrs = {str(k): _json_safe_attr(v) for k, v in ds.attrs.items()}
+    for name in ds.variables:
+        ds[name].attrs = {
+            str(k): _json_safe_attr(v) for k, v in ds[name].attrs.items()
+        }
+    return ds
 
 def get_dem_reader(data: any = None):
     """Determines which DEM to use based on location or filename.
@@ -209,15 +242,19 @@ def download_dem(bounds, *, crs=3413, provider: Literal["PGC"] = "PGC"):
     this_dem_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not this_dem_path.exists():
-        (  # init dem store
-            xr.full_like(xr.open_dataset(items[0], engine="stac", epsg=3413).load().squeeze(), np.nan)
+        initial = (  # init dem store
+            xr.full_like(
+                xr.open_dataset(items[0], engine="stac", epsg=3413).load().squeeze(),
+                np.nan,
+            )
             .reindex({xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100) for xy in ["x", "y"]})
             .map(lambda da: da.drop_attrs().astype(da.attrs["data_type"]).assign_attrs(encoding={"_FillValue": da.attrs["nodata"]}))
             .drop_attrs(deep=False)
             .drop_vars(["time", "id"])
             .rio.write_crs(3413)
-            .to_zarr(this_dem_path, mode="w")
         )
+        initial = _sanitize_attrs_for_zarr(initial)
+        initial.to_zarr(this_dem_path, mode="w")
 
     for item in items:
         parent = xr.open_zarr(this_dem_path, decode_coords="all", mask_and_scale=True)
@@ -227,7 +264,9 @@ def download_dem(bounds, *, crs=3413, provider: Literal["PGC"] = "PGC"):
         add = ds.map(lambda da: da.rio.reproject_match(excerpt, resampling=Resampling.average).astype(da.attrs["data_type"]))
         add = add.map(lambda da: da.where(da != da.attrs["_FillValue"]))
         add = add.map(lambda da: da.fillna(excerpt[da.name]))
-        add.drop_attrs().drop_vars(['time', 'id', 'spatial_ref']).to_zarr(this_dem_path, region="auto")
+        add = add.drop_attrs().drop_vars(['time', 'id', 'spatial_ref'])
+        add = _sanitize_attrs_for_zarr(add)
+        add.to_zarr(this_dem_path, region="auto")
 
 def read_esa_l1b(
     l1b_filename: str,
@@ -728,21 +767,35 @@ def dem_transect(waveform, ax=None, selected_phase_only=True, dem_file_name_or_p
 
     # Get DEM sampling along transect
     dem_reader = get_dem_reader((waveform if dem_file_name_or_path is None else dem_file_name_or_path))
-    trans_4326_to_dem_crs = Transformer.from_crs("EPSG:4326", dem_reader.rio.crs)
+    dem_crs = dem_reader.rio.crs if isinstance(dem_reader, xr.DataArray) else dem_reader.crs
+    trans_4326_to_dem_crs = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
     sampling_dist = np.arange(-30000, 30000+1, 100)
     num_samples = len(sampling_dist)
     # Extract scalar values for the first point
     lon = float(waveform.lon_20_ku[0])
     lat = float(waveform.lat_20_ku[0])
     az = float(waveform.azimuth[0])
-    lats, lons = WGS84_ellpsoid.fwd(lons=[lon]*num_samples,
-                                    lats=[lat]*num_samples,
-                                    az=[az+90]*num_samples,
-                                    dist=sampling_dist)[1::-1]
-    xs, ys = trans_4326_to_dem_crs.transform(lats, lons)
-    ref_elevs = np.fromiter([dem_reader.sel(x=x, y=y, method="nearest") for x, y in zip(xs, ys)], "float32")
-    if "_FillValue" in dem_reader.attrs:
-        ref_elevs = np.where(ref_elevs!=dem_reader.attrs["_FillValue"], ref_elevs, np.nan)
+    lons, lats = WGS84_ellpsoid.fwd(
+        lons=[lon] * num_samples,
+        lats=[lat] * num_samples,
+        az=[az + 90] * num_samples,
+        dist=sampling_dist,
+    )[:2]
+    xs, ys = trans_4326_to_dem_crs.transform(lons, lats)
+    if isinstance(dem_reader, xr.DataArray):
+        ref_elevs = np.fromiter(
+            (dem_reader.sel(x=x, y=y, method="nearest").item() for x, y in zip(xs, ys)),
+            "float32",
+        )
+        fill_value = dem_reader.attrs.get("_FillValue")
+        if fill_value is not None:
+            ref_elevs = np.where(ref_elevs != fill_value, ref_elevs, np.nan)
+    else:
+        ref_elevs = np.fromiter(
+            (vals[0] for vals in dem_reader.sample([(x, y) for x, y in zip(xs, ys)])),
+            "float32",
+        )
+        ref_elevs = np.where(ref_elevs != dem_reader.nodata, ref_elevs, np.nan)
     ax.fill_between(sampling_dist, ref_elevs, **line_properties["dem"], label="DEM")
     h_dem = ax.get_legend_handles_labels()[0][0]
 

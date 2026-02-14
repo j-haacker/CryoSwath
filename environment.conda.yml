@@ -15,6 +15,6 @@ dependencies:
   - rioxarray
   - scipy
   - streamlit >=1.42
-  - xarray
+  - xarray <2025.12
   - xpystac >=0.4,<0.5
   - zarr
