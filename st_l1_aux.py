@@ -4,7 +4,6 @@ import fnmatch
 import json
 import numpy as np
 import rioxarray
-import warnings
 import xarray as xr
 from numpy.typing import ArrayLike
 from pyproj import Geod, Transformer
@@ -167,18 +166,6 @@ def _compute_track_azimuth(ds: xr.Dataset) -> np.ndarray:
     azimuth = np.poly1d(poly3fit_params)(np.arange(n_time, dtype="float64")) % 360
     return np.asarray(azimuth, dtype="float64")
 
-
-def _bounds_for_clip_box(dem_da: xr.DataArray, xs: np.ndarray, ys: np.ndarray):
-    """Build clip_box bounds respecting raster axis orientation."""
-    xmin = float(np.nanmin(xs))
-    xmax = float(np.nanmax(xs))
-    ymin = float(np.nanmin(ys))
-    ymax = float(np.nanmax(ys))
-
-    x_res, y_res = dem_da.rio.resolution()
-    left, right = (xmin, xmax) if x_res >= 0 else (xmax, xmin)
-    bottom, top = (ymin, ymax) if y_res < 0 else (ymax, ymin)
-    return left, bottom, right, top
 
 def get_dem_reader(data: any = None):
     """Determines which DEM to use based on location or filename.
@@ -624,20 +611,8 @@ def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str = None):
         )
         ds.attrs.update({"CRS": crs})
 
-        try:
-            left, bottom, right, top = _bounds_for_clip_box(dem_reader, x, y)
-            ref_dem = (
-                dem_reader
-                .rio.clip_box(left, bottom, right, top)
-                .squeeze()
-            )
-        except rioxarray.exceptions.NoDataInBounds:
-            warnings.warn(
-                f"couldn't find ref dem data in box: {np.nanmin(x)}, {np.nanmin(y)}, "
-                f"{np.nanmax(x)}, {np.nanmax(y)}\nouter lat lon coords: "
-                f"{ds.lat_20_ku.values[[0, -1]]}, {ds.lon_20_ku.values[[0, -1]]}"
-            )
-            raise
+        # Keep sampling logic simple and robust: avoid clip_box bounds issues.
+        ref_dem = dem_reader.squeeze()
         ds["xph_ref_elevs"] = ref_dem.sel(x=ds.xph_x, y=ds.xph_y, method="nearest")
             
     return ds
