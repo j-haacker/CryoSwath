@@ -167,6 +167,19 @@ def _compute_track_azimuth(ds: xr.Dataset) -> np.ndarray:
     azimuth = np.poly1d(poly3fit_params)(np.arange(n_time, dtype="float64")) % 360
     return np.asarray(azimuth, dtype="float64")
 
+
+def _bounds_for_clip_box(dem_da: xr.DataArray, xs: np.ndarray, ys: np.ndarray):
+    """Build clip_box bounds respecting raster axis orientation."""
+    xmin = float(np.nanmin(xs))
+    xmax = float(np.nanmax(xs))
+    ymin = float(np.nanmin(ys))
+    ymax = float(np.nanmax(ys))
+
+    x_res, y_res = dem_da.rio.resolution()
+    left, right = (xmin, xmax) if x_res >= 0 else (xmax, xmin)
+    bottom, top = (ymin, ymax) if y_res < 0 else (ymax, ymin)
+    return left, bottom, right, top
+
 def get_dem_reader(data: any = None):
     """Determines which DEM to use based on location or filename.
     
@@ -594,8 +607,16 @@ def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str = None):
         else:
             crs = dem_reader.crs
             dem_reader = rioxarray.open_rasterio(dem_reader)
-        trans_4326_to_dem_crs = Transformer.from_crs("EPSG:4326", crs)
-        x, y = trans_4326_to_dem_crs.transform(ds.xph_lats, ds.xph_lons)
+        trans_4326_to_dem_crs = Transformer.from_crs(
+            "EPSG:4326", crs, always_xy=True
+        )
+        x, y = trans_4326_to_dem_crs.transform(
+            np.asarray(ds.xph_lons), np.asarray(ds.xph_lats)
+        )
+        x = np.asarray(x)
+        y = np.asarray(y)
+        if not (np.isfinite(x).any() and np.isfinite(y).any()):
+            raise ValueError("Ambiguous reflection coordinates could not be transformed.")
         
         ds = ds.assign(
             xph_x=(("time_20_ku", "ns_20_ku", "phase_wrap_factor"), x),
@@ -604,9 +625,10 @@ def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str = None):
         ds.attrs.update({"CRS": crs})
 
         try:
+            left, bottom, right, top = _bounds_for_clip_box(dem_reader, x, y)
             ref_dem = (
                 dem_reader
-                .rio.clip_box(np.nanmin(x), np.nanmin(y), np.nanmax(x), np.nanmax(y))
+                .rio.clip_box(left, bottom, right, top)
                 .squeeze()
             )
         except rioxarray.exceptions.NoDataInBounds:
