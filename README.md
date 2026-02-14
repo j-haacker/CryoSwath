@@ -20,7 +20,7 @@ from waveform-level processing to gridded elevation products.
 
 ## Important notes
 
-- Install CryoSwath in a dedicated environment (`conda`/`mamba`,
+- Install CryoSwath in a dedicated environment (`pixi`, `conda`/`mamba`,
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
 - Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
@@ -41,14 +41,29 @@ from waveform-level processing to gridded elevation products.
 For full setup details, see the docs:
 [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
 
-### Option 1: install from conda-forge
+### Option 1: reproducible setup with pixi (recommended)
+
+```sh
+git clone https://github.com/j-haacker/cryoswath.git
+cd cryoswath
+pixi install
+pixi run -e test pytest -q tests/test_l1b.py
+```
+
+For an interactive shell in the project environment:
+
+```sh
+pixi shell -e test
+```
+
+### Option 2: install from conda-forge
 
 ```sh
 mamba create -n cryoswath conda-forge::cryoswath
 mamba activate cryoswath
 ```
 
-### Option 2: editable install from source
+### Option 3: editable install from source
 
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git

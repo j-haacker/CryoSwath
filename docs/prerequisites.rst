@@ -5,13 +5,29 @@ Installation
 ------------
 
 The recommended setup for development and reproducible workflows is an
-isolated Python environment (``conda/mamba``, ``venv``, ``uv``, etc.).
+isolated Python environment (``pixi``, ``conda/mamba``, ``venv``, ``uv``, etc.).
 
 .. warning::
    CryoSwath has a broad dependency tree. To avoid future dependency
    incompatibilities, install it in a dedicated environment.
 
-Install from source:
+Recommended: pixi-managed environment
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: sh
+
+   git clone https://github.com/j-haacker/cryoswath.git
+   cd cryoswath
+   pixi install
+   pixi run -e test pytest -q tests/test_l1b.py
+
+For interactive work inside the environment:
+
+.. code-block:: sh
+
+   pixi shell -e test
+
+Alternative: install from source
 
 .. code-block:: sh
 

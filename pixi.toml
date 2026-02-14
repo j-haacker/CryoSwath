@@ -5,7 +5,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [dependencies]
-python = ">=3.11"
+python = ">=3.11,<3.14"
 pip = "*"
 
 [pypi-dependencies]
@@ -57,6 +57,7 @@ sphinx = "*"
 pydata-sphinx-theme = "*"
 
 [tasks]
+test-unit = "pytest -q tests/test_l1b.py"
 test-notebooks = "cd tests/reports && PYTHONPATH=../.. snakemake --snakefile Snakefile --cores 1 --use-conda"
 sync-test-feature = "pixi import --format conda-env --feature test --environment test environment.yml"
 docs-build = "python -m sphinx -b html docs docs/_build/html"
