@@ -63,7 +63,7 @@ you'll clone into a directory named `cryoswath`.
 
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git cryoswath
-mamba env create -n $env_name -f cryoswath/environment.yml
+mamba env create -n $env_name -f cryoswath/environment.conda.yml
 mamba activate $env_name
 mamba install pip
 pip install --editable cryoswath
