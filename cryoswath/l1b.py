@@ -84,6 +84,11 @@ from cryoswath.l2 import from_processed_l1b as l2_from_processed_l1b
 # requires implicitly rasterio(?), flox(?), dask(?)
 
 
+def _status(message: str) -> None:
+    """Print one standardized user-facing status line."""
+    print(f"[l1b] {message}")
+
+
 def if_not_empty(func):
     """Skip processing helpers for tracks without waveforms."""
 
@@ -1160,23 +1165,16 @@ def download_wrapper(
         stop_event.set()
         with task_queue.mutex:
             task_queue.queue.clear()
-        print(
-            "Aborting download because error occured. This may have been an interrupt."
-        )
+        _status("Aborting download because an error occurred (possibly an interrupt).")
         for i in range(3):
             time.sleep(10)
             if task_queue.empty():
-                print(
-                    "Closed all download threads. Likely not all files were downloaded."
-                )
+                _status("Closed download threads. Some files may still be missing.")
                 return 1
-        print(
-            "Forcibly shutting down all download threads. In worst case, leads to "
-            "fractured nc-files."
-        )
+        _status("Forcing download thread shutdown. Partially written NetCDF files may exist.")
         return 2
     else:
-        print("All downloads finished.")
+        _status("All downloads finished.")
         return 0
 
 
@@ -1188,7 +1186,7 @@ def download_files(
     """Download all missing monthly L1b files for ``track_idx``."""
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
     for year_month_str in year_month_str_list:
-        print("scanning", year_month_str, end=" ")
+        _status(f"Scanning {year_month_str} for missing files.")
         if stop_event is not None and stop_event.is_set():
             return
         try:
@@ -1218,16 +1216,19 @@ def download_files(
                     local_path = os.path.join(l1b_path, year_month_str, remote_file)
                     try:
                         with open(local_path, "wb") as local_file:
-                            print("downloading", remote_file)
+                            _status(f"Downloading {remote_file}.")
                             # [enhancement] use `binary_cache` as buffer instead of
                             # removing on fail
                             ftp.retrbinary("RETR " + remote_file, local_file.write)
                     except Exception:
-                        print("download failed for", remote_file)
+                        _status(f"Download failed for {remote_file}.")
                         if os.path.isfile(local_path):
                             os.remove(local_path)
                         raise
-    print("finished downloading tracks for months:\n", year_month_str_list)
+    _status(
+        "Finished downloading tracks for months: "
+        + ", ".join(str(x) for x in year_month_str_list)
+    )
 
 
 def download_single_file(track_id: str) -> str:
@@ -1248,26 +1249,24 @@ def download_single_file(track_id: str) -> str:
                         local_path = os.path.join(local_path, remote_file)
                         try:
                             with open(local_path, "wb") as local_file:
-                                print("downloading " + remote_file)
+                                _status(f"Downloading {remote_file}.")
                                 ftp.retrbinary("RETR " + remote_file, local_file.write)
                                 return local_path
                         except Exception:
-                            print("download failed for", remote_file)
+                            _status(f"Download failed for {remote_file}.")
                             if os.path.isfile(local_path):
                                 os.remove(local_path)
                             raise
-                print(
-                    f"File for id {track_id} couldn't be found in remote dir "
-                    f"{ftp.pwd()}."
+                _status(
+                    f"No remote file found for track id {track_id} in directory {ftp.pwd()}."
                 )
                 # ! should this raise an error?
                 raise FileNotFoundError()
         except (ftplib.error_temp, ftplib.error_perm, KeyError) as err:
             if isinstance(err, ftplib.error_temp):
-                print(
-                    str(err),
-                    f"raised. Retrying to download file with id {track_id} in 10 s for the "
-                    f"{11-retries}. time.",
+                _status(
+                    f"{err} raised. Retrying track id {track_id} in 10 s "
+                    f"(attempt {11 - retries}/10)."
                 )
                 time.sleep(10)
                 retries -= 1
