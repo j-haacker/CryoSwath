@@ -55,6 +55,21 @@ def _ensure_odd_window_ntimesteps(window_ntimesteps: int) -> int:
     return window_ntimesteps
 
 
+def _ensure_contiguous_time_coord(data: xr.Dataset, timestep_months: int) -> xr.Dataset:
+    """Reindex to a contiguous monthly timeline for region writes."""
+    if "time" not in data.coords or data.sizes.get("time", 0) <= 1:
+        return data
+    time_index = data.indexes["time"].sort_values()
+    full_time_index = pd.date_range(
+        time_index.min(),
+        time_index.max(),
+        freq=f"{timestep_months}MS",
+    )
+    if full_time_index.equals(time_index):
+        return data
+    return data.reindex(time=full_time_index)
+
+
 def cache_l2_data(
     region_of_interest: str | shapely.Polygon,
     start_datetime: str | pd.Timestamp,
@@ -568,12 +583,13 @@ def build_dataset(
             )
 
             try:
-                (
+                l3_chunk = (
                     dataframe_to_rioxr(l3_data, crs)
                     .rio.clip([region_of_interest])
                     .drop_vars(["spatial_ref"])
-                    .to_zarr(outfilepath, region="auto")
-                )  # [["_median", "_iqr", "_count"]]
+                )
+                l3_chunk = _ensure_contiguous_time_coord(l3_chunk, timestep_months)
+                l3_chunk.to_zarr(outfilepath, region="auto")  # [["_median", "_iqr", "_count"]]
             except Exception as err:
                 print("\n")
                 warnings.warn(
