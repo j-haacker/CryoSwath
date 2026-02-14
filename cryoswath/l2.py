@@ -442,7 +442,7 @@ def from_processed_l1b(
         # ! empty GeoDataFrames can't have a CRS
         # super().__init__(crs=crs, **kwargs)
         return empty_GeoDataFrame
-    tmp = l1b_data.to_dataframe().dropna(axis=0, how="any")
+    tmp = l1b_data.rename(time="_time").assign(time=l1b_data.time).to_dataframe().dropna(axis=0, how="any")
     if max_elev_diff is not None and "h_diff" in tmp:
         tmp = limit_filter(tmp, "h_diff", max_elev_diff)
         if tmp.empty:
