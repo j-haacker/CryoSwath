@@ -41,6 +41,21 @@ from cryoswath.misc import (
 from cryoswath import l1b
 
 
+def _detect_available_cores() -> int:
+    """Detect a suitable default number of worker processes."""
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except (AttributeError, NotImplementedError, OSError):
+        cores = None
+    if isinstance(cores, int) and cores > 0:
+        return cores
+    cores = os.cpu_count()
+    if isinstance(cores, int) and cores > 0:
+        return cores
+    warnings.warn('Failed to find number of CPU cores. Set manually using "cores=".')
+    return 1
+
+
 def _get_parallel_pool():
     """Return a spawn-based pool constructor for multiprocessing."""
     return mp.get_context("spawn").Pool
@@ -76,7 +91,7 @@ def from_id(
             :func:`cryoswath.l3.build_dataset`.
         cores (int, optional): Number of CPU cores to use for parallel processing.
             If not specified, the number of available cores will be detected
-            automatically (UNIX systems only).
+            automatically.
         **kwargs: Additional keyword arguments passed to processing functions.
 
     Returns:
@@ -104,13 +119,7 @@ def from_id(
     # if ESA complains there were too many parallel ftp connections, reduce
     # the number of cores. 8 cores worked for me, 16 was too many
     if cores is None:
-        try:
-            cores = len(os.sched_getaffinity(0))
-        except AttributeError:
-            warnings.warn(
-                'Failed to find number of CPU cores. Set manually using "cores=".'
-            )
-            cores = 1
+        cores = _detect_available_cores()
     if not isinstance(track_idx, pd.DatetimeIndex):
         track_idx = pd.DatetimeIndex(
             track_idx if isinstance(track_idx, list) else [track_idx]
