@@ -53,6 +53,88 @@ def _sanitize_attrs_for_zarr(ds: xr.Dataset) -> xr.Dataset:
         }
     return ds
 
+
+def _is_nan_scalar(value) -> bool:
+    try:
+        return bool(np.isnan(value))
+    except Exception:
+        return False
+
+
+def _extract_nodata_values(da: xr.DataArray) -> list:
+    """Collect nodata/fill-value candidates from attrs/encoding/rio metadata."""
+    keys = ("_FillValue", "fill_value", "nodata")
+    out = []
+
+    for key in keys:
+        if key in da.attrs and da.attrs[key] is not None:
+            out.append(da.attrs[key])
+
+    encoding_attr = da.attrs.get("encoding")
+    if isinstance(encoding_attr, dict):
+        for key in keys:
+            if key in encoding_attr and encoding_attr[key] is not None:
+                out.append(encoding_attr[key])
+
+    if isinstance(da.encoding, dict):
+        for key in keys:
+            if key in da.encoding and da.encoding[key] is not None:
+                out.append(da.encoding[key])
+
+    try:
+        rio_nodata = da.rio.nodata
+        if rio_nodata is not None:
+            out.append(rio_nodata)
+    except Exception:
+        pass
+
+    flat = []
+    for val in out:
+        if isinstance(val, (list, tuple, set)):
+            flat.extend(val)
+        else:
+            flat.append(val)
+
+    deduped = []
+    seen = set()
+    for val in flat:
+        if val is None:
+            continue
+        key = ("nan",) if _is_nan_scalar(val) else (type(val).__name__, repr(val))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(val)
+    return deduped
+
+
+def _primary_nodata(da: xr.DataArray):
+    vals = _extract_nodata_values(da)
+    return vals[0] if vals else None
+
+
+def _mask_nodata(da: xr.DataArray) -> xr.DataArray:
+    masked = da
+    for nodata in _extract_nodata_values(da):
+        if _is_nan_scalar(nodata):
+            try:
+                masked = masked.where(~np.isnan(masked))
+            except Exception:
+                continue
+        else:
+            masked = masked.where(masked != nodata)
+    return masked
+
+
+def _normalize_initial_dem_array(da: xr.DataArray) -> xr.DataArray:
+    """Prepare DEM arrays for zarr init with robust dtype/nodata handling."""
+    data_type = da.attrs.get("data_type", da.dtype)
+    clean = da.drop_attrs().astype(data_type)
+    nodata = _primary_nodata(da)
+    if nodata is not None:
+        clean = clean.assign_attrs(encoding={"_FillValue": nodata})
+    return clean
+
 def get_dem_reader(data: any = None):
     """Determines which DEM to use based on location or filename.
     
@@ -248,7 +330,7 @@ def download_dem(bounds, *, crs=3413, provider: Literal["PGC"] = "PGC"):
                 np.nan,
             )
             .reindex({xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100) for xy in ["x", "y"]})
-            .map(lambda da: da.drop_attrs().astype(da.attrs["data_type"]).assign_attrs(encoding={"_FillValue": da.attrs["nodata"]}))
+            .map(_normalize_initial_dem_array)
             .drop_attrs(deep=False)
             .drop_vars(["time", "id"])
             .rio.write_crs(3413)
@@ -262,7 +344,7 @@ def download_dem(bounds, *, crs=3413, provider: Literal["PGC"] = "PGC"):
         x0, y0, x1, y1 = ds.rio.bounds()
         excerpt = parent.pipe(sel_chunk_range, x=[x0, x1], y=[y0, y1]).load()
         add = ds.map(lambda da: da.rio.reproject_match(excerpt, resampling=Resampling.average).astype(da.attrs["data_type"]))
-        add = add.map(lambda da: da.where(da != da.attrs["_FillValue"]))
+        add = add.map(_mask_nodata)
         add = add.map(lambda da: da.fillna(excerpt[da.name]))
         add = add.drop_attrs().drop_vars(['time', 'id', 'spatial_ref'])
         add = _sanitize_attrs_for_zarr(add)
