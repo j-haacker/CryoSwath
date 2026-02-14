@@ -22,6 +22,7 @@ Project repository:
    tests
    build_and_publish
    api_overview
+   mission_portability
 
 .. toctree::
    :maxdepth: 1
