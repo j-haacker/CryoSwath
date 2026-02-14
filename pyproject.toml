@@ -33,6 +33,7 @@ dependencies = [
     "pyogrio",
     "pyproj",
     "python-dateutil",
+    "requests",
     "rasterio",
     "rioxarray",
     "scikit-learn",
@@ -43,10 +44,10 @@ dependencies = [
     "tqdm",
     "xarray >=2025.5",
     "zarr",
-    "xpystac",
+    "xpystac >=0.4,<0.5",
     "stackstac",
-    "pystac_client",
-    "streamlit",
+    "pystac-client",
+    "streamlit >=1.42",
 ]
 
 [project.license]

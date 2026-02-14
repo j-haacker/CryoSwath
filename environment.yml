@@ -1,19 +1,19 @@
 channels:
   - conda-forge
+  - nodefaults
 dependencies:
+  - python >=3.11,<3.12
   - bottleneck
   - dask
   - defusedxml
-  - gdal
   - geopandas >=1.0.1
-  - gitpython
   - h5netcdf
   - h5py
-  - matplotlib
+  - matplotlib-base
   - mpld3
-  - numpy
+  - numpy >=1.23,<3
   - packaging
-  - pandas
+  - pandas >=2.2,<3
   - pyarrow
   - pyogrio
   - pyproj
@@ -21,14 +21,13 @@ dependencies:
   - pytables
   - python-dateutil
   - rasterio
+  - requests
   - rioxarray
   - scikit-learn
   - scipy
   - shapely
-  - stackstac
-  - statsmodels
-  - streamlit
+  - streamlit >=1.42
   - tqdm
   - xarray
-  - xpystac
+  - xpystac >=0.4,<0.5
   - zarr
