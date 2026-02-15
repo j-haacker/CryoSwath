@@ -68,6 +68,7 @@ Issues = "https://github.com/j-haacker/cryoswath/issues"
 
 [project.scripts]
 cryoswath-init = "cryoswath.misc:init_project"
+cryoswath-update-netrc = "cryoswath.misc:update_netrc_cli"
 cryoswath-update-tracks = "cryoswath.misc:update_track_database"
 
 [tool.pytest.ini_options]

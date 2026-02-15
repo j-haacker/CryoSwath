@@ -542,6 +542,7 @@ def build_dataset(
                     l2_df[f"roll_{i}"].astype("i4") // window_ntimesteps
                 )
             results_list = [None] * window_ntimesteps
+            expected_stats = list(agg_func_and_meta[1].keys())
             for i in range(window_ntimesteps):
 
                 def local_closure(roll_iteration):
@@ -557,7 +558,30 @@ def build_dataset(
                 results_list[i] = local_closure(i)
             del l2_df
             for i in range(window_ntimesteps):
-                results_list[i] = results_list[i].droplevel(3, axis=0)
+                result = results_list[i]
+                if isinstance(result, pd.Series):
+                    if result.empty:
+                        result = pd.DataFrame(
+                            index=pd.MultiIndex.from_arrays(
+                                [
+                                    np.array([], dtype="i8"),
+                                    np.array([], dtype="i8"),
+                                    np.array([], dtype="i8"),
+                                ],
+                                names=["time_idx", "x", "y"],
+                            ),
+                            columns=expected_stats,
+                        )
+                    else:
+                        result = result.unstack(level=-1)
+                if result.index.nlevels == 4:
+                    result = result.droplevel(3, axis=0)
+                elif result.index.nlevels != 3:
+                    raise ValueError(
+                        "Unexpected grouped result index depth in l3 aggregation: "
+                        f"{result.index.nlevels}."
+                    )
+                results_list[i] = result.reindex(columns=expected_stats)
                 results_list[i].index = (
                     results_list[i]
                     .index.set_levels(

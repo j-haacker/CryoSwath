@@ -34,6 +34,7 @@ pyarrow = "*"
 pyogrio = "*"
 pyproj = "*"
 pystac-client = "*"
+pytest = "*"
 pytables = "*"
 python-dateutil = "*"
 rasterio = "*"
@@ -44,6 +45,7 @@ shapely = "*"
 snakemake = "*"
 stackstac = "*"
 statsmodels = "*"
+tox = "*"
 tqdm = "*"
 xarray = ">=2025.3,<2025.12"
 xpystac = ">=0.4,<0.5"
@@ -56,12 +58,35 @@ channels = ["conda-forge", "nodefaults"]
 sphinx = "*"
 pydata-sphinx-theme = "*"
 
-[tasks]
-test-unit = "pytest -q tests/test_l1b.py"
-test-notebooks = "cd tests/reports && PYTHONPATH=../.. snakemake --snakefile Snakefile --cores 1 --use-conda"
-sync-test-feature = "pixi import --format conda-env --feature test --environment test environment.yml"
-docs-build = "python -m sphinx -b html docs docs/_build/html"
-docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
+[tasks.test-unit]
+cmd = "pytest -q tests/test_l1b.py"
+
+[tasks.test-notebooks]
+cmd = "snakemake --snakefile Snakefile --cores 1 --use-conda"
+cwd = "tests/reports"
+env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
+
+[tasks.test-tutorial-notebooks]
+args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/scripts" }]
+cmd = "snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 1 --use-conda"
+env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
+
+[tasks.test-all]
+args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/scripts" }]
+depends-on = [
+  "test-unit",
+  "test-notebooks",
+  { task = "test-tutorial-notebooks", args = ["{{ tutorial_dir }}"] },
+]
+
+[tasks.sync-test-feature]
+cmd = "pixi import --format conda-env --feature test --environment test environment.yml"
+
+[tasks.docs-build]
+cmd = "python -m sphinx -b html docs docs/_build/html"
+
+[tasks.docs-build-strict]
+cmd = "python -m sphinx -W -b html docs docs/_build/html"
 
 [environments]
 test = { features = ["test"] }
