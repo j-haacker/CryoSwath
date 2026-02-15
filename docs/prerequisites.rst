@@ -19,7 +19,7 @@ Recommended: pixi-managed environment
    git clone https://github.com/j-haacker/cryoswath.git
    cd cryoswath
    pixi install
-   pixi run -e test pytest -q tests/test_l1b.py
+   pixi run -e test test-unit
 
 For interactive work inside the environment:
 

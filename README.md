@@ -47,7 +47,7 @@ For full setup details, see the docs:
 git clone https://github.com/j-haacker/cryoswath.git
 cd cryoswath
 pixi install
-pixi run -e test pytest -q tests/test_l1b.py
+pixi run -e test test-unit
 ```
 
 For an interactive shell in the project environment:
@@ -73,7 +73,7 @@ mamba install pip
 pip install --editable cryoswath
 ```
 
-### Option 3: reproducible Pixi environment
+### Option 4: reproducible Pixi environment
 
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git

@@ -51,6 +51,10 @@ papermill = "*"
 snakemake = "*"
 pytest = "*"
 
+[feature.test.tasks]
+test-unit = "pytest -q tests/test_l1b.py"
+test-notebooks = "cd tests/reports && PYTHONPATH=../.. snakemake --snakefile Snakefile --cores 1 --use-conda"
+
 [feature.docs]
 channels = ["conda-forge", "nodefaults"]
 
@@ -58,12 +62,12 @@ channels = ["conda-forge", "nodefaults"]
 sphinx = "*"
 pydata-sphinx-theme = "*"
 
-[tasks]
-test-unit = "pytest -q tests/test_l1b.py"
-test-notebooks = "cd tests/reports && PYTHONPATH=../.. snakemake --snakefile Snakefile --cores 1 --use-conda"
-sync-test-feature = "pixi import --format conda-env --feature test --environment test environment.yml"
+[feature.docs.tasks]
 docs-build = "python -m sphinx -b html docs docs/_build/html"
 docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
+
+[tasks]
+sync-test-feature = "pixi import --format conda-env --feature test --environment test environment.yml"
 
 [environments]
 default = { features = [] }
