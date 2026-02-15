@@ -55,6 +55,43 @@ Access requirements
 
 Set up your ESA credentials before running download workflows.
 
+Anonymous FTP login is no longer supported.
+
+Credential resolution order
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+CryoSwath resolves FTP credentials in this order:
+
+1. ``~/.netrc`` entry for ``science-pds.cryosat.esa.int`` with
+   explicit ``login`` and ``password``.
+2. ``CRYOSWATH_FTP_USER`` and ``CRYOSWATH_FTP_PASSWORD``.
+3. Legacy ``config.ini`` values in ``[user]`` using ``name`` and
+   ``password`` (temporary fallback).
+
+Preferred setup (``~/.netrc``):
+
+.. code-block:: text
+
+   machine science-pds.cryosat.esa.int
+     login your-esa-user
+     password your-esa-password
+
+Fallback setup (environment variables):
+
+.. code-block:: sh
+
+   export CRYOSWATH_FTP_USER="your-esa-user"
+   export CRYOSWATH_FTP_PASSWORD="your-esa-password"
+
+You can also write/update the ``~/.netrc`` entry via:
+
+.. code-block:: sh
+
+   cryoswath-update-netrc
+
+Legacy ``config.ini [user] name/password`` credentials still work for
+now, but are deprecated and should be replaced.
+
 Data dependencies
 -----------------
 

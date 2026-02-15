@@ -36,6 +36,8 @@ __all__ = [
     "sel_chunk_idx_range",
     "sel_chunk_range",
     "update_email",
+    "update_netrc",
+    "update_netrc_cli",
     "update_track_database",
     "warn_with_traceback",
     "weighted_mean_excl_outliers",
@@ -62,12 +64,14 @@ from dateutil.relativedelta import relativedelta
 from defusedxml.ElementTree import fromstring as ET_from_str
 import fnmatch
 import ftplib
+import getpass
 import geopandas as gpd
 import glob
 import h5py
 import inspect
 import numpy as np
 import os
+import netrc
 from packaging.version import Version
 import pandas as pd
 from pathlib import Path
@@ -127,7 +131,21 @@ def init_project():
     config["path"] = {"data": Path().cwd() / "data"}
     with open(config_file, "w") as f:
         config.write(f)
-    print("Run cryoswath.misc.update_email() from a python prompt to complete setup.")
+    print(
+        "Set FTP credentials in ~/.netrc (preferred) or via "
+        "CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD. Legacy fallback uses "
+        "config.ini [user] name/password."
+    )
+    if sys.stdin.isatty():
+        answer = (
+            input("Configure ~/.netrc credentials now? [y/N]: ").strip().lower()
+        )
+        if answer in {"y", "yes"}:
+            try:
+                netrc_path = update_netrc()
+                print(f"Stored credentials in {netrc_path}.")
+            except Exception as err:
+                print(f"Could not configure ~/.netrc automatically: {err}")
 
 
 # Paths ##############################################################
@@ -910,24 +928,60 @@ def flag_translator(cs_l1b_flag):
 @contextmanager
 def ftp_cs2_server(**kwargs):
     """Yield authenticated FTP connection to ESA CryoSat server."""
-    try:
-        config = ConfigParser()
-        config.read("config.ini")
-        if "name" in config["user"] and "password" in config["user"]:
-            user = config["user"]["name"]
-            password = config["user"]["password"]
-        else:
-            password = config["user"]["email"]
-    except KeyError:
-        # TODO adapt hint to also show name/password option
-        print(
-            "\n\nPlease call `misc.update_email()` to provide your email address as "
-            "ESA asks for it as password when downloading data via ftp.\n\n",
-        )
-        raise
+    user, password, source = _resolve_esa_ftp_credentials()
     with ftplib.FTP("science-pds.cryosat.esa.int", **kwargs) as ftp:
-        ftp.login(user="anonymous" if "user" not in locals() else user, passwd=password)
+        try:
+            ftp.login(user=user, passwd=password)
+        except ftplib.error_perm as err:
+            raise RuntimeError(
+                "ESA FTP authentication failed using credentials from "
+                f"{source}. Configure ~/.netrc for science-pds.cryosat.esa.int "
+                "or set CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD."
+            ) from err
         yield ftp
+
+
+def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
+    """Resolve ESA FTP credentials from netrc, env, and legacy config."""
+
+    try:
+        netrc_auth = netrc.netrc().authenticators("science-pds.cryosat.esa.int")
+    except (FileNotFoundError, netrc.NetrcParseError):
+        netrc_auth = None
+    if netrc_auth is not None:
+        login, _, password = netrc_auth
+        if login and password:
+            return login, password, "~/.netrc"
+        if password and not login:
+            raise RuntimeError(
+                "~/.netrc entry for science-pds.cryosat.esa.int is missing login. "
+                "Anonymous FTP login is no longer supported."
+            )
+
+    env_user = os.environ.get("CRYOSWATH_FTP_USER")
+    env_password = os.environ.get("CRYOSWATH_FTP_PASSWORD")
+    if env_user and env_password:
+        return env_user, env_password, "environment variables"
+
+    config = ConfigParser()
+    config.read("config.ini")
+    if "user" in config:
+        section = config["user"]
+        if "name" in section and "password" in section:
+            warnings.warn(
+                "Using [user] name/password from config.ini is deprecated. "
+                "Prefer ~/.netrc or CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD.",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
+            return section["name"], section["password"], "config.ini [user] name/password"
+
+    raise RuntimeError(
+        "No ESA FTP credentials found. Configure ~/.netrc with login/password, "
+        "or set CRYOSWATH_FTP_USER and CRYOSWATH_FTP_PASSWORD, "
+        "or use legacy config.ini [user] name/password. Anonymous login is "
+        "no longer supported."
+    )
 
 
 def gauss_filter_DataArray(
@@ -2431,18 +2485,45 @@ def rgi_o2region_translator(o1: int, o2: int, out_type: str = "full_name") -> st
 
 @contextmanager
 def sandbox_write_to(target: str):
-    """Guard writes by refusing to run with stale backup artifacts."""
-    # ! other functions depend on the "__backup" extension
-    if os.path.isfile(target + "__backup"):
-        raise Exception(
-            f"Backup exists unexpectedly at {target + '__backup'}. This may point to a "
-            "running process. If this is a relict, remove it manually."
-        )
+    """Guard writes with a lock and recover from stale backup sidecars."""
+    backup = target + "__backup"
+    lock = target + "__lock"
+    lock_fd = None
+
     try:
+        # Claim this target atomically to avoid concurrent writers.
+        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(lock_fd, f"pid={os.getpid()}\n".encode())
+    except FileExistsError:
+        raise Exception(
+            f"Write lock exists unexpectedly at {lock}. This may point to a running "
+            "process. If this is a relict, remove it manually."
+        )
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+    try:
+        # ! other functions depend on the "__backup" extension
+        if os.path.isfile(backup):
+            if os.path.isfile(target):
+                warnings.warn(
+                    f"Removing stale backup file at {backup} before writing.",
+                    RuntimeWarning,
+                )
+                os.remove(backup)
+            else:
+                warnings.warn(
+                    f"Recovering missing target from backup file at {backup}.",
+                    RuntimeWarning,
+                )
+                shutil.move(backup, target)
         yield target
     finally:
-        if os.path.isfile(target + "__backup"):
-            os.remove(target + "__backup")
+        if os.path.isfile(backup):
+            os.remove(backup)
+        if os.path.isfile(lock):
+            os.remove(lock)
 
 
 def sel_chunk_idx_range(ds, dim, start, stop):
@@ -2458,8 +2539,104 @@ def sel_chunk_range(ds, **dim_intervals):
     return ds
 
 
+def update_netrc(
+    user: str = None,
+    password: str = None,
+    *,
+    machine: str = "science-pds.cryosat.esa.int",
+    netrc_file: str | Path = None,
+) -> str:
+    """Create or update a ``.netrc`` entry for ESA FTP credentials.
+
+    Missing ``user`` or ``password`` values are read from
+    ``CRYOSWATH_FTP_USER`` and ``CRYOSWATH_FTP_PASSWORD`` first, then prompted
+    interactively.
+
+    Args:
+        user (str, optional): FTP username.
+        password (str, optional): FTP password.
+        machine (str, optional): Netrc machine host key.
+        netrc_file (str | Path, optional): Override for target file path.
+
+    Returns:
+        str: Absolute path to the written netrc file.
+    """
+    user = user or os.environ.get("CRYOSWATH_FTP_USER")
+    password = password or os.environ.get("CRYOSWATH_FTP_PASSWORD")
+    if user is None:
+        user = input("Enter ESA FTP username: ").strip()
+    if password is None:
+        password = getpass.getpass("Enter ESA FTP password: ")
+    if not user or not password:
+        raise ValueError("Both FTP user and password are required.")
+
+    netrc_path = (
+        Path(netrc_file).expanduser().resolve()
+        if netrc_file is not None
+        else (Path.home() / ".netrc").resolve()
+    )
+    netrc_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = netrc_path.read_text() if netrc_path.exists() else ""
+    entry = f"machine {machine}\n  login {user}\n  password {password}\n"
+    entry_pattern = re.compile(
+        rf"(?ms)^machine\s+{re.escape(machine)}\b.*?(?=^machine\s+\S+|\Z)"
+    )
+    if entry_pattern.search(existing):
+        updated = entry_pattern.sub(entry, existing, count=1)
+    else:
+        updated = entry if not existing.strip() else f"{existing.rstrip()}\n\n{entry}"
+
+    netrc_path.write_text(updated)
+    try:
+        netrc_path.chmod(0o600)
+    except OSError as err:
+        warnings.warn(
+            f"Could not set permissions 600 on {netrc_path}: {err}",
+            category=UserWarning,
+            stacklevel=2,
+        )
+    return str(netrc_path)
+
+
+def update_netrc_cli() -> None:
+    """CLI wrapper around :func:`update_netrc`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath-update-netrc",
+        description="Create or update ~/.netrc credentials for ESA FTP access.",
+    )
+    parser.add_argument("--user", default=None, help="FTP username.")
+    parser.add_argument("--password", default=None, help="FTP password.")
+    parser.add_argument(
+        "--machine",
+        default="science-pds.cryosat.esa.int",
+        help="Netrc machine host key.",
+    )
+    parser.add_argument(
+        "--netrc-file",
+        default=None,
+        help="Override path to netrc file (default: ~/.netrc).",
+    )
+    args = parser.parse_args()
+    netrc_path = update_netrc(
+        user=args.user,
+        password=args.password,
+        machine=args.machine,
+        netrc_file=args.netrc_file,
+    )
+    print(f"Wrote credentials for {args.machine} to {netrc_path}")
+
+
 def update_email(email: str = None):
-    """Store email credential in local ``config.ini`` for ESA FTP access."""
+    """Deprecated helper for pre-2026 email-based FTP auth."""
+    warnings.warn(
+        "update_email() is deprecated. Anonymous/email FTP login is no longer "
+        "supported. Use ~/.netrc, CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD, "
+        "or legacy config.ini [user] name/password.",
+        category=DeprecationWarning,
+        stacklevel=2,
+    )
     if email is None:
         email = input("Enter your email")
     if re.fullmatch(r"[^@]+@[^@]+\.[a-z]{2,9}", email.strip().lower()):

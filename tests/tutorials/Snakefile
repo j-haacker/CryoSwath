@@ -1,0 +1,50 @@
+from pathlib import Path
+
+from snakemake.exceptions import WorkflowError
+
+WORKFLOW_DIR = Path(workflow.basedir).resolve()
+REPO_DIR = WORKFLOW_DIR.parents[1]
+SCRIPT_DIR = Path.cwd().resolve()
+TUTORIAL_STEMS = sorted(
+    path.name.removesuffix(".ipynb")
+    for path in SCRIPT_DIR.glob("tutorial__*.ipynb")
+)
+
+if not TUTORIAL_STEMS:
+    raise WorkflowError(
+        "No tutorial notebooks found in "
+        f"{SCRIPT_DIR}. Run from the tutorial directory or pass --directory."
+    )
+
+BENCHMARK_DIR = WORKFLOW_DIR / "artifacts" / "benchmarks"
+PROCESSED_DIR = WORKFLOW_DIR / "artifacts" / "processed_notebooks"
+
+
+rule all:
+    input:
+        expand(".snakemake/tutorial_notebooks/{tutorial}.done", tutorial=TUTORIAL_STEMS)
+
+
+rule prepare_artifact_dirs:
+    output:
+        touch(".snakemake/tutorial_artifacts/.prepared"),
+    shell:
+        (
+            "mkdir -p .snakemake/tutorial_notebooks .snakemake/tutorial_artifacts "
+            f"{BENCHMARK_DIR} {PROCESSED_DIR} && touch {{output}}"
+        )
+
+
+rule run_tutorial_notebook:
+    input:
+        prepared=".snakemake/tutorial_artifacts/.prepared",
+    output:
+        touch(".snakemake/tutorial_notebooks/{tutorial}.done"),
+    conda:
+        str(REPO_DIR / "tests/reports/cryoswath-test.yaml")
+    benchmark:
+        str(BENCHMARK_DIR / "{tutorial}.tsv")
+    log:
+        notebook=str(PROCESSED_DIR / "{tutorial}.ipynb")
+    notebook:
+        str(SCRIPT_DIR / "{wildcards.tutorial}.ipynb")
