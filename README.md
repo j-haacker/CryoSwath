@@ -46,7 +46,7 @@ For full setup details, see the docs:
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git
 cd cryoswath
-pixi install
+pixi install --locked -e test
 pixi run -e test test-unit
 ```
 
@@ -78,12 +78,28 @@ pip install --editable cryoswath
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git
 cd cryoswath
-pixi install -e test
+pixi install --locked -e test
 pixi shell -e test
 ```
 
 This uses the lock file and is the most robust option when dependency
 resolvers disagree.
+
+### Contributor lockfile workflow
+
+For regular development runs:
+
+```sh
+pixi install --locked -e test
+```
+
+If you change dependency manifests (`pyproject.toml` and/or `pixi.toml`):
+
+```sh
+pixi lock
+pixi run -e test test-unit
+pixi run -e docs docs-build
+```
 
 ### Optional: Docker image
 

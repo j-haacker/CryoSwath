@@ -18,7 +18,7 @@ Recommended: pixi-managed environment
 
    git clone https://github.com/j-haacker/cryoswath.git
    cd cryoswath
-   pixi install
+   pixi install --locked -e test
    pixi run -e test test-unit
 
 For interactive work inside the environment:
@@ -96,3 +96,20 @@ CryoSwath supports two installation modes:
 Use the stable mode for tutorials, bug reports, and scientific
 reproducibility. Use the flexible mode when integrating CryoSwath into
 an existing environment.
+
+Contributor lockfile workflow
+-----------------------------
+
+For regular development runs:
+
+.. code-block:: sh
+
+   pixi install --locked -e test
+
+If you change dependency manifests (``pyproject.toml`` and/or ``pixi.toml``):
+
+.. code-block:: sh
+
+   pixi lock
+   pixi run -e test test-unit
+   pixi run -e docs docs-build
