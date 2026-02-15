@@ -7,29 +7,17 @@ platforms = ["linux-64"]
 [dependencies]
 python = ">=3.11,<3.14"
 pip = "*"
-
-[pypi-dependencies]
-cryoswath = { path = ".", editable = true }
-
-[feature.test]
-channels = ["conda-forge", "bioconda", "nodefaults"]
-
-[feature.test.dependencies]
 bottleneck = "*"
 dask = "*"
 defusedxml = "*"
-distributed = "*"
 geopandas = ">=1.0.1"
 gitpython = "*"
 h5netcdf = "*"
 h5py = "*"
-ipykernel = "*"
 matplotlib = "*"
-nbconvert = "*"
 numpy = "*"
 packaging = "*"
 pandas = "*"
-papermill = "*"
 pyarrow = "*"
 pyogrio = "*"
 pyproj = "*"
@@ -41,13 +29,27 @@ rioxarray = "*"
 scikit-learn = "*"
 scipy = "*"
 shapely = "*"
-snakemake = "*"
 stackstac = "*"
 statsmodels = "*"
 tqdm = "*"
 xarray = ">=2025.3,<2025.12"
 xpystac = ">=0.4,<0.5"
 zarr = "*"
+
+[pypi-dependencies]
+# Keep local source editable, but resolve the runtime stack via Conda below.
+cryoswath = { path = ".", editable = true }
+
+[feature.test]
+channels = ["conda-forge", "bioconda", "nodefaults"]
+
+[feature.test.dependencies]
+distributed = "*"
+ipykernel = "*"
+nbconvert = "*"
+papermill = "*"
+snakemake = "*"
+pytest = "*"
 
 [feature.docs]
 channels = ["conda-forge", "nodefaults"]
@@ -64,5 +66,6 @@ docs-build = "python -m sphinx -b html docs docs/_build/html"
 docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
 
 [environments]
+default = { features = [] }
 test = { features = ["test"] }
 docs = { features = ["docs"] }
