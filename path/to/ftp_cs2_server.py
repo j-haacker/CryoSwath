@@ -1,1 +1,0 @@
-def ftp_cs2_server(*args, **kwargs):\n    # Current implementation of the ftp_cs2_server function\n    pass\n
