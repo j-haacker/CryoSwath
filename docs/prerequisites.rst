@@ -18,8 +18,8 @@ Recommended: pixi-managed environment
 
    git clone https://github.com/j-haacker/cryoswath.git
    cd cryoswath
-   pixi install
-   pixi run -e test pytest -q tests/test_l1b.py
+   pixi install --locked -e test
+   pixi run -e test test-unit
 
 For interactive work inside the environment:
 
@@ -54,6 +54,43 @@ Access requirements
    `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
 
 Set up your ESA credentials before running download workflows.
+
+Anonymous FTP login is no longer supported.
+
+Credential resolution order
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+CryoSwath resolves FTP credentials in this order:
+
+1. ``~/.netrc`` entry for ``science-pds.cryosat.esa.int`` with
+   explicit ``login`` and ``password``.
+2. ``CRYOSWATH_FTP_USER`` and ``CRYOSWATH_FTP_PASSWORD``.
+3. Legacy ``config.ini`` values in ``[user]`` using ``name`` and
+   ``password`` (temporary fallback).
+
+Preferred setup (``~/.netrc``):
+
+.. code-block:: text
+
+   machine science-pds.cryosat.esa.int
+     login your-esa-user
+     password your-esa-password
+
+Fallback setup (environment variables):
+
+.. code-block:: sh
+
+   export CRYOSWATH_FTP_USER="your-esa-user"
+   export CRYOSWATH_FTP_PASSWORD="your-esa-password"
+
+You can also write/update the ``~/.netrc`` entry via:
+
+.. code-block:: sh
+
+   cryoswath-update-netrc
+
+Legacy ``config.ini [user] name/password`` credentials still work for
+now, but are deprecated and should be replaced.
 
 Data dependencies
 -----------------
@@ -96,3 +133,20 @@ CryoSwath supports two installation modes:
 Use the stable mode for tutorials, bug reports, and scientific
 reproducibility. Use the flexible mode when integrating CryoSwath into
 an existing environment.
+
+Contributor lockfile workflow
+-----------------------------
+
+For regular development runs:
+
+.. code-block:: sh
+
+   pixi install --locked -e test
+
+If you change dependency manifests (``pyproject.toml`` and/or ``pixi.toml``):
+
+.. code-block:: sh
+
+   pixi lock
+   pixi run -e test test-unit
+   pixi run -e docs docs-build

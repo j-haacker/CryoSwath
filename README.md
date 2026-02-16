@@ -26,6 +26,11 @@ from waveform-level processing to gridded elevation products.
 - Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
 - Starting **Monday, February 16, 2026**, downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
+- FTP credentials are resolved in this order:
+  `~/.netrc` (with explicit login/password), then
+  `CRYOSWATH_FTP_USER`/`CRYOSWATH_FTP_PASSWORD`, then legacy `config.ini [user]`
+  `name/password` (temporary fallback).
+- Anonymous FTP login is no longer supported.
 - Install `xarray` and `zarr` together to avoid version mismatches.
 
 ## Dependency policy
@@ -46,8 +51,8 @@ For full setup details, see the docs:
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git
 cd cryoswath
-pixi install
-pixi run -e test pytest -q tests/test_l1b.py
+pixi install --locked -e test
+pixi run -e test test-unit
 ```
 
 For an interactive shell in the project environment:
@@ -73,17 +78,33 @@ mamba install pip
 pip install --editable cryoswath
 ```
 
-### Option 3: reproducible Pixi environment
+### Option 4: reproducible Pixi environment
 
 ```sh
 git clone https://github.com/j-haacker/cryoswath.git
 cd cryoswath
-pixi install -e test
+pixi install --locked -e test
 pixi shell -e test
 ```
 
 This uses the lock file and is the most robust option when dependency
 resolvers disagree.
+
+### Contributor lockfile workflow
+
+For regular development runs:
+
+```sh
+pixi install --locked -e test
+```
+
+If you change dependency manifests (`pyproject.toml` and/or `pixi.toml`):
+
+```sh
+pixi lock
+pixi run -e test test-unit
+pixi run -e docs docs-build
+```
 
 ### Optional: Docker image
 
@@ -108,6 +129,12 @@ cryoswath-init
 `scripts/config.ini` with your base data path. The paths can be
 reconfigured in `config.ini` if you use a different layout.
 
+To avoid storing secrets in `config.ini`, use `~/.netrc` (preferred) or
+environment variables for FTP credentials and keep `config.ini` focused on
+paths.
+To create or update your `~/.netrc` entry interactively, run:
+`cryoswath-update-netrc`.
+
 ## Tutorials and documentation
 
 - Main docs: [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
@@ -117,6 +144,33 @@ reconfigured in `config.ini` if you use a different layout.
   [`scripts/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb)
 - First swath tutorial:
   [`scripts/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb)
+
+## Local testing
+
+Run the full local test pipeline:
+
+```sh
+pixi run -e test test-all
+```
+
+Run report notebooks only:
+
+```sh
+pixi run -e test test-notebooks
+```
+
+Run tutorial notebooks only:
+
+```sh
+pixi run -e test test-tutorial-notebooks
+```
+
+If tutorials are stored outside the current checkout, set
+`CRYOSWATH_TUTORIAL_DIR` to the directory containing
+`tutorial__*.ipynb` before running this task.
+
+Notebook tests may download required larger data from first-hand sources
+at runtime, so network availability and valid ESA credentials matter.
 
 ## External dependencies and data
 
@@ -144,11 +198,11 @@ If you use CryoSwath, please cite:
 ```bibtex
 @software{cryoswath,
   author       = {Haacker, Jan},
-  title        = {CryoSwath: v0.2.4},
-  month        = aug,
-  year         = 2025,
+  title        = {CryoSwath: v0.2.5},
+  month        = feb,
+  year         = 2026,
   publisher    = {Zenodo},
-  version      = {v0.2.4},
+  version      = {v0.2.5},
   doi          = {10.5281/zenodo.17011635}
 }
 ```

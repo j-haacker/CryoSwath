@@ -29,17 +29,19 @@ root to ``sys.path``.
 Build locally
 -------------
 
-Install docs dependencies and package:
+Recommended (Pixi-managed, lockfile-backed):
+
+.. code-block:: sh
+
+   pixi install --locked -e docs
+   pixi run -e docs docs-build
+
+Alternative (pip-based local build):
 
 .. code-block:: sh
 
    pip install -r docs/requirements.txt
    pip install --editable .
-
-Then build:
-
-.. code-block:: sh
-
    make -C docs html
 
 Or directly with Sphinx:
