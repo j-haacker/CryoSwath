@@ -1226,13 +1226,14 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
             "See doc for further info."
         )
     if lat > 0:
-        dem_filename = "arcticdem_mosaic_100m_v4.1_dem.tif"
-        if not (dem_path / dem_filename).is_file():
-            dem_filename = "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
+        preferred_dem_filename = "arcticdem_mosaic_100m_v4.1_dem.tif"
+        fallback_dem_filename = "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
     else:
-        dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem_100m-mean.tif"
-        if not (dem_path / dem_filename).is_file():
-            dem_filename = "rema-mosaics-v2.0-32m.zarr"
+        preferred_dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem.tif"
+        fallback_dem_filename = "rema-mosaics-v2.0-32m_100m-mean.zarr"
+    dem_filename = preferred_dem_filename
+    if not (dem_path / dem_filename).is_file():
+        dem_filename = fallback_dem_filename
 
     def default_dem_archive_url(filename: str) -> str | None:
         if filename.startswith("arcticdem_mosaic_100m_v4.1_"):
@@ -1292,22 +1293,24 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
         return output_file
 
     if not (dem_path / dem_filename).exists():
-        archive_url = default_dem_archive_url(dem_filename)
-        if archive_url is not None:
+        archive_url = default_dem_archive_url(preferred_dem_filename)
+        if archive_url is not None and not (dem_path / preferred_dem_filename).exists():
             warnings.warn(
-                f"DEM file {dem_filename} is missing. "
+                f"DEM file {preferred_dem_filename} is missing. "
                 "Attempting automatic download now.",
                 category=UserWarning,
                 stacklevel=2,
             )
             try:
-                download_default_dem(dem_filename)
+                download_default_dem(preferred_dem_filename)
             except Exception as err:
                 warnings.warn(
-                    f"Automatic DEM download failed for {dem_filename}: {err}",
+                    f"Automatic DEM download failed for {preferred_dem_filename}: {err}",
                     category=UserWarning,
                     stacklevel=2,
                 )
+        if (dem_path / preferred_dem_filename).exists():
+            return reader_or_store(dem_path / preferred_dem_filename)
         if (dem_path / dem_filename).exists():
             return reader_or_store(dem_path / dem_filename)
 
