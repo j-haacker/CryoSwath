@@ -149,9 +149,10 @@ def init_project():
         config.write(f)
     print(
         "Set credentials in environment variables "
-        f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, keyring (preferred for "
-        "interactive setup), or as plaintext in ~/.netrc (fallback only). "
-        "Legacy fallback uses config.ini [user] name/password."
+        f"{_ESA_ENV_USER} and its corresponding password variable, "
+        "keyring (preferred for interactive setup), or as plaintext in "
+        "~/.netrc (fallback only). Legacy fallback uses config.ini [user] "
+        "name/password."
     )
     if sys.stdin.isatty():
         answer = input("Configure keyring credentials now? [Y/n]: ").strip().lower()
