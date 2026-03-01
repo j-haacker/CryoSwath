@@ -28,7 +28,7 @@ from cryoswath.misc import (
     load_cs_ground_tracks,
     load_glacier_outlines,
     sandbox_write_to,
-    tmp_path
+    tmp_path,
 )
 from cryoswath.gis import buffer_4326_shp, ensure_pyproj_crs, find_planar_crs
 
@@ -613,7 +613,9 @@ def build_dataset(
                     .drop_vars(["spatial_ref"])
                 )
                 l3_chunk = _ensure_contiguous_time_coord(l3_chunk, timestep_months)
-                l3_chunk.to_zarr(outfilepath, region="auto")  # [["_median", "_iqr", "_count"]]
+                l3_chunk.to_zarr(
+                    outfilepath, region="auto"
+                )  # [["_median", "_iqr", "_count"]]
             except Exception as err:
                 print("\n")
                 warnings.warn(
@@ -674,7 +676,7 @@ def _build_path(
         spatial_res_str = f"{spatial_res_meter}m"
     else:
         # if the trailing ".0" should be omitted, that needs to be implemented here
-        spatial_res_str = f"{round(spatial_res_meter/1000, 1)}km"
+        spatial_res_str = f"{round(spatial_res_meter / 1000, 1)}km"
     return os.path.join(
         data_path, "L3", "_".join([region_id, timestep_str, spatial_res_str + ".zarr"])
     )

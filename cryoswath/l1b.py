@@ -241,7 +241,7 @@ def read_esa_l1b(
             os.remove(l1b_filename)
             download_single_file(os.path.split(l1b_filename)[-1][19:34])
     # at least until baseline E ns_20_ku needs to be made a coordinate
-    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku)))) # pyright: ignore[reportPossiblyUnboundVariable]
+    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))  # pyright: ignore[reportPossiblyUnboundVariable]
     # remove data that will not be used to reduce memory footprint
     for dim in ["time_plrm_01_ku", "time_plrm_20_ku", "nlooks_ku", "space_3d"]:
         if dim in ds.dims:
@@ -358,7 +358,9 @@ def read_esa_l1b(
                 o2region_complexes = []
                 for o2 in np.unique(o2codes):
                     if o2 != "05-01":  # Greenland periphery is too large
-                        o2region_complexes.append(load_glacier_outlines(o2, union=False))
+                        o2region_complexes.append(
+                            load_glacier_outlines(o2, union=False)
+                        )
                     else:  # cut into 10 subregions, append if crossed
                         # !tbi: instead of using the arbitrary chunks, use the custom
                         # subregions 05-11--05-15 (added in commit 2265523)
@@ -420,14 +422,16 @@ def read_esa_l1b(
                 if not isinstance(smooth_phase_difference, dict)
                 else xr.apply_ufunc(
                     np.angle,
-                    ds.pipe(append_smoothed_complex_phase, **smooth_phase_difference).ph_diff_complex_smoothed,
-                )
+                    ds.pipe(
+                        append_smoothed_complex_phase, **smooth_phase_difference
+                    ).ph_diff_complex_smoothed,
+                ),
             )
         else:
             # always use lowpass-filtered phase difference at POCA
             ds["ph_diff"] = ds.ph_diff.where(
                 ds.ns_20_ku != ds.poca_idx,
-                xr.apply_ufunc(np.angle, ds.ph_diff_complex_smoothed)
+                xr.apply_ufunc(np.angle, ds.ph_diff_complex_smoothed),
             )
     return ds
 
@@ -460,11 +464,9 @@ def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str | None =
         # rasterio.sample could be used
         # [edit] use postgis
         try:
-            ref_dem = (
-                dem_reader
-                .rio.clip_box(np.nanmin(x), np.nanmin(y), np.nanmax(x), np.nanmax(y))
-                .squeeze()
-            )
+            ref_dem = dem_reader.rio.clip_box(
+                np.nanmin(x), np.nanmin(y), np.nanmax(x), np.nanmax(y)
+            ).squeeze()
         except rioxr.exceptions.NoDataInBounds:
             warnings.warn(
                 f"couldn't find ref dem data in box: {np.nanmin(x)}, {np.nanmin(y)}, "
@@ -958,7 +960,11 @@ def append_exclude_mask(cs_l1b_ds: xr.Dataset) -> xr.Dataset:
     return cs_l1b_ds
 
 
-def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, swath_start_window: tuple[float, float] = (5, 50)) -> xr.Dataset:
+def append_poca_and_swath_idxs(
+    cs_l1b_ds: xr.Dataset,
+    poca_upper: float = 10,
+    swath_start_window: tuple[float, float] = (5, 50),
+) -> xr.Dataset:
     """Adds indices for estimated POCA and begin of swath.
 
     Args:
@@ -997,7 +1003,9 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
             return np.nan, 0
         # poca expected `poca_upper` m after coherence exceeds threshold (no solid basis)
         poca_idx = (
-            np.argmax(smooth_coh[poca_idx : poca_idx + max(1, int(poca_upper / sample_width))])
+            np.argmax(
+                smooth_coh[poca_idx : poca_idx + max(1, int(poca_upper / sample_width))]
+            )
             + poca_idx
         )
         if swath_start_window[1] < 0:
@@ -1006,12 +1014,16 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
             try:
                 swath_start = poca_idx + int(swath_start_window[0] / sample_width)
                 diff_smooth_coh = np.diff(
-                    smooth_coh[swath_start : swath_start + int(swath_start_window[1] / sample_width)]
+                    smooth_coh[
+                        swath_start : swath_start
+                        + int(swath_start_window[1] / sample_width)
+                    ]
                 )
                 # swath can safest be used after the coherence dip
                 swath_start = (
                     np.argmax(
-                        diff_smooth_coh[np.argmax(np.abs(diff_smooth_coh) > 0.001) :] > 0
+                        diff_smooth_coh[np.argmax(np.abs(diff_smooth_coh) > 0.001) :]
+                        > 0
                     )
                     + swath_start
                 )
@@ -1037,7 +1049,9 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
     return cs_l1b_ds
 
 
-def append_smoothed_complex_phase(cs_l1b_ds: xr.Dataset, window_extent: int = 21, std: float = 5) -> xr.Dataset:
+def append_smoothed_complex_phase(
+    cs_l1b_ds: xr.Dataset, window_extent: int = 21, std: float = 5
+) -> xr.Dataset:
     """Append low-pass filtered complex phase representation."""
     cs_l1b_ds["ph_diff_complex_smoothed"] = gauss_filter_DataArray(
         np.exp(1j * cs_l1b_ds.ph_diff_waveform_20_ku),
@@ -1174,7 +1188,9 @@ def download_wrapper(
             if task_queue.empty():
                 _status("Closed download threads. Some files may still be missing.")
                 return 1
-        _status("Forcing download thread shutdown. Partially written NetCDF files may exist.")
+        _status(
+            "Forcing download thread shutdown. Partially written NetCDF files may exist."
+        )
         return 2
     else:
         _status("All downloads finished.")
@@ -1185,9 +1201,7 @@ def _https_l1b_base_url(track_id: pd.Timestamp) -> str:
     """Return base HTTPS URL for one month of CryoSat L1b files."""
     return (
         r"https://science-pds.cryosat.esa.int/?do=download&file=Cry0Sat2_data"
-        r"%2FSIR_SIN_L1%2F"
-        + track_id.strftime("%Y%%2F%m")
-        + "%2F"
+        r"%2FSIR_SIN_L1%2F" + track_id.strftime("%Y%%2F%m") + "%2F"
     )
 
 
@@ -1235,9 +1249,7 @@ def _select_lta_then_offl_for_track(track_id: str, remote_files: list[str]) -> s
         preferred = sorted(name for name in matching_files if preferred_token in name)
         if preferred:
             return preferred[0]
-    raise FileNotFoundError(
-        f"No LTA_ or OFFL product found for track id {track_id}."
-    )
+    raise FileNotFoundError(f"No LTA_ or OFFL product found for track id {track_id}.")
 
 
 def _download_named_file_https(
@@ -1384,7 +1396,9 @@ def _download_single_file_via_ftp(track_id: str) -> str:
                 local_path = os.path.join(local_path, remote_file)
                 try:
                     _status(f"Downloading {remote_file}.")
-                    return _download_remote_file_via_ftp_atomic(ftp, remote_file, local_path)
+                    return _download_remote_file_via_ftp_atomic(
+                        ftp, remote_file, local_path
+                    )
                 except Exception:
                     _status(f"Download failed for {remote_file}.")
                     raise
@@ -1441,7 +1455,9 @@ def download_files(
             os.makedirs(os.path.join(l1b_path, year_month_str))
             currently_present_files = []
         existing_track_ids = {file_name[:15] for file_name in currently_present_files}
-        month_tracks = track_idx[track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str]
+        month_tracks = track_idx[
+            track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str
+        ]
         for track_id in month_tracks:
             if stop_event is not None and stop_event.is_set():
                 return
@@ -1496,7 +1512,9 @@ def download_single_file(track_id: str) -> str:
     file_names = _load_cs_full_file_names_for(pd.DatetimeIndex([track_id_timestamp]))
     if file_names is not None and track_id_timestamp in file_names.index:
         filename = file_names.loc[track_id_timestamp] + ".nc"
-        local_path = Path(data_path, "L1b", track_id_timestamp.strftime("%Y/%m"), filename)
+        local_path = Path(
+            data_path, "L1b", track_id_timestamp.strftime("%Y/%m"), filename
+        )
         try:
             return _download_named_file_https(
                 track_id=track_id_timestamp,
@@ -1506,8 +1524,7 @@ def download_single_file(track_id: str) -> str:
             )
         except Exception as err:
             warnings.warn(
-                "HTTPS download failed for "
-                f"{filename}: {err}. Falling back to FTP.",
+                f"HTTPS download failed for {filename}: {err}. Falling back to FTP.",
                 category=UserWarning,
             )
     else:

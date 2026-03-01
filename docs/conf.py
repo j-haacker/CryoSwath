@@ -16,19 +16,20 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
 try:
     import tomllib
 except ModuleNotFoundError:
     import tomli as tomllib
 
-sys.path.insert(0, os.path.abspath('..'))
+sys.path.insert(0, os.path.abspath(".."))
 # sys.path.insert(0, os.path.abspath(os.path.join('..', 'cryoswath')))
 # print(sys.path)
 
 
 # -- Project information -----------------------------------------------------
 
-project = 'cryoswath'
+project = "cryoswath"
 copyright = f"2024-{datetime.now().year}, Jan Haacker"
 author = "Jan Haacker"
 
@@ -52,10 +53,10 @@ version = release
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.autodoc',
-    'sphinx.ext.napoleon',
-    'sphinx.ext.githubpages',
-    'sphinx.ext.linkcode',
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.githubpages",
+    "sphinx.ext.linkcode",
     # 'myst_parser'
 ]
 
@@ -91,7 +92,9 @@ def _git_head_ref():
 def _resolve_source_ref(env=None, git_head_resolver=None):
     """Resolve source URL git ref using commit hash + fallback chain."""
     env = os.environ if env is None else env
-    git_head_resolver = _git_head_ref if git_head_resolver is None else git_head_resolver
+    git_head_resolver = (
+        _git_head_ref if git_head_resolver is None else git_head_resolver
+    )
 
     commit_hash = _valid_git_sha(env.get("READTHEDOCS_GIT_COMMIT_HASH"))
     if commit_hash:
@@ -118,21 +121,21 @@ def linkcode_resolve(domain, info):
     """
     Determine the URL corresponding to Python object
     """
-    if domain != 'py':
+    if domain != "py":
         return None
 
     import inspect
     import cryoswath
 
-    modname = info['module']
-    fullname = info['fullname']
+    modname = info["module"]
+    fullname = info["fullname"]
 
     submod = sys.modules.get(modname)
     if submod is None:
         return None
 
     obj = submod
-    for part in fullname.split('.'):
+    for part in fullname.split("."):
         try:
             obj = getattr(obj, part)
         except Exception:
@@ -183,12 +186,12 @@ def linkcode_resolve(domain, info):
 
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+templates_path = ["_templates"]
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -196,7 +199,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'pydata_sphinx_theme'
+html_theme = "pydata_sphinx_theme"
 html_theme_options = {
     "logo": {"text": f"CryoSwath v{release}"},
     "show_nav_level": 2,
@@ -217,7 +220,7 @@ html_sidebars = {"**": []}
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
-html_css_files = ['custom.css']
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 
 html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "/")

@@ -58,7 +58,9 @@ def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tm
         "_download_named_file_https",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("https failure")),
     )
-    monkeypatch.setattr(l1b, "_download_single_file_via_ftp", lambda track_id: "ftp-path")
+    monkeypatch.setattr(
+        l1b, "_download_single_file_via_ftp", lambda track_id: "ftp-path"
+    )
     assert l1b.download_single_file(track_id) == "ftp-path"
 
 
@@ -116,7 +118,9 @@ def test_download_files_uses_ftp_when_https_auth_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         l1b,
         "_download_files_via_ftp",
-        lambda track_idx, stop_event=None: ftp_calls.append(pd.DatetimeIndex(track_idx)),
+        lambda track_idx, stop_event=None: ftp_calls.append(
+            pd.DatetimeIndex(track_idx)
+        ),
     )
     l1b.download_files(track_idx)
     assert len(ftp_calls) == 1
@@ -243,8 +247,6 @@ def test_download_remote_file_via_ftp_atomic_cleans_temp_on_failure(tmp_path):
             raise RuntimeError("transfer failed")
 
     with pytest.raises(RuntimeError, match="transfer failed"):
-        l1b._download_remote_file_via_ftp_atomic(
-            FailingFtp(), "remote.nc", local_path
-        )
+        l1b._download_remote_file_via_ftp_atomic(FailingFtp(), "remote.nc", local_path)
     assert not local_path.exists()
     assert list(tmp_path.iterdir()) == []

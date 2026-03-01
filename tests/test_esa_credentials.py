@@ -69,9 +69,7 @@ def test_update_keyring_stores_and_verifies(monkeypatch):
     assert user == "esa-user"
     assert store[(misc._ESA_AUTH_IDP_HOST, "esa-user")] == "esa-password"
     assert (
-        store[
-            (misc._ESA_AUTH_IDP_HOST, misc._ESA_KEYRING_DEFAULT_USER_KEY)
-        ]
+        store[(misc._ESA_AUTH_IDP_HOST, misc._ESA_KEYRING_DEFAULT_USER_KEY)]
         == "esa-user"
     )
 
