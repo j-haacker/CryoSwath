@@ -19,8 +19,12 @@ TIMEOUT_SECONDS = 30
 
 def _random_email() -> str:
     rng = random.SystemRandom()
-    local = "".join(rng.choice(string.ascii_lowercase + string.digits) for _ in range(16))
-    suffix = "".join(rng.choice(string.ascii_lowercase + string.digits) for _ in range(10))
+    local = "".join(
+        rng.choice(string.ascii_lowercase + string.digits) for _ in range(16)
+    )
+    suffix = "".join(
+        rng.choice(string.ascii_lowercase + string.digits) for _ in range(10)
+    )
     return f"{local}@{suffix}.example.org"
 
 

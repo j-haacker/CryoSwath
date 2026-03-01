@@ -7,11 +7,6 @@ L1b waveforms to gridded elevation products.
 Project repository:
 `github.com/j-haacker/cryoswath <https://github.com/j-haacker/cryoswath>`_
 
-.. warning::
-   Starting **Monday, February 16, 2026**, users need an
-   `ESA EO account <https://eoiam-idp.eo.esa.int/>`_
-   to download CryoSat resources through CryoSwath.
-
 .. toctree::
    :maxdepth: 1
    :caption: User Guide

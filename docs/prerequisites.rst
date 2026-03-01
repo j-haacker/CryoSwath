@@ -49,8 +49,7 @@ Access requirements
 -------------------
 
 .. warning::
-   Starting **Monday, February 16, 2026**, downloading CryoSat resources
-   via CryoSwath requires an
+   Downloading CryoSat resources via CryoSwath requires an
    `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
 
 Set up your ESA credentials before running download workflows.
@@ -60,37 +59,46 @@ Anonymous FTP login is no longer supported.
 Credential resolution order
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-CryoSwath resolves FTP credentials in this order:
+CryoSwath resolves ESA credentials in this order:
 
-1. ``~/.netrc`` entry for ``science-pds.cryosat.esa.int`` with
-   explicit ``login`` and ``password``.
-2. ``CRYOSWATH_FTP_USER`` and ``CRYOSWATH_FTP_PASSWORD``.
-3. Legacy ``config.ini`` values in ``[user]`` using ``name`` and
+1. ``EOIAM_USER`` and ``EOIAM_PASSWORD``.
+2. Keyring (preferred for interactive setup).
+3. ``~/.netrc`` entry for ``science-pds.cryosat.esa.int`` with
+   explicit ``login`` and ``password`` (plaintext fallback).
+4. Legacy ``config.ini`` values in ``[user]`` using ``name`` and
    ``password`` (temporary fallback).
 
-Preferred setup (``~/.netrc``):
-
-.. code-block:: text
-
-   machine science-pds.cryosat.esa.int
-     login your-esa-user
-     password your-esa-password
-
-Fallback setup (environment variables):
+Preferred interactive setup (keyring):
 
 .. code-block:: sh
 
-   export CRYOSWATH_FTP_USER="your-esa-user"
-   export CRYOSWATH_FTP_PASSWORD="your-esa-password"
+   cryoswath-update-keyring
 
-You can also write/update the ``~/.netrc`` entry via:
+Automation setup (environment variables):
+
+.. code-block:: sh
+
+   export EOIAM_USER="your-esa-user"
+   export EOIAM_PASSWORD="your-esa-password"
+
+Plaintext fallback setup (``~/.netrc``):
 
 .. code-block:: sh
 
    cryoswath-update-netrc
 
+``~/.netrc`` stores the password in plaintext and should only be used as a
+fallback if keyring is not available.
+
 Legacy ``config.ini [user] name/password`` credentials still work for
 now, but are deprecated and should be replaced.
+
+Download protocol defaults
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+L1b data downloads are HTTPS-first by default. FTP remains available as an
+automatic fallback for download failures and is still used for metadata
+refresh flows that compare local catalogs with upstream.
 
 Data dependencies
 -----------------
@@ -108,6 +116,40 @@ Expected default locations:
 
 You can override paths in ``config.ini`` or by adapting path handling in
 :mod:`cryoswath.misc`.
+
+DEM download behavior
+^^^^^^^^^^^^^^^^^^^^^
+
+If the default ArcticDEM or REMA 100 m ``*_dem.tif`` file is missing,
+``get_dem_reader`` now attempts an automatic download and extraction before
+raising ``FileNotFoundError``.
+
+- Arctic source archive:
+  ``https://data.pgc.umn.edu/elev/dem/setsm/ArcticDEM/mosaic/v4.1/100m/arcticdem_mosaic_100m_v4.1.tar.gz``
+- Antarctic source archive:
+  ``https://data.pgc.umn.edu/elev/dem/setsm/REMA/mosaic/v2.0/100m/rema_mosaic_100m_v2.0_filled_cop30.tar.gz``
+- Downloaded archives are extracted into ``data/auxiliary/DEM`` and removed
+  after successful extraction.
+
+RGI download behavior
+^^^^^^^^^^^^^^^^^^^^^
+
+If a required RGI o1 region file is missing, CryoSwath now attempts an
+automatic download before raising ``FileNotFoundError``.
+
+- Authentication uses the same credential resolver as L1b downloads
+  (``EOIAM_USER``/``EOIAM_PASSWORD``, keyring, ``~/.netrc``, then legacy
+  ``config.ini`` fallback).
+- Downloaded zip archives are extracted into ``data/auxiliary/RGI`` using a
+  directory named like the archive stem
+  (for example ``RGI2000-v7.0-C-09_svalbard``).
+- Zip archives are removed after successful extraction.
+
+You can also prefetch a region explicitly:
+
+.. code-block:: sh
+
+   cryoswath-download-rgi --o1 09 --product complexes
 
 Software dependencies
 ---------------------

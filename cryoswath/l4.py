@@ -263,13 +263,14 @@ def add_meta_to_default_finalized_l3(
         out = out.drop_vars([_var for _var in out.data_vars if _var not in _metadata])
         for _var, attrs in _metadata.items():
             out[_var].attrs.update({**attrs})
-        encoding={
+        encoding = {
             _var: {
                 "dtype": out[_var].attrs.pop("dtype"),
                 "_FillValue": out[_var].attrs.pop("_FillValue"),
                 "zlib": True,
-                "complevel": 5
-            } for _var in out.data_vars
+                "complevel": 5,
+            }
+            for _var in out.data_vars
         }
         if all_double:
             for _dict in encoding.values():
@@ -361,7 +362,7 @@ def append_basin_group(
                 lat = basin_lat_group[0].mid
                 lon = basin_lon_group[0].mid
                 group_id = int(
-                    f"{np.sign(lat)*term_type:.0f}{np.abs(lat):02.0f}{lon % 360:03.0f}"
+                    f"{np.sign(lat) * term_type:.0f}{np.abs(lat):02.0f}{lon % 360:03.0f}"
                 )
                 mask = xr.where(
                     mask.isnull(), ds.group_id.loc[dict(x=mask.x, y=mask.y)], group_id
@@ -427,7 +428,9 @@ def fill_voids(
         # figure out region. limited to o2 meanwhile
         print("... loading basin outlines")
         o2code = find_region_id(ds, scope="o2")
-        basin_shapes = load_glacier_outlines(o2code, product="glaciers", union=False, crs=ds.rio.crs)
+        basin_shapes = load_glacier_outlines(
+            o2code, product="glaciers", union=False, crs=ds.rio.crs
+        )
     else:
         basin_shapes = basin_shapes.to_crs(ds.rio.crs)
     # remove time steps without any data
@@ -642,10 +645,14 @@ def fill_l3_voids(o2region: str) -> xr.Dataset:
     ).load()
     crs = ds.rio.crs
     try:
-        basins_gdf = misc.load_glacier_outlines(o2region, product="glaciers", union=False, crs=crs)
+        basins_gdf = misc.load_glacier_outlines(
+            o2region, product="glaciers", union=False, crs=crs
+        )
     except ValueError as err:
         if str(err).startswith("Provided o1, o2, or RGI identifiers"):
-            basins_gdf = misc.load_glacier_outlines(misc.find_region_id(ds), product="glaciers", union=False, crs=crs)
+            basins_gdf = misc.load_glacier_outlines(
+                misc.find_region_id(ds), product="glaciers", union=False, crs=crs
+            )
         else:
             raise
     expected_fit_results_path = os.path.join(
@@ -661,9 +668,7 @@ def fill_l3_voids(o2region: str) -> xr.Dataset:
         )
     if o2region == "08_scandinavia":
         ds = ds.rio.clip_box(*basins_gdf.total_bounds)
-        fit_rm_outl_res = fit_rm_outl_res.rio.clip_box(
-            *basins_gdf.total_bounds
-        )
+        fit_rm_outl_res = fit_rm_outl_res.rio.clip_box(*basins_gdf.total_bounds)
     ds = ds.where(ds._count > 3).where(ds._iqr < 30).dropna("time", how="all")
     ds["_iqr"] = xr.where(
         ds._median.isnull(), fit_rm_outl_res.RMSE * 2 * misc._norm_isf_25, ds._iqr
@@ -697,9 +702,7 @@ def fill_l3_voids(o2region: str) -> xr.Dataset:
         mask, ds.filled_flag, -2, keep_attrs=True
     )  # should not survive void filling!
     ds["_iqr"] = ds._iqr.where(~ds._median.isnull())
-    ds = misc.fill_missing_coords(
-        ds.rio.write_crs(crs), *basins_gdf.total_bounds
-    )
+    ds = misc.fill_missing_coords(ds.rio.write_crs(crs), *basins_gdf.total_bounds)
     ds = ds.rio.clip(basins_gdf.make_valid())
     return difference_to_reference_dem(
         ds, save_to_disk=results_path, basin_shapes=basins_gdf
@@ -1227,8 +1230,7 @@ def timeseries_from_gridded(
         _weights = _coarsened.count()
         num_cells = _weights.sum(["x", "y"])
         unc1 = (
-            ((_coarsened.mean() * _weights) ** 2).sum(["x", "y"])
-            ** 0.5
+            ((_coarsened.mean() * _weights) ** 2).sum(["x", "y"]) ** 0.5
             # / _weights.sum(["x", "y"]) <- for the current weighting
             # * _weights.sum(["x", "y"]) <- for the global weighting
         ) ** 0.5 / misc._norm_isf_25

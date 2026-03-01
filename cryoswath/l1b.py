@@ -40,16 +40,19 @@ from numpy.typing import ArrayLike
 import operator
 import os
 import pandas as pd
+from pathlib import Path
 from pyproj import Transformer
 import rioxarray as rioxr
 from scipy.stats import median_abs_deviation, ttest_ind
 import shapely
 from threading import Event
+import tempfile
 import time
 import warnings
 import xarray as xr
 
 from cryoswath.misc import (
+    _resolve_esa_ftp_credentials,
     antenna_baseline,
     cs_time_to_id,
     data_path,
@@ -238,7 +241,7 @@ def read_esa_l1b(
             os.remove(l1b_filename)
             download_single_file(os.path.split(l1b_filename)[-1][19:34])
     # at least until baseline E ns_20_ku needs to be made a coordinate
-    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku)))) # pyright: ignore[reportPossiblyUnboundVariable]
+    ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))  # pyright: ignore[reportPossiblyUnboundVariable]
     # remove data that will not be used to reduce memory footprint
     for dim in ["time_plrm_01_ku", "time_plrm_20_ku", "nlooks_ku", "space_3d"]:
         if dim in ds.dims:
@@ -355,7 +358,9 @@ def read_esa_l1b(
                 o2region_complexes = []
                 for o2 in np.unique(o2codes):
                     if o2 != "05-01":  # Greenland periphery is too large
-                        o2region_complexes.append(load_glacier_outlines(o2, union=False))
+                        o2region_complexes.append(
+                            load_glacier_outlines(o2, union=False)
+                        )
                     else:  # cut into 10 subregions, append if crossed
                         # !tbi: instead of using the arbitrary chunks, use the custom
                         # subregions 05-11--05-15 (added in commit 2265523)
@@ -417,14 +422,16 @@ def read_esa_l1b(
                 if not isinstance(smooth_phase_difference, dict)
                 else xr.apply_ufunc(
                     np.angle,
-                    ds.pipe(append_smoothed_complex_phase, **smooth_phase_difference).ph_diff_complex_smoothed,
-                )
+                    ds.pipe(
+                        append_smoothed_complex_phase, **smooth_phase_difference
+                    ).ph_diff_complex_smoothed,
+                ),
             )
         else:
             # always use lowpass-filtered phase difference at POCA
             ds["ph_diff"] = ds.ph_diff.where(
                 ds.ns_20_ku != ds.poca_idx,
-                xr.apply_ufunc(np.angle, ds.ph_diff_complex_smoothed)
+                xr.apply_ufunc(np.angle, ds.ph_diff_complex_smoothed),
             )
     return ds
 
@@ -457,11 +464,9 @@ def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str | None =
         # rasterio.sample could be used
         # [edit] use postgis
         try:
-            ref_dem = (
-                dem_reader
-                .rio.clip_box(np.nanmin(x), np.nanmin(y), np.nanmax(x), np.nanmax(y))
-                .squeeze()
-            )
+            ref_dem = dem_reader.rio.clip_box(
+                np.nanmin(x), np.nanmin(y), np.nanmax(x), np.nanmax(y)
+            ).squeeze()
         except rioxr.exceptions.NoDataInBounds:
             warnings.warn(
                 f"couldn't find ref dem data in box: {np.nanmin(x)}, {np.nanmin(y)}, "
@@ -955,7 +960,11 @@ def append_exclude_mask(cs_l1b_ds: xr.Dataset) -> xr.Dataset:
     return cs_l1b_ds
 
 
-def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, swath_start_window: tuple[float, float] = (5, 50)) -> xr.Dataset:
+def append_poca_and_swath_idxs(
+    cs_l1b_ds: xr.Dataset,
+    poca_upper: float = 10,
+    swath_start_window: tuple[float, float] = (5, 50),
+) -> xr.Dataset:
     """Adds indices for estimated POCA and begin of swath.
 
     Args:
@@ -994,7 +1003,9 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
             return np.nan, 0
         # poca expected `poca_upper` m after coherence exceeds threshold (no solid basis)
         poca_idx = (
-            np.argmax(smooth_coh[poca_idx : poca_idx + max(1, int(poca_upper / sample_width))])
+            np.argmax(
+                smooth_coh[poca_idx : poca_idx + max(1, int(poca_upper / sample_width))]
+            )
             + poca_idx
         )
         if swath_start_window[1] < 0:
@@ -1003,12 +1014,16 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
             try:
                 swath_start = poca_idx + int(swath_start_window[0] / sample_width)
                 diff_smooth_coh = np.diff(
-                    smooth_coh[swath_start : swath_start + int(swath_start_window[1] / sample_width)]
+                    smooth_coh[
+                        swath_start : swath_start
+                        + int(swath_start_window[1] / sample_width)
+                    ]
                 )
                 # swath can safest be used after the coherence dip
                 swath_start = (
                     np.argmax(
-                        diff_smooth_coh[np.argmax(np.abs(diff_smooth_coh) > 0.001) :] > 0
+                        diff_smooth_coh[np.argmax(np.abs(diff_smooth_coh) > 0.001) :]
+                        > 0
                     )
                     + swath_start
                 )
@@ -1034,7 +1049,9 @@ def append_poca_and_swath_idxs(cs_l1b_ds: xr.Dataset, poca_upper: float = 10, sw
     return cs_l1b_ds
 
 
-def append_smoothed_complex_phase(cs_l1b_ds: xr.Dataset, window_extent: int = 21, std: float = 5) -> xr.Dataset:
+def append_smoothed_complex_phase(
+    cs_l1b_ds: xr.Dataset, window_extent: int = 21, std: float = 5
+) -> xr.Dataset:
     """Append low-pass filtered complex phase representation."""
     cs_l1b_ds["ph_diff_complex_smoothed"] = gauss_filter_DataArray(
         np.exp(1j * cs_l1b_ds.ph_diff_waveform_20_ku),
@@ -1171,19 +1188,155 @@ def download_wrapper(
             if task_queue.empty():
                 _status("Closed download threads. Some files may still be missing.")
                 return 1
-        _status("Forcing download thread shutdown. Partially written NetCDF files may exist.")
+        _status(
+            "Forcing download thread shutdown. Partially written NetCDF files may exist."
+        )
         return 2
     else:
         _status("All downloads finished.")
         return 0
 
 
-def download_files(
+def _https_l1b_base_url(track_id: pd.Timestamp) -> str:
+    """Return base HTTPS URL for one month of CryoSat L1b files."""
+    return (
+        r"https://science-pds.cryosat.esa.int/?do=download&file=Cry0Sat2_data"
+        r"%2FSIR_SIN_L1%2F" + track_id.strftime("%Y%%2F%m") + "%2F"
+    )
+
+
+def _validate_netcdf_payload(path: str | Path) -> None:
+    """Raise if downloaded payload does not look like NetCDF."""
+    path = Path(path)
+    with path.open("rb") as handle:
+        header = handle.read(512)
+    if header.startswith(b"\x89HDF\r\n\x1a\n"):
+        return
+    if header.startswith((b"CDF\x01", b"CDF\x02", b"CDF\x05")):
+        return
+
+    header_lstrip = header.lstrip().lower()
+    if header_lstrip.startswith((b"<!doctype html", b"<html", b"<?xml")):
+        raise RuntimeError(
+            f"HTTPS endpoint returned HTML/XML instead of NetCDF for {path.name}."
+        )
+    raise RuntimeError(
+        f"Downloaded payload for {path.name} is not recognized as NetCDF."
+    )
+
+
+def _l1b_product_name_candidates(remote_file: str) -> list[str]:
+    """Return preferred remote filenames: LTA first, then OFFL."""
+    lta_candidate = remote_file.replace("OFFL", "LTA_")
+    offl_candidate = remote_file.replace("LTA_", "OFFL")
+    candidates = []
+    for candidate in (lta_candidate, offl_candidate):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if remote_file not in candidates:
+        candidates.append(remote_file)
+    return candidates
+
+
+def _select_lta_then_offl_for_track(track_id: str, remote_files: list[str]) -> str:
+    """Select LTA product for ``track_id`` if available, otherwise OFFL."""
+    matching_files = [
+        name
+        for name in remote_files
+        if name.endswith(".nc") and len(name) >= 34 and name[19:34] == track_id
+    ]
+    for preferred_token in ("LTA_", "OFFL"):
+        preferred = sorted(name for name in matching_files if preferred_token in name)
+        if preferred:
+            return preferred[0]
+    raise FileNotFoundError(f"No LTA_ or OFFL product found for track id {track_id}.")
+
+
+def _download_named_file_https(
+    track_id: pd.Timestamp,
+    remote_file: str,
+    local_path: str | Path,
+    auth: tuple[str, str],
+) -> str:
+    """Download one known remote filename via HTTPS."""
+    local_path = Path(local_path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    base_url = _https_l1b_base_url(track_id)
+    candidate_names = _l1b_product_name_candidates(remote_file)
+    last_err = None
+    for candidate in candidate_names:
+        candidate_local_path = local_path.parent / candidate
+        try:
+            _status(f"Downloading {candidate} via https.")
+            downloaded = _http_download_file(
+                url=base_url + candidate,
+                dest=candidate_local_path,
+                auth=auth,
+                timeout=120,
+            )
+            _validate_netcdf_payload(downloaded)
+            return downloaded
+        except Exception as err:
+            last_err = err
+            if candidate_local_path.is_file():
+                candidate_local_path.unlink()
+    raise last_err
+
+
+def _download_remote_file_via_ftp_atomic(
+    ftp: ftplib.FTP,
+    remote_file: str,
+    local_path: str | Path,
+) -> str:
+    """Download one file via FTP to a temporary file, then atomically move."""
+    local_path = Path(local_path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{local_path.name}.",
+            suffix=".part",
+            dir=local_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            ftp.retrbinary("RETR " + remote_file, tmp_file.write)
+        os.replace(temp_path, local_path)
+        return str(local_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+def _load_cs_full_file_names_for(track_idx: pd.DatetimeIndex) -> pd.Series | None:
+    """Load and refresh file-name catalog once for missing track IDs."""
+    try:
+        file_names = load_cs_full_file_names(update="no")
+    except Exception as err:
+        warnings.warn(
+            f"Could not load local file-name catalog: {err}. Falling back to FTP.",
+            category=UserWarning,
+        )
+        return None
+    if not track_idx.isin(file_names.index).all():
+        try:
+            file_names = load_cs_full_file_names(update="regular")
+        except Exception as err:
+            warnings.warn(
+                "Could not refresh file-name catalog via FTP update: "
+                f"{err}. Falling back to FTP for unresolved tracks.",
+                category=UserWarning,
+            )
+    return file_names
+
+
+def _download_files_via_ftp(
     track_idx: pd.DatetimeIndex | str,
     stop_event: Event = None,
-    # baseline: str = "latest",
-):
-    """Download all missing monthly L1b files for ``track_idx``."""
+) -> None:
+    """Download all missing monthly L1b files via FTP."""
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
     for year_month_str in year_month_str_list:
         _status(f"Scanning {year_month_str} for missing files.")
@@ -1196,7 +1349,11 @@ def download_files(
         except FileNotFoundError:
             os.makedirs(os.path.join(l1b_path, year_month_str))
             currently_present_files = []
-        # TODO catch "ftplib.error_perm: 530 Login incorrect." and attempt https download
+        existing_track_ids = {name[:15] for name in currently_present_files}
+        month_tracks = pd.DatetimeIndex(
+            track_idx[track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str]
+        )
+        month_track_ids = month_tracks.strftime("%Y%m%dT%H%M%S")
         with ftp_cs2_server(timeout=120) as ftp:
             try:
                 ftp.cwd("/SIR_SIN_L1/" + year_month_str)
@@ -1205,26 +1362,134 @@ def download_files(
                     "Directory /SIR_SIN_L1/" + year_month_str + " couldn't be accessed."
                 )
                 continue
-            for remote_file in ftp.nlst():
+            remote_listing = ftp.nlst()
+            for track_id in month_track_ids:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if (
-                    remote_file[-3:] == ".nc"
-                    and pd.to_datetime(remote_file[19:34]) in track_idx
-                    and remote_file[19:] not in currently_present_files
-                ):
-                    local_path = os.path.join(l1b_path, year_month_str, remote_file)
-                    try:
-                        with open(local_path, "wb") as local_file:
-                            _status(f"Downloading {remote_file}.")
-                            # [enhancement] use `binary_cache` as buffer instead of
-                            # removing on fail
-                            ftp.retrbinary("RETR " + remote_file, local_file.write)
-                    except Exception:
-                        _status(f"Download failed for {remote_file}.")
-                        if os.path.isfile(local_path):
-                            os.remove(local_path)
-                        raise
+                if track_id in existing_track_ids:
+                    continue
+                remote_file = _select_lta_then_offl_for_track(track_id, remote_listing)
+                local_path = os.path.join(l1b_path, year_month_str, remote_file)
+                try:
+                    _status(f"Downloading {remote_file}.")
+                    _download_remote_file_via_ftp_atomic(ftp, remote_file, local_path)
+                except Exception:
+                    _status(f"Download failed for {remote_file}.")
+                    raise
+                currently_present_files.append(remote_file[19:])
+                existing_track_ids.add(track_id)
+
+
+def _download_single_file_via_ftp(track_id: str) -> str:
+    """Download one L1b file for a single CryoSat track ID via FTP."""
+    retries = 10
+    while retries > 0:
+        try:
+            with ftp_cs2_server() as ftp:
+                ftp.cwd("/SIR_SIN_L1/" + pd.to_datetime(track_id).strftime("%Y/%m"))
+                remote_file = _select_lta_then_offl_for_track(track_id, ftp.nlst())
+                local_path = os.path.join(
+                    data_path, "L1b", pd.to_datetime(track_id).strftime("%Y/%m")
+                )
+                if not os.path.isdir(local_path):
+                    os.makedirs(local_path)
+                local_path = os.path.join(local_path, remote_file)
+                try:
+                    _status(f"Downloading {remote_file}.")
+                    return _download_remote_file_via_ftp_atomic(
+                        ftp, remote_file, local_path
+                    )
+                except Exception:
+                    _status(f"Download failed for {remote_file}.")
+                    raise
+        except ftplib.error_temp as err:
+            _status(
+                f"{err} raised. Retrying track id {track_id} in 10 s "
+                f"(attempt {11 - retries}/10)."
+            )
+            time.sleep(10)
+            retries -= 1
+    raise RuntimeError(f"FTP retries exhausted for track id {track_id}.")
+
+
+def download_files(
+    track_idx: pd.DatetimeIndex | str,
+    stop_event: Event = None,
+    # baseline: str = "latest",
+):
+    """Download all missing monthly L1b files for ``track_idx``."""
+    track_idx = pd.DatetimeIndex(track_idx).sort_values()
+    year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
+    try:
+        user, password, _ = _resolve_esa_ftp_credentials()
+        https_auth = (user, password)
+    except RuntimeError as err:
+        warnings.warn(
+            f"Could not configure HTTPS credentials ({err}). Using FTP download.",
+            category=UserWarning,
+        )
+        _download_files_via_ftp(track_idx, stop_event=stop_event)
+        _status(
+            "Finished downloading tracks for months: "
+            + ", ".join(str(x) for x in year_month_str_list)
+        )
+        return
+    file_names = _load_cs_full_file_names_for(track_idx)
+    if file_names is None:
+        _download_files_via_ftp(track_idx, stop_event=stop_event)
+        _status(
+            "Finished downloading tracks for months: "
+            + ", ".join(str(x) for x in year_month_str_list)
+        )
+        return
+    fallback_tracks = []
+    for year_month_str in year_month_str_list:
+        _status(f"Scanning {year_month_str} for missing files.")
+        if stop_event is not None and stop_event.is_set():
+            return
+        try:
+            currently_present_files = [
+                x[19:] for x in os.listdir(os.path.join(l1b_path, year_month_str))
+            ]
+        except FileNotFoundError:
+            os.makedirs(os.path.join(l1b_path, year_month_str))
+            currently_present_files = []
+        existing_track_ids = {file_name[:15] for file_name in currently_present_files}
+        month_tracks = track_idx[
+            track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str
+        ]
+        for track_id in month_tracks:
+            if stop_event is not None and stop_event.is_set():
+                return
+            track_id_str = track_id.strftime("%Y%m%dT%H%M%S")
+            if track_id_str in existing_track_ids:
+                continue
+            if track_id not in file_names.index:
+                fallback_tracks.append(track_id)
+                continue
+            remote_file = file_names.loc[track_id] + ".nc"
+            local_path = Path(l1b_path, year_month_str, remote_file)
+            try:
+                downloaded = Path(
+                    _download_named_file_https(
+                        track_id=track_id,
+                        remote_file=remote_file,
+                        local_path=local_path,
+                        auth=https_auth,
+                    )
+                )
+                currently_present_files.append(downloaded.name[19:])
+                existing_track_ids.add(track_id_str)
+            except Exception as err:
+                warnings.warn(
+                    "HTTPS download failed for "
+                    f"{remote_file}: {err}. Falling back to FTP.",
+                    category=UserWarning,
+                )
+                fallback_tracks.append(track_id)
+    if fallback_tracks:
+        fallback_tracks = pd.DatetimeIndex(fallback_tracks).unique().sort_values()
+        _download_files_via_ftp(fallback_tracks, stop_event=stop_event)
     _status(
         "Finished downloading tracks for months: "
         + ", ".join(str(x) for x in year_month_str_list)
@@ -1233,67 +1498,41 @@ def download_files(
 
 def download_single_file(track_id: str) -> str:
     """Download one L1b file for a single CryoSat track ID."""
-    # currently only CryoSat-2
-    retries = 10
-    while retries > 0:
+    track_id_timestamp = pd.to_datetime(track_id)
+    track_id = track_id_timestamp.strftime("%Y%m%dT%H%M%S")
+    try:
+        user, password, _ = _resolve_esa_ftp_credentials()
+        https_auth = (user, password)
+    except RuntimeError as err:
+        warnings.warn(
+            f"Could not configure HTTPS credentials ({err}). Using FTP download.",
+            category=UserWarning,
+        )
+        return _download_single_file_via_ftp(track_id)
+    file_names = _load_cs_full_file_names_for(pd.DatetimeIndex([track_id_timestamp]))
+    if file_names is not None and track_id_timestamp in file_names.index:
+        filename = file_names.loc[track_id_timestamp] + ".nc"
+        local_path = Path(
+            data_path, "L1b", track_id_timestamp.strftime("%Y/%m"), filename
+        )
         try:
-            with ftp_cs2_server() as ftp:
-                ftp.cwd("/SIR_SIN_L1/" + pd.to_datetime(track_id).strftime("%Y/%m"))
-                for remote_file in ftp.nlst():
-                    if remote_file[-3:] == ".nc" and remote_file[19:34] == track_id:
-                        local_path = os.path.join(
-                            data_path, "L1b", pd.to_datetime(track_id).strftime("%Y/%m")
-                        )
-                        if not os.path.isdir(local_path):
-                            os.makedirs(local_path)
-                        local_path = os.path.join(local_path, remote_file)
-                        try:
-                            with open(local_path, "wb") as local_file:
-                                _status(f"Downloading {remote_file}.")
-                                ftp.retrbinary("RETR " + remote_file, local_file.write)
-                                return local_path
-                        except Exception:
-                            _status(f"Download failed for {remote_file}.")
-                            if os.path.isfile(local_path):
-                                os.remove(local_path)
-                            raise
-                _status(
-                    f"No remote file found for track id {track_id} in directory {ftp.pwd()}."
-                )
-                # ! should this raise an error?
-                raise FileNotFoundError()
-        except (ftplib.error_temp, ftplib.error_perm, KeyError) as err:
-            if isinstance(err, ftplib.error_temp):
-                _status(
-                    f"{err} raised. Retrying track id {track_id} in 10 s "
-                    f"(attempt {11 - retries}/10)."
-                )
-                time.sleep(10)
-                retries -= 1
-            else:
-                if isinstance(err, KeyError) and "user" not in str(err):
-                    raise
-                warnings.warn("Using https download SARIn L1b data.", category=UserWarning)
-                base_url = r"https://science-pds.cryosat.esa.int/?do=download&file=Cry0Sat2_data"\
-                    r"%2FSIR_SIN_L1%2F" + pd.to_datetime(track_id).strftime("%Y%%2F%m") + "%2F"
-                filename = load_cs_full_file_names().loc[track_id] + ".nc"
-                from pathlib import Path  # will be obsolete once data_path is Path
-                local_path = Path(
-                    data_path, "L1b", pd.to_datetime(track_id).strftime("%Y/%m"), filename
-                )
-                if not local_path.parent.is_dir():
-                    local_path.parent.mkdir(parents=True)
-                try:
-                    _http_download_file(
-                        url=base_url + filename,
-                        dest=local_path,
-                    )
-                except Exception as err:
-                    _http_download_file(
-                        url=base_url + filename.replace("OFFL", "LTA_"),
-                        dest=local_path,  # the filename is not adjusted to be consistent with the filename table
-                    )
-                return local_path
+            return _download_named_file_https(
+                track_id=track_id_timestamp,
+                remote_file=filename,
+                local_path=local_path,
+                auth=https_auth,
+            )
+        except Exception as err:
+            warnings.warn(
+                f"HTTPS download failed for {filename}: {err}. Falling back to FTP.",
+                category=UserWarning,
+            )
+    else:
+        warnings.warn(
+            f"No file-name catalog entry found for {track_id}. Falling back to FTP.",
+            category=UserWarning,
+        )
+    return _download_single_file_via_ftp(track_id)
 
 
 def drop_waveform(cs_l1b_ds, time_20_ku_mask):

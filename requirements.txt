@@ -11,6 +11,7 @@ dask
 defusedxml # will be optional in future. used for additional security
 geopandas>=1.0.1 # implies among others: shapely
 h5py
+keyring
 matplotlib
 numpy
 packaging

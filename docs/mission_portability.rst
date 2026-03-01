@@ -23,7 +23,8 @@ Code locations to review first
 
    - ``ftp_cs2_server`` host: ``science-pds.cryosat.esa.int``
    - remote directories under ``/SIR_SIN_L1/<year>/<month>``
-   - HTTP fallback URL templates in ``download_single_file``
+   - HTTPS URL templates in ``download_single_file`` (primary path for
+     L1b downloads); FTP remains fallback and metadata update transport
 
 4. L1b flag semantics in :mod:`cryoswath.l1b` and :mod:`cryoswath.misc`.
 

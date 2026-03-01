@@ -24,12 +24,15 @@ from waveform-level processing to gridded elevation products.
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
 - Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
-- Starting **Monday, February 16, 2026**, downloading CryoSat resources
+- Downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
-- FTP credentials are resolved in this order:
-  `~/.netrc` (with explicit login/password), then
-  `CRYOSWATH_FTP_USER`/`CRYOSWATH_FTP_PASSWORD`, then legacy `config.ini [user]`
+- ESA credentials are resolved in this order:
+  `EOIAM_USER`/`EOIAM_PASSWORD`, then
+  keyring (preferred for interactive setup), then
+  `~/.netrc` (plaintext fallback), then legacy `config.ini [user]`
   `name/password` (temporary fallback).
+- L1b file downloads are HTTPS-first. FTP remains a fallback path and is
+  still used for metadata refresh flows (catalog/track updates).
 - Anonymous FTP login is no longer supported.
 - Install `xarray` and `zarr` together to avoid version mismatches.
 
@@ -129,10 +132,12 @@ cryoswath-init
 `scripts/config.ini` with your base data path. The paths can be
 reconfigured in `config.ini` if you use a different layout.
 
-To avoid storing secrets in `config.ini`, use `~/.netrc` (preferred) or
-environment variables for FTP credentials and keep `config.ini` focused on
-paths.
-To create or update your `~/.netrc` entry interactively, run:
+To avoid storing secrets in `config.ini`, use keyring (preferred) or
+environment variables for ESA credentials and keep `config.ini` focused on
+paths. You can configure keyring credentials interactively with:
+`cryoswath-update-keyring`.
+If you need a fallback, you can write `~/.netrc` (this stores the password in
+plaintext) using:
 `cryoswath-update-netrc`.
 
 ## Tutorials and documentation

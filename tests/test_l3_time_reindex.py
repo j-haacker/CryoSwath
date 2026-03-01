@@ -7,7 +7,12 @@ import cryoswath.l3 as l3
 
 def _tiny_dataset(times):
     return xr.Dataset(
-        data_vars={"_median": (("time", "x", "y"), np.arange(len(times), dtype=float)[:, None, None])},
+        data_vars={
+            "_median": (
+                ("time", "x", "y"),
+                np.arange(len(times), dtype=float)[:, None, None],
+            )
+        },
         coords={"time": pd.DatetimeIndex(times), "x": [0], "y": [0]},
     )
 

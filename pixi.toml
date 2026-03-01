@@ -3,6 +3,7 @@ name = "cryoswath"
 description = "CryoSwath environment using pixi"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
+conda-pypi-map = { conda-forge = "conda-pypi-map.json", bioconda = "conda-pypi-map.json" }
 
 [dependencies]
 python = "3.11.*"
@@ -14,10 +15,11 @@ geopandas = ">=1.0.1"
 gitpython = "*"
 h5netcdf = "*"
 h5py = "*"
+keyring = "*"
 matplotlib = "*"
 numpy = "*"
 packaging = "*"
-pandas = "*"
+pandas = ">=2,<3"
 pyarrow = "*"
 pyogrio = "*"
 pyproj = "*"
@@ -64,15 +66,18 @@ docs-build = "python -m sphinx -b html docs docs/_build/html"
 docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
 
 [feature.test.tasks]
-test-unit = "pytest -q tests/test_l1b.py"
+test-unit = "pytest -q tests/test_*"
+export-conda-for-notebooks = "bash \"$PIXI_PROJECT_ROOT/tests/reports/export_conda_env_from_pixi.sh\""
 
 [feature.test.tasks.test-notebooks]
+depends-on = ["export-conda-for-notebooks"]
 cmd = "snakemake --snakefile Snakefile --cores 1 --use-conda"
 cwd = "tests/reports"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [feature.test.tasks.test-tutorial-notebooks]
 args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/scripts" }]
+depends-on = ["export-conda-for-notebooks"]
 cmd = "snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 1 --use-conda"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 

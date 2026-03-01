@@ -11,6 +11,8 @@ __all__ = [
     "define_elev_band_edges",
     "discard_frontal_retreat_zone",
     "download_file",
+    "download_rgi_o1region",
+    "download_rgi_cli",
     "effective_sample_size",
     "extend_filename",
     "fill_missing_coords",
@@ -36,6 +38,8 @@ __all__ = [
     "sel_chunk_idx_range",
     "sel_chunk_range",
     "update_email",
+    "update_keyring",
+    "update_keyring_cli",
     "update_netrc",
     "update_netrc_cli",
     "update_track_database",
@@ -72,6 +76,17 @@ import inspect
 import numpy as np
 import os
 import netrc
+
+try:
+    import keyring
+    from keyring.errors import KeyringError
+except ImportError:
+    keyring = None
+
+    class KeyringError(Exception):
+        """Fallback keyring error if the keyring package is unavailable."""
+
+
 from packaging.version import Version
 import pandas as pd
 from pathlib import Path
@@ -92,6 +107,7 @@ from sklearn import linear_model, preprocessing
 import stackstac
 import sys
 from tables import NaturalNameWarning
+import tempfile
 import time
 import threading
 import traceback
@@ -132,20 +148,39 @@ def init_project():
     with open(config_file, "w") as f:
         config.write(f)
     print(
-        "Set FTP credentials in ~/.netrc (preferred) or via "
-        "CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD. Legacy fallback uses "
-        "config.ini [user] name/password."
+        "Set credentials in environment variables "
+        f"{_ESA_ENV_USER} and its corresponding password variable, "
+        "keyring (preferred for interactive setup), or as plaintext in "
+        "~/.netrc (fallback only). Legacy fallback uses config.ini [user] "
+        "name/password."
     )
     if sys.stdin.isatty():
-        answer = (
-            input("Configure ~/.netrc credentials now? [y/N]: ").strip().lower()
-        )
-        if answer in {"y", "yes"}:
+        answer = input("Configure keyring credentials now? [Y/n]: ").strip().lower()
+        if answer in {"", "y", "yes"}:
             try:
-                netrc_path = update_netrc()
-                print(f"Stored credentials in {netrc_path}.")
+                keyring_user = update_keyring()
+                print(
+                    "Stored credentials for "
+                    f"{keyring_user} in keyring service {_ESA_AUTH_IDP_HOST}."
+                )
             except Exception as err:
-                print(f"Could not configure ~/.netrc automatically: {err}")
+                print(f"Could not configure keyring automatically: {err}")
+                answer = (
+                    input(
+                        "Create ~/.netrc fallback? This stores your password in "
+                        "plaintext. [y/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if answer in {"y", "yes"}:
+                    try:
+                        netrc_path = update_netrc()
+                        print(f"Wrote plaintext credentials to {netrc_path}.")
+                    except Exception as netrc_err:
+                        print(
+                            f"Could not configure ~/.netrc automatically: {netrc_err}"
+                        )
 
 
 # Paths ##############################################################
@@ -231,6 +266,33 @@ _norm_sf_1 = norm.sf(1)
 empty_GeoDataFrame = gpd.GeoDataFrame(
     columns=["dummy", "geometry"], geometry="geometry"
 )
+_ESA_AUTH_IDP_HOST = "eoiam-idp.eo.esa.int"
+_ESA_CS2_HOST = "science-pds.cryosat.esa.int"
+_ESA_CRYOSWATH_KEYRING_SERVICE = "cryoswath.esa"  # legacy keyring service name
+_ESA_KEYRING_SERVICE_CANDIDATES = (
+    _ESA_AUTH_IDP_HOST,
+    _ESA_CS2_HOST,
+    _ESA_CRYOSWATH_KEYRING_SERVICE,
+)
+_ESA_KEYRING_DEFAULT_USER_KEY = "__default_user__"
+_ESA_KEYRING_DEFAULT_USER_KEYS = (
+    _ESA_KEYRING_DEFAULT_USER_KEY,
+    "default_user",
+    "username",
+)
+_ESA_ENV_USER = "EOIAM_USER"
+_ESA_ENV_PASSWORD = "EOIAM_PASSWORD"
+_RGI_DOWNLOAD_BASE_URL = (
+    "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files"
+)
+_ARCTICDEM_100M_V41_ARCHIVE_URL = (
+    "https://data.pgc.umn.edu/elev/dem/setsm/ArcticDEM/mosaic/v4.1/100m/"
+    "arcticdem_mosaic_100m_v4.1.tar.gz"
+)
+_REMA_100M_V20_FILLED_COP30_ARCHIVE_URL = (
+    "https://data.pgc.umn.edu/elev/dem/setsm/REMA/mosaic/v2.0/100m/"
+    "rema_mosaic_100m_v2.0_filled_cop30.tar.gz"
+)
 
 # Functions ##########################################################
 
@@ -261,6 +323,7 @@ class binary_chache:
 
 def chunk_idx(ds, dim, values):
     """Map coordinate value(s) to chunk index along ``dim``."""
+
     def _inner(val):
         if val < ds[dim][0] or val > ds[dim][-1]:
             return None
@@ -596,20 +659,42 @@ def download_dem(
         )
 
 
-def download_file(url: str, dest: str | Path) -> str:
+def download_file(
+    url: str,
+    dest: str | Path,
+    auth: tuple[str, str] | None = None,
+    timeout: int | float = 120,
+) -> str:
     """Download ``url`` to ``dest`` using streamed HTTP requests."""
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
     # snippet adapted from https://stackoverflow.com/a/16696317
     # authors: https://stackoverflow.com/users/427457/roman-podlinov
     #      and https://stackoverflow.com/users/12641442/jenia
     # NOTE the stream=True parameter below
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                # If you have chunk encoded response uncomment if
-                # and set chunk_size parameter to None.
-                # if chunk:
-                f.write(chunk)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{dest_path.name}.",
+            suffix=".part",
+            dir=dest_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            with requests.get(url, stream=True, auth=auth, timeout=timeout) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    # If you have chunk encoded response uncomment if
+                    # and set chunk_size parameter to None.
+                    # if chunk:
+                    tmp_file.write(chunk)
+        os.replace(temp_path, dest_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+    return str(dest_path)
 
 
 def drop_small_glaciers(
@@ -929,23 +1014,81 @@ def flag_translator(cs_l1b_flag):
 def ftp_cs2_server(**kwargs):
     """Yield authenticated FTP connection to ESA CryoSat server."""
     user, password, source = _resolve_esa_ftp_credentials()
-    with ftplib.FTP("science-pds.cryosat.esa.int", **kwargs) as ftp:
+    with ftplib.FTP_TLS(_ESA_CS2_HOST, **kwargs) as ftp:
         try:
             ftp.login(user=user, passwd=password)
         except ftplib.error_perm as err:
             raise RuntimeError(
                 "ESA FTP authentication failed using credentials from "
-                f"{source}. Configure ~/.netrc for science-pds.cryosat.esa.int "
-                "or set CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD."
+                f"{source}. Configure keyring via cryoswath-update-keyring, set "
+                f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
+                "~/.netrc (plaintext fallback)."
             ) from err
         yield ftp
 
 
+def _resolve_esa_env_credentials() -> tuple[str, str, str] | None:
+    """Resolve ESA credentials from environment variables."""
+    env_user = os.environ.get(_ESA_ENV_USER)
+    env_password = os.environ.get(_ESA_ENV_PASSWORD)
+    if env_user and env_password:
+        return env_user, env_password, "environment variables"
+    if env_user or env_password:
+        warnings.warn(
+            f"Both {_ESA_ENV_USER} and {_ESA_ENV_PASSWORD} are required to use "
+            "environment-variable credentials. Falling back to keyring/netrc.",
+            category=UserWarning,
+            stacklevel=2,
+        )
+    return None
+
+
+def _resolve_esa_keyring_credentials() -> tuple[str, str, str] | None:
+    """Resolve ESA credentials from keyring if available."""
+    if keyring is None:
+        return None
+    try:
+        env_users = []
+        user = os.environ.get(_ESA_ENV_USER)
+        if user:
+            env_users.append(user)
+        for service in _ESA_KEYRING_SERVICE_CANDIDATES:
+            for user in env_users:
+                password = keyring.get_password(service, user)
+                if password:
+                    return user, password, f"keyring service {service}"
+            for username_key in _ESA_KEYRING_DEFAULT_USER_KEYS:
+                keyring_user = keyring.get_password(service, username_key)
+                if keyring_user:
+                    keyring_password = keyring.get_password(service, keyring_user)
+                    if keyring_password:
+                        return (
+                            keyring_user,
+                            keyring_password,
+                            f"keyring service {service}",
+                        )
+    except KeyringError as err:
+        warnings.warn(
+            f"Could not read ESA credentials from keyring: {err}",
+            category=UserWarning,
+            stacklevel=2,
+        )
+    return None
+
+
 def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
-    """Resolve ESA FTP credentials from netrc, env, and legacy config."""
+    """Resolve ESA credentials from env, keyring, netrc, and legacy config."""
+
+    env_auth = _resolve_esa_env_credentials()
+    if env_auth is not None:
+        return env_auth
+
+    keyring_auth = _resolve_esa_keyring_credentials()
+    if keyring_auth is not None:
+        return keyring_auth
 
     try:
-        netrc_auth = netrc.netrc().authenticators("science-pds.cryosat.esa.int")
+        netrc_auth = netrc.netrc().authenticators(_ESA_CS2_HOST)
     except (FileNotFoundError, netrc.NetrcParseError):
         netrc_auth = None
     if netrc_auth is not None:
@@ -954,14 +1097,9 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
             return login, password, "~/.netrc"
         if password and not login:
             raise RuntimeError(
-                "~/.netrc entry for science-pds.cryosat.esa.int is missing login. "
+                f"~/.netrc entry for {_ESA_CS2_HOST} is missing login. "
                 "Anonymous FTP login is no longer supported."
             )
-
-    env_user = os.environ.get("CRYOSWATH_FTP_USER")
-    env_password = os.environ.get("CRYOSWATH_FTP_PASSWORD")
-    if env_user and env_password:
-        return env_user, env_password, "environment variables"
 
     config = ConfigParser()
     config.read("config.ini")
@@ -970,17 +1108,21 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
         if "name" in section and "password" in section:
             warnings.warn(
                 "Using [user] name/password from config.ini is deprecated. "
-                "Prefer ~/.netrc or CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD.",
+                "Prefer environment variables, keyring, or ~/.netrc.",
                 category=DeprecationWarning,
                 stacklevel=2,
             )
-            return section["name"], section["password"], "config.ini [user] name/password"
+            return (
+                section["name"],
+                section["password"],
+                "config.ini [user] name/password",
+            )
 
     raise RuntimeError(
-        "No ESA FTP credentials found. Configure ~/.netrc with login/password, "
-        "or set CRYOSWATH_FTP_USER and CRYOSWATH_FTP_PASSWORD, "
-        "or use legacy config.ini [user] name/password. Anonymous login is "
-        "no longer supported."
+        f"No ESA credentials found. Configure {_ESA_ENV_USER} and "
+        f"{_ESA_ENV_PASSWORD}, keyring via cryoswath-update-keyring, or "
+        "~/.netrc (plaintext fallback), or use legacy config.ini [user] "
+        "name/password. Anonymous login is no longer supported."
     )
 
 
@@ -1085,24 +1227,110 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
             "See doc for further info."
         )
     if lat > 0:
-        dem_filename = "arcticdem_mosaic_100m_v4.1_dem.tif"
-        if not (dem_path / dem_filename).is_file():
-            dem_filename = "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
+        preferred_dem_filename = "arcticdem_mosaic_100m_v4.1_dem.tif"
+        fallback_dem_filename = "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
     else:
-        dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem_100m-mean.tif"
-        if not (dem_path / dem_filename).is_file():
-            dem_filename = "rema-mosaics-v2.0-32m.zarr"
+        preferred_dem_filename = "rema_mosaic_100m_v2.0_filled_cop30_dem.tif"
+        fallback_dem_filename = "rema-mosaics-v2.0-32m_100m-mean.zarr"
+    dem_filename = preferred_dem_filename
+    if not (dem_path / dem_filename).is_file():
+        dem_filename = fallback_dem_filename
+
+    def default_dem_archive_url(filename: str) -> str | None:
+        if filename.startswith("arcticdem_mosaic_100m_v4.1_"):
+            return _ARCTICDEM_100M_V41_ARCHIVE_URL
+        if filename.startswith("rema_mosaic_100m_v2.0_filled_cop30_"):
+            return _REMA_100M_V20_FILLED_COP30_ARCHIVE_URL
+        return None
+
+    def download_default_dem(filename: str, timeout: int | float = 120) -> Path:
+        archive_url = default_dem_archive_url(filename)
+        if archive_url is None:
+            raise FileNotFoundError(
+                f"No automatic download source configured for DEM file {filename}."
+            )
+        dem_dir = Path(dem_path)
+        dem_dir.mkdir(parents=True, exist_ok=True)
+        archive_name = archive_url.rsplit("/", maxsplit=1)[-1]
+        archive_path = dem_dir / archive_name
+        extract_root = None
+        download_file(
+            url=archive_url,
+            dest=archive_path,
+            auth=None,
+            timeout=timeout,
+        )
+        try:
+            extract_root = Path(
+                tempfile.mkdtemp(prefix=f".{archive_name}.", dir=str(dem_dir))
+            )
+            shutil.unpack_archive(archive_path, extract_root)
+            extract_entries = list(extract_root.iterdir())
+            source_dir = (
+                extract_entries[0]
+                if len(extract_entries) == 1 and extract_entries[0].is_dir()
+                else extract_root
+            )
+            for entry in list(source_dir.iterdir()):
+                target = dem_dir / entry.name
+                if target.exists():
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                shutil.move(str(entry), str(target))
+        finally:
+            if archive_path.exists():
+                archive_path.unlink()
+            if extract_root is not None and extract_root.exists():
+                shutil.rmtree(extract_root, ignore_errors=True)
+
+        output_file = dem_dir / filename
+        if not output_file.is_file():
+            raise FileNotFoundError(
+                "Downloaded DEM archive did not contain expected file "
+                f"{output_file.name}."
+            )
+        return output_file
+
     if not (dem_path / dem_filename).exists():
+        archive_url = default_dem_archive_url(preferred_dem_filename)
+        if archive_url is not None and not (dem_path / preferred_dem_filename).exists():
+            warnings.warn(
+                f"DEM file {preferred_dem_filename} is missing. "
+                "Attempting automatic download now.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+            try:
+                download_default_dem(preferred_dem_filename)
+            except Exception as err:
+                warnings.warn(
+                    f"Automatic DEM download failed for {preferred_dem_filename}: {err}",
+                    category=UserWarning,
+                    stacklevel=2,
+                )
+        if (dem_path / preferred_dem_filename).exists():
+            return reader_or_store(dem_path / preferred_dem_filename)
+        if (dem_path / dem_filename).exists():
+            return reader_or_store(dem_path / dem_filename)
+
         raster_file_list = []
         for ext in raster_extensions:
             raster_file_list.extend(glob.glob("*." + ext, root_dir=dem_path))
         # raster_file_list = [file.name for file in dem_path.glob("*.tif")]
-        print(
-            "DEM not found with default filename. Please select from the following:\n",
-            ", ".join(raster_file_list),
-            flush=True,
-        )
-        dem_filename = input("Enter filename:")
+        if sys.stdin.isatty() and len(raster_file_list) > 0:
+            print(
+                "DEM not found with default filename. Please select from the following:\n",
+                ", ".join(raster_file_list),
+                flush=True,
+            )
+            dem_filename = input("Enter filename:")
+        else:
+            raise FileNotFoundError(
+                f"DEM file {dem_filename} is missing in {dem_path}. "
+                "Automatic download was unsuccessful or unavailable."
+            )
     return reader_or_store(dem_path / dem_filename)
 
 
@@ -1597,8 +1825,16 @@ def load_cs_full_file_names(
     file_names_path = aux_path / "CryoSat-2_SARIn_file_names.pkl"
     if os.path.isfile(file_names_path):
         file_names = pd.read_pickle(file_names_path).sort_index()
+    else:
+        file_names = pd.Series(dtype="object")
     if update == "no":
         return file_names
+    if update != "full" and file_names.empty:
+        warnings.warn(
+            f"No local file-name catalog found at {file_names_path}. Switching to full update.",
+            category=UserWarning,
+        )
+        update = "full"
     elif update == "quick":
         last_lta_idx = file_names.index[-1]
         print(last_lta_idx + pd.offsets.MonthBegin(-1, normalize=True))
@@ -1611,19 +1847,34 @@ def load_cs_full_file_names(
         )
     if update in ["regular", "version"]:
         # ! "regular" should also be baseline and version aware
-        last_lta_idx = file_names[(fn[3:7] == "LTA_" for fn in file_names)].index[-1]
+        lta_file_names = file_names[file_names.str[3:7] == "LTA_"]
+        if lta_file_names.empty:
+            last_lta_idx = file_names.index[-1]
+        else:
+            last_lta_idx = lta_file_names.index[-1]
         print(last_lta_idx + pd.offsets.MonthBegin(-1, normalize=True))
 
     with ftp_cs2_server() as ftp:
         ftp.cwd("/SIR_SIN_L1")
-        for year in ftp.nlst():
+        year_entries = sorted(
+            name
+            for name, facts in ftp.mlsd()
+            if facts.get("type") == "dir" and re.fullmatch(r"\d{4}", name)
+        )
+        for year in year_entries:
             if update != "full" and year < str(last_lta_idx.year):
                 print("skip", year)
                 continue
+            month = None
             try:
                 ftp.cwd(f"/SIR_SIN_L1/{year}")
                 print(f"entered /SIR_SIN_L1/{year}")
-                for month in ftp.nlst():
+                month_entries = sorted(
+                    name
+                    for name, facts in ftp.mlsd()
+                    if facts.get("type") == "dir" and re.fullmatch(r"\d{2}", name)
+                )
+                for month in month_entries:
                     if update != "full" and pd.to_datetime(
                         f"{year}-{month}"
                     ) < last_lta_idx + pd.offsets.MonthBegin(-1, normalize=True):
@@ -1632,25 +1883,32 @@ def load_cs_full_file_names(
                     print(f"cwd /SIR_SIN_L1/{year}/{month}")
                     ftp.cwd(f"/SIR_SIN_L1/{year}/{month}")
                     print(f"scanning /SIR_SIN_L1/{year}/{month}")
-                    for remote_file in ftp.nlst():
-                        if remote_file[-3:] == ".nc":
-                            remote_idx = pd.to_datetime(remote_file[19:34])
-                            if (
-                                update == "regular"
-                                and remote_idx in file_names.index
-                                and (
-                                    file_names.loc[remote_idx][3:7] == "LTA_"
-                                    or remote_file[3:7] == "OFFL"
-                                )
-                            ):
-                                continue
-                            file_names.loc[remote_idx] = remote_file[:-3]
+                    remote_files = sorted(
+                        name
+                        for name, facts in ftp.mlsd()
+                        if facts.get("type") == "file" and name.endswith(".nc")
+                    )
+                    for remote_file in remote_files:
+                        remote_idx = pd.to_datetime(remote_file[19:34])
+                        if (
+                            update == "regular"
+                            and remote_idx in file_names.index
+                            and (
+                                file_names.loc[remote_idx][3:7] == "LTA_"
+                                or remote_file[3:7] == "OFFL"
+                            )
+                        ):
+                            continue
+                        file_names.loc[remote_idx] = remote_file[:-3]
             except Exception:
-                warnings.warn(
-                    f"Error occurred in remote directory /SIR_SIN_L1/{year}/{month}."
-                )
+                if month is None:
+                    location = f"/SIR_SIN_L1/{year}"
+                else:
+                    location = f"/SIR_SIN_L1/{year}/{month}"
+                warnings.warn(f"Error occurred in remote directory {location}.")
 
     file_names.to_pickle(file_names_path)
+    print("updated track name list")
     return file_names
 
 
@@ -1818,7 +2076,9 @@ def load_cs_ground_tracks(
                         "This should only concern you, if you do expect tracks there.",
                     )
                     break
-                remote_files = ftp.nlst()
+                remote_files = [
+                    x[0] for x in ftp.mlsd() if x[0].lower().endswith(".hdr")
+                ]
             # cut the file list into chunks and dispatch to workers
             batch_size = len(remote_files) // (n_threads * 3) + 1
             while remote_files:
@@ -1841,8 +2101,8 @@ def load_cs_ground_tracks(
             # append to local collection and save the result, if any
             if new_tracks_collection:
                 cs_tracks = pd.concat(
-                    [cs_tracks, pd.concat(new_tracks_collection)], sort=True
-                )
+                    [cs_tracks, pd.concat(new_tracks_collection)]
+                ).sort_index()
                 duplicate = cs_tracks.index.duplicated(keep="last")
                 if duplicate.sum() > 0:
                     warnings.warn(f"{duplicate.sum()} duplicates found; dropping them.")
@@ -1880,6 +2140,135 @@ def load_cs_ground_tracks(
     return cs_tracks.set_crs(4326)
 
 
+def _normalize_rgi_product(product: str) -> str:
+    """Normalize RGI product aliases to `C` or `G`."""
+    if product.upper() == "C" or product == "complexes":
+        return "C"
+    if product.upper() == "G" or product in ["glaciers", "basins"]:
+        return "G"
+    raise ValueError(
+        f'Argument product should be either glaciers or complexes not "{product}".'
+    )
+
+
+def _normalize_rgi_o1code(o1code: str | int) -> str:
+    """Normalize an o1 region code to zero-padded two-digit form."""
+    o1code = str(o1code).strip()
+    if o1code.isdigit() and len(o1code) <= 2:
+        return f"{int(o1code):02d}"
+    match = re.match(r"^([0-9]{2})", o1code)
+    if match is None:
+        raise ValueError(f'o1code should start with "01".."20", not "{o1code}".')
+    return match.group(1)
+
+
+def _rgi_remote_product_url(product: str) -> str:
+    """Return RGI product directory URL for product code `C` or `G`."""
+    return f"{_RGI_DOWNLOAD_BASE_URL}/RGI2000-v7.0-{product}/"
+
+
+def _rgi_missing_message(product: str, o1code: str) -> str:
+    """Return user-facing message for missing RGI o1 product."""
+    return (
+        f"RGI file RGI2000-v7.0-{product}-{o1code}_... couldn't be found. "
+        "Make sure RGI files are available in data/auxiliary/RGI. If you did not "
+        "download them already, you can find them at "
+        f"{_rgi_remote_product_url(product)}. Mind that you need to unzip them. "
+        "If you decide to put them into a directory, name it as the file is named "
+        "(e.g. RGI2000-v7.0-G-01_alaska)."
+    )
+
+
+def _rgi_o1_archive_stem(o1code: str, product: str) -> str:
+    """Build deterministic archive stem from o1 metadata table."""
+    lut = pd.read_feather(
+        os.path.join(rgi_path, "RGI2000-v7.0-o1regions.feather"),
+        columns=["o1region", "long_code"],
+    ).set_index("o1region")
+    long_code = lut.loc[o1code, "long_code"]
+    return f"RGI2000-v7.0-{product}-{long_code}"
+
+
+def _find_rgi_o1region_source(o1code: str, product: str) -> Path | None:
+    """Return local path for an o1 region product, if available."""
+    try:
+        rgi_files = sorted(os.listdir(rgi_path))
+    except FileNotFoundError:
+        return None
+    for file in rgi_files:
+        if re.match(f"RGI2000-v7\\.0-{product}-{o1code}_.*", file):
+            file_path = Path(rgi_path, file)
+            if file.endswith(".feather") or file.endswith(".shp") or file_path.is_dir():
+                return file_path
+    return None
+
+
+def _read_rgi_o1region_source(file_path: str | Path) -> gpd.GeoDataFrame:
+    """Load one supported RGI o1 source file."""
+    file_path = Path(file_path)
+    if file_path.suffix == ".feather":
+        return gpd.read_feather(file_path)
+    if file_path.suffix == ".shp" or file_path.is_dir():
+        return gpd.read_file(file_path)
+    raise ValueError(f"Unsupported RGI source format: {file_path}")
+
+
+def download_rgi_o1region(
+    o1code: str,
+    product: str = "complexes",
+    force: bool = False,
+    timeout: int | float = 120,
+) -> str:
+    """Download and extract one RGI o1 region product."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+
+    if not force:
+        existing_source = _find_rgi_o1region_source(o1code, product)
+        if existing_source is not None:
+            return str(existing_source)
+
+    archive_stem = _rgi_o1_archive_stem(o1code, product)
+    remote_url = _rgi_remote_product_url(product) + f"{archive_stem}.zip"
+    rgi_dir = Path(rgi_path)
+    rgi_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = rgi_dir / f"{archive_stem}.zip"
+    target_dir = rgi_dir / archive_stem
+    if force and target_dir.exists():
+        if target_dir.is_dir():
+            shutil.rmtree(target_dir)
+        else:
+            target_dir.unlink()
+
+    user, password, _ = _resolve_esa_ftp_credentials()
+    download_file(
+        url=remote_url,
+        dest=archive_path,
+        auth=(user, password),
+        timeout=timeout,
+    )
+
+    extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir))
+    try:
+        shutil.unpack_archive(archive_path, extract_root, format="zip")
+        nested_dir = extract_root / archive_stem
+        if target_dir.exists():
+            if target_dir.is_dir():
+                shutil.rmtree(target_dir)
+            else:
+                target_dir.unlink()
+        if nested_dir.is_dir() and len(list(extract_root.iterdir())) == 1:
+            shutil.move(str(nested_dir), str(target_dir))
+        else:
+            shutil.move(str(extract_root), str(target_dir))
+            extract_root = None
+    finally:
+        if extract_root is not None and extract_root.exists():
+            shutil.rmtree(extract_root, ignore_errors=True)
+    archive_path.unlink(missing_ok=True)
+    return str(target_dir)
+
+
 def _load_o1region(
     o1code: str,
     product: str = "complexes",
@@ -1904,38 +2293,30 @@ def _load_o1region(
         gpd.GeoDataFrame: Queried RGI data with geometry column containing
         the outlines.
     """
-    if product == "complexes":
-        product = "C"
-    elif product in ["glaciers", "basins"]:
-        product = "G"
-    else:
-        raise ValueError(
-            f'Argument product should be either glaciers or complexes not "{product}".'
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    source = _find_rgi_o1region_source(o1code, product)
+    missing_message = _rgi_missing_message(product, o1code)
+    if source is None:
+        warnings.warn(
+            missing_message + " Attempting automatic download now.",
+            category=UserWarning,
+            stacklevel=2,
         )
-    rgi_files = os.listdir(rgi_path)
-    for file in rgi_files:
-        if re.match(f"RGI2000-v7\\.0-{product}-{o1code[:2]}_.*", file):
-            file_path = os.path.join(rgi_path, file)
-            if file.endswith(".feather"):
-                # print("reading feather")
-                o1region = gpd.read_feather(file_path)
-                # print("file read")
-            elif file.endswith(".shp") or os.path.isdir(file_path):
-                o1region = gpd.read_file(file_path)
-            else:
-                continue
-            break
-    if "o1region" not in locals():
-        print(
-            f"RGI file RGI2000-v7.0-{product}-{o1code[:2]}_... couldn't be found.",
-            "Make sure RGI files are available in data/auxiliary/RGI. If you did",
-            "not download them already, you can find them at",
-            f"https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-{product}/.",  # noqa: E501
-            "Mind that you need to unzip them. If you decide to put them into a",
-            "directory, name it as the file is named (e.g. RGI2000-v7.0-G-01_alaska).",
-        )
-        raise FileNotFoundError
-    return o1region
+        try:
+            download_rgi_o1region(o1code=o1code, product=product)
+        except Exception as err:
+            warnings.warn(
+                f"{missing_message} Automatic download failed: {err}",
+                category=UserWarning,
+                stacklevel=2,
+            )
+            raise FileNotFoundError(missing_message) from err
+        source = _find_rgi_o1region_source(o1code, product)
+        if source is None:
+            warnings.warn(missing_message, category=UserWarning, stacklevel=2)
+            raise FileNotFoundError(missing_message)
+    return _read_rgi_o1region_source(source)
 
 
 def _load_o2region(o2code: str, product: str = "complexes") -> gpd.GeoDataFrame:
@@ -2406,13 +2787,8 @@ def rgi_code_translator(
     """
     if isinstance(input, list):
         return [rgi_code_translator(element, out_type) for element in input]
-    elif (
-        isinstance(input, int) 
-        or (
-            isinstance(input, str)
-            and len(input) <= 2
-            and int(input) < 20
-        )
+    elif isinstance(input, int) or (
+        isinstance(input, str) and len(input) <= 2 and int(input) < 20
     ):
         return rgi_o1region_translator(int(input), out_type)
     elif (
@@ -2539,36 +2915,105 @@ def sel_chunk_range(ds, **dim_intervals):
     return ds
 
 
+def update_keyring(
+    user: str = None,
+    password: str = None,
+    *,
+    service: str = _ESA_AUTH_IDP_HOST,
+    username_key: str = _ESA_KEYRING_DEFAULT_USER_KEY,
+) -> str:
+    """Create or update keyring credentials for ESA data access."""
+    if keyring is None:
+        raise RuntimeError(
+            "The keyring package is not installed. Install `keyring` or use "
+            "~/.netrc (plaintext fallback)."
+        )
+    env_user = os.environ.get(_ESA_ENV_USER)
+    env_password = os.environ.get(_ESA_ENV_PASSWORD)
+    user = user or env_user
+    password = password or env_password
+    if user is None:
+        user = input("Enter ESA username: ").strip()
+    if password is None:
+        password = getpass.getpass("Enter ESA password: ")
+    if not user or not password:
+        raise ValueError("Both ESA user and password are required.")
+    try:
+        keyring.set_password(service, user, password)
+        keyring.set_password(service, username_key, user)
+        verify_user = keyring.get_password(service, username_key)
+        verify_password = keyring.get_password(service, user)
+    except KeyringError as err:
+        raise RuntimeError(
+            f"Could not store ESA credentials in keyring: {err}"
+        ) from err
+    if verify_user != user or verify_password != password:
+        raise RuntimeError(
+            "Could not verify keyring credentials after writing. "
+            "Your keyring backend may be locked or unsupported."
+        )
+    return user
+
+
+def update_keyring_cli() -> None:
+    """CLI wrapper around :func:`update_keyring`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath-update-keyring",
+        description="Create or update keyring credentials for ESA access.",
+    )
+    parser.add_argument("--user", default=None, help="ESA username.")
+    parser.add_argument("--password", default=None, help="ESA password.")
+    parser.add_argument(
+        "--service",
+        default=_ESA_AUTH_IDP_HOST,
+        help="Keyring service name.",
+    )
+    parser.add_argument(
+        "--username-key",
+        default=_ESA_KEYRING_DEFAULT_USER_KEY,
+        help="Keyring username key for storing the default user.",
+    )
+    args = parser.parse_args()
+    user = update_keyring(
+        user=args.user,
+        password=args.password,
+        service=args.service,
+        username_key=args.username_key,
+    )
+    print(f"Stored credentials for {user} in keyring service {args.service}.")
+
+
 def update_netrc(
     user: str = None,
     password: str = None,
     *,
-    machine: str = "science-pds.cryosat.esa.int",
+    machine: str = _ESA_CS2_HOST,
     netrc_file: str | Path = None,
 ) -> str:
-    """Create or update a ``.netrc`` entry for ESA FTP credentials.
+    """Create or update a plaintext ``.netrc`` entry for ESA credentials.
 
     Missing ``user`` or ``password`` values are read from
-    ``CRYOSWATH_FTP_USER`` and ``CRYOSWATH_FTP_PASSWORD`` first, then prompted
-    interactively.
+    ``EOIAM_USER`` and ``EOIAM_PASSWORD`` first, then prompted interactively.
 
     Args:
-        user (str, optional): FTP username.
-        password (str, optional): FTP password.
+        user (str, optional): ESA username.
+        password (str, optional): ESA password.
         machine (str, optional): Netrc machine host key.
         netrc_file (str | Path, optional): Override for target file path.
 
     Returns:
         str: Absolute path to the written netrc file.
     """
-    user = user or os.environ.get("CRYOSWATH_FTP_USER")
-    password = password or os.environ.get("CRYOSWATH_FTP_PASSWORD")
+    user = user or os.environ.get(_ESA_ENV_USER)
+    password = password or os.environ.get(_ESA_ENV_PASSWORD)
     if user is None:
-        user = input("Enter ESA FTP username: ").strip()
+        user = input("Enter ESA username: ").strip()
     if password is None:
-        password = getpass.getpass("Enter ESA FTP password: ")
+        password = getpass.getpass("Enter ESA password: ")
     if not user or not password:
-        raise ValueError("Both FTP user and password are required.")
+        raise ValueError("Both ESA user and password are required.")
 
     netrc_path = (
         Path(netrc_file).expanduser().resolve()
@@ -2604,13 +3049,15 @@ def update_netrc_cli() -> None:
 
     parser = ArgumentParser(
         "cryoswath-update-netrc",
-        description="Create or update ~/.netrc credentials for ESA FTP access.",
+        description=(
+            "Create or update ~/.netrc credentials for ESA access (plaintext fallback)."
+        ),
     )
-    parser.add_argument("--user", default=None, help="FTP username.")
-    parser.add_argument("--password", default=None, help="FTP password.")
+    parser.add_argument("--user", default=None, help="ESA username.")
+    parser.add_argument("--password", default=None, help="ESA password.")
     parser.add_argument(
         "--machine",
-        default="science-pds.cryosat.esa.int",
+        default=_ESA_CS2_HOST,
         help="Netrc machine host key.",
     )
     parser.add_argument(
@@ -2625,15 +3072,60 @@ def update_netrc_cli() -> None:
         machine=args.machine,
         netrc_file=args.netrc_file,
     )
-    print(f"Wrote credentials for {args.machine} to {netrc_path}")
+    print(
+        f"Wrote plaintext credentials for {args.machine} to {netrc_path}. "
+        "Prefer keyring for interactive setups."
+    )
+
+
+def download_rgi_cli() -> None:
+    """CLI wrapper around :func:`download_rgi_o1region`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath-download-rgi",
+        description=(
+            "Download and extract one RGI o1 region file bundle to data/auxiliary/RGI."
+        ),
+    )
+    parser.add_argument(
+        "--o1",
+        required=True,
+        help='RGI o1 region code (e.g. "09").',
+    )
+    parser.add_argument(
+        "--product",
+        default="complexes",
+        choices=["complexes", "glaciers", "C", "G"],
+        help="RGI product type (default: complexes).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Redownload and replace extracted directory even if local match exists.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120,
+        help="HTTP timeout in seconds (default: 120).",
+    )
+    args = parser.parse_args()
+    out_path = download_rgi_o1region(
+        o1code=args.o1,
+        product=args.product,
+        force=args.force,
+        timeout=args.timeout,
+    )
+    print(out_path)
 
 
 def update_email(email: str = None):
     """Deprecated helper for pre-2026 email-based FTP auth."""
     warnings.warn(
         "update_email() is deprecated. Anonymous/email FTP login is no longer "
-        "supported. Use ~/.netrc, CRYOSWATH_FTP_USER/CRYOSWATH_FTP_PASSWORD, "
-        "or legacy config.ini [user] name/password.",
+        "supported. Use environment variables, keyring, ~/.netrc (plaintext "
+        "fallback), or legacy config.ini [user] name/password.",
         category=DeprecationWarning,
         stacklevel=2,
     )
