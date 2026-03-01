@@ -49,8 +49,7 @@ Access requirements
 -------------------
 
 .. warning::
-   Starting **Monday, February 16, 2026**, downloading CryoSat resources
-   via CryoSwath requires an
+   Downloading CryoSat resources via CryoSwath requires an
    `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
 
 Set up your ESA credentials before running download workflows.

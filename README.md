@@ -24,7 +24,7 @@ from waveform-level processing to gridded elevation products.
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
 - Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
-- Starting **Monday, February 16, 2026**, downloading CryoSat resources
+- Downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
 - ESA credentials are resolved in this order:
   `EOIAM_USER`/`EOIAM_PASSWORD`, then
