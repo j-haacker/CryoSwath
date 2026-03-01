@@ -102,6 +102,7 @@ from sklearn import linear_model, preprocessing
 import stackstac
 import sys
 from tables import NaturalNameWarning
+import tempfile
 import time
 import threading
 import traceback
@@ -647,19 +648,35 @@ def download_file(
     timeout: int | float = 120,
 ) -> str:
     """Download ``url`` to ``dest`` using streamed HTTP requests."""
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
     # snippet adapted from https://stackoverflow.com/a/16696317
     # authors: https://stackoverflow.com/users/427457/roman-podlinov
     #      and https://stackoverflow.com/users/12641442/jenia
     # NOTE the stream=True parameter below
-    with requests.get(url, stream=True, auth=auth, timeout=timeout) as r:
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                # If you have chunk encoded response uncomment if
-                # and set chunk_size parameter to None.
-                # if chunk:
-                f.write(chunk)
-    return str(dest)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{dest_path.name}.",
+            suffix=".part",
+            dir=dest_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            with requests.get(url, stream=True, auth=auth, timeout=timeout) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    # If you have chunk encoded response uncomment if
+                    # and set chunk_size parameter to None.
+                    # if chunk:
+                    tmp_file.write(chunk)
+        os.replace(temp_path, dest_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+    return str(dest_path)
 
 
 def drop_small_glaciers(

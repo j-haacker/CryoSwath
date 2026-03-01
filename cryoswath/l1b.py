@@ -46,6 +46,7 @@ import rioxarray as rioxr
 from scipy.stats import median_abs_deviation, ttest_ind
 import shapely
 from threading import Event
+import tempfile
 import time
 import warnings
 import xarray as xr
@@ -1270,6 +1271,33 @@ def _download_named_file_https(
     raise last_err
 
 
+def _download_remote_file_via_ftp_atomic(
+    ftp: ftplib.FTP,
+    remote_file: str,
+    local_path: str | Path,
+) -> str:
+    """Download one file via FTP to a temporary file, then atomically move."""
+    local_path = Path(local_path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{local_path.name}.",
+            suffix=".part",
+            dir=local_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            ftp.retrbinary("RETR " + remote_file, tmp_file.write)
+        os.replace(temp_path, local_path)
+        return str(local_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
 def _load_cs_full_file_names_for(track_idx: pd.DatetimeIndex) -> pd.Series | None:
     """Load and refresh file-name catalog once for missing track IDs."""
     try:
@@ -1331,13 +1359,10 @@ def _download_files_via_ftp(
                 remote_file = _select_lta_then_offl_for_track(track_id, remote_listing)
                 local_path = os.path.join(l1b_path, year_month_str, remote_file)
                 try:
-                    with open(local_path, "wb") as local_file:
-                        _status(f"Downloading {remote_file}.")
-                        ftp.retrbinary("RETR " + remote_file, local_file.write)
+                    _status(f"Downloading {remote_file}.")
+                    _download_remote_file_via_ftp_atomic(ftp, remote_file, local_path)
                 except Exception:
                     _status(f"Download failed for {remote_file}.")
-                    if os.path.isfile(local_path):
-                        os.remove(local_path)
                     raise
                 currently_present_files.append(remote_file[19:])
                 existing_track_ids.add(track_id)
@@ -1358,14 +1383,10 @@ def _download_single_file_via_ftp(track_id: str) -> str:
                     os.makedirs(local_path)
                 local_path = os.path.join(local_path, remote_file)
                 try:
-                    with open(local_path, "wb") as local_file:
-                        _status(f"Downloading {remote_file}.")
-                        ftp.retrbinary("RETR " + remote_file, local_file.write)
-                        return local_path
+                    _status(f"Downloading {remote_file}.")
+                    return _download_remote_file_via_ftp_atomic(ftp, remote_file, local_path)
                 except Exception:
                     _status(f"Download failed for {remote_file}.")
-                    if os.path.isfile(local_path):
-                        os.remove(local_path)
                     raise
         except ftplib.error_temp as err:
             _status(

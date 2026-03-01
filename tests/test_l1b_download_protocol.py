@@ -216,3 +216,35 @@ def test_download_named_file_https_falls_back_to_offl_when_lta_missing(
     assert result == str(local_path)
     assert "CS_LTA__SIR_SIN_1B_20200101T000000_TEST.nc" in calls[0]
     assert "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST.nc" in calls[1]
+
+
+def test_download_remote_file_via_ftp_atomic_success(tmp_path):
+    local_path = tmp_path / "file.nc"
+
+    class FakeFtp:
+        def retrbinary(self, cmd, callback):
+            assert cmd == "RETR remote.nc"
+            callback(b"abc123")
+
+    result = l1b._download_remote_file_via_ftp_atomic(
+        FakeFtp(), "remote.nc", local_path
+    )
+    assert result == str(local_path)
+    assert local_path.read_bytes() == b"abc123"
+    assert [p.name for p in tmp_path.iterdir()] == ["file.nc"]
+
+
+def test_download_remote_file_via_ftp_atomic_cleans_temp_on_failure(tmp_path):
+    local_path = tmp_path / "file.nc"
+
+    class FailingFtp:
+        def retrbinary(self, cmd, callback):
+            callback(b"partial")
+            raise RuntimeError("transfer failed")
+
+    with pytest.raises(RuntimeError, match="transfer failed"):
+        l1b._download_remote_file_via_ftp_atomic(
+            FailingFtp(), "remote.nc", local_path
+        )
+    assert not local_path.exists()
+    assert list(tmp_path.iterdir()) == []
