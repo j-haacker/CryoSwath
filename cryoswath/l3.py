@@ -3,6 +3,7 @@
 __all__ = [
     "cache_l2_data",
     "build_dataset",
+    "extend_dataset",
 ]
 
 import dask.array
@@ -10,6 +11,7 @@ import datetime
 from dateutil.relativedelta import relativedelta
 import geopandas as gpd
 import h5py
+from dataclasses import dataclass
 import numpy as np
 import os
 import pandas as pd
@@ -17,6 +19,8 @@ from pyproj.crs import CRS
 import shapely
 import shutil
 import warnings
+from pathlib import Path
+import tempfile
 import xarray as xr
 
 from cryoswath import l1b, l2
@@ -31,6 +35,338 @@ from cryoswath.misc import (
     tmp_path,
 )
 from cryoswath.gis import buffer_4326_shp, ensure_pyproj_crs, find_planar_crs
+
+
+@dataclass(frozen=True, slots=True)
+class L3ExtensionSpec:
+    """Inferred metadata for extending an L3 store."""
+
+    base_store_path: Path | None
+    output_path: Path
+    region_id: str
+    start_datetime: pd.Timestamp
+    end_datetime: pd.Timestamp
+    timestep_months: int
+    window_ntimesteps: int
+    spatial_res_meter: float
+    crs: CRS | None
+    recompute_start_datetime: pd.Timestamp
+
+
+def _normalize_l3_end_datetime(end_datetime: str | pd.Timestamp) -> pd.Timestamp:
+    """Match build_dataset's inclusive month-end normalization."""
+    end_datetime = pd.to_datetime(end_datetime)
+    return end_datetime.normalize() + pd.offsets.MonthBegin() - pd.Timedelta(1, "s")
+
+
+def _infer_l3_month_step(data: xr.Dataset) -> int:
+    """Infer the monthly cadence from attrs or the time coordinate."""
+    for key in ["cryoswath_timestep_months", "timestep_months"]:
+        if key in data.attrs:
+            return int(data.attrs[key])
+    if "time" not in data.coords or data.sizes.get("time", 0) <= 1:
+        return 1
+    freq = pd.infer_freq(pd.DatetimeIndex(data.indexes["time"]))
+    if isinstance(freq, str) and freq.endswith("MS"):
+        step = freq[:-2]
+        return int(step) if step else 1
+    time_index = pd.DatetimeIndex(data.indexes["time"]).sort_values()
+    delta = relativedelta(time_index[1].to_pydatetime(), time_index[0].to_pydatetime())
+    return max(1, int(delta.years * 12 + delta.months))
+
+
+def _infer_l3_spatial_res_meter(data: xr.Dataset) -> float:
+    """Infer the spatial grid spacing from attrs or coordinate spacing."""
+    for key in ["cryoswath_spatial_res_meter", "spatial_res_meter"]:
+        if key in data.attrs:
+            return float(data.attrs[key])
+    if "x" in data.coords and data.sizes.get("x", 0) > 1:
+        x_vals = np.asarray(data.x.values)
+        spacing = np.diff(np.sort(np.unique(x_vals)))
+        if spacing.size:
+            return float(np.nanmedian(np.abs(spacing)))
+    if "y" in data.coords and data.sizes.get("y", 0) > 1:
+        y_vals = np.asarray(data.y.values)
+        spacing = np.diff(np.sort(np.unique(y_vals)))
+        if spacing.size:
+            return float(np.nanmedian(np.abs(spacing)))
+    return 500.0
+
+
+def _infer_l3_region_id(data: xr.Dataset, source: Path | None = None) -> str:
+    """Infer the region id from attrs, the source path, or geometry."""
+    for key in ["cryoswath_region_id", "region_id"]:
+        if key in data.attrs:
+            return str(data.attrs[key])
+    if source is not None:
+        stem = source.name
+        if stem.endswith(".zarr"):
+            stem = stem[: -len(".zarr")]
+        if "_monthly_" in stem:
+            return stem.split("_monthly_", 1)[0]
+    return find_region_id(data)
+
+
+def _infer_l3_window_ntimesteps(data: xr.Dataset) -> int:
+    """Infer the rolling-window width if it was stored."""
+    for key in ["cryoswath_window_ntimesteps", "window_ntimesteps"]:
+        if key in data.attrs:
+            return int(data.attrs[key])
+    return 3
+
+
+def _infer_l3_output_path(
+    data: xr.Dataset,
+    *,
+    region_id: str,
+    timestep_months: int,
+    spatial_res_meter: float,
+    end_datetime: pd.Timestamp | None = None,
+    source_path: Path | None = None,
+) -> Path:
+    """Infer a new output path for an extension run."""
+    if source_path is None and "cryoswath_store_path" in data.attrs:
+        source_path = Path(data.attrs["cryoswath_store_path"])
+    if source_path is None:
+        source_path = Path(_build_path(region_id, timestep_months, spatial_res_meter))
+    if end_datetime is None:
+        suffix = "__extended"
+    else:
+        suffix = f"__extended_to_{pd.Timestamp(end_datetime).strftime('%Y%m')}"
+    return source_path.with_name(f"{source_path.stem}{suffix}.zarr")
+
+
+def _l3_build_attrs(
+    *,
+    region_id: str,
+    start_datetime: pd.Timestamp,
+    end_datetime: pd.Timestamp,
+    timestep_months: int,
+    window_ntimesteps: int,
+    spatial_res_meter: float,
+    outfilepath: str | Path,
+) -> dict[str, object]:
+    """Store light-weight provenance that helps future inference."""
+    return {
+        "cryoswath_region_id": region_id,
+        "cryoswath_store_path": str(outfilepath),
+        "cryoswath_build_start_datetime": pd.Timestamp(start_datetime).isoformat(),
+        "cryoswath_build_end_datetime": pd.Timestamp(end_datetime).isoformat(),
+        "cryoswath_timestep_months": int(timestep_months),
+        "cryoswath_window_ntimesteps": int(window_ntimesteps),
+        "cryoswath_spatial_res_meter": float(spatial_res_meter),
+    }
+
+
+def _l3_extension_attrs(
+    base_attrs: dict[str, object],
+    *,
+    output_path: str | Path,
+    source_path: str | Path,
+    recompute_start_datetime: pd.Timestamp,
+    overlap_time_steps: int,
+    overlap_policy: str,
+) -> dict[str, object]:
+    """Update provenance after an extension run."""
+    attrs = dict(base_attrs)
+    attrs.update(
+        {
+            "cryoswath_store_path": str(output_path),
+            "cryoswath_extended_from_store_path": str(source_path),
+            "cryoswath_extension_overlap_time_steps": int(overlap_time_steps),
+            "cryoswath_extension_policy": overlap_policy,
+            "cryoswath_recompute_start_datetime": pd.Timestamp(
+                recompute_start_datetime
+            ).isoformat(),
+        }
+    )
+    return attrs
+
+
+def _open_l3_dataset(dataset_or_path: xr.Dataset | str | Path) -> xr.Dataset:
+    """Open an L3 dataset from a store path or pass through an in-memory dataset."""
+    if isinstance(dataset_or_path, xr.Dataset):
+        return dataset_or_path
+    return xr.open_zarr(dataset_or_path, decode_coords="all")
+
+
+def _infer_l3_extension_spec(
+    source: xr.Dataset | str | Path,
+    *,
+    region_id: str | None = None,
+    start_datetime: str | pd.Timestamp | None = None,
+    end_datetime: str | pd.Timestamp | None = None,
+    timestep_months: int | None = None,
+    window_ntimesteps: int | None = None,
+    spatial_res_meter: float | None = None,
+    crs: CRS | int | None = None,
+    output_path: str | Path | None = None,
+    recompute_start_datetime: str | pd.Timestamp | None = None,
+) -> L3ExtensionSpec:
+    """Infer the choices needed to extend an existing L3 dataset."""
+    source_path = Path(source) if not isinstance(source, xr.Dataset) else None
+    data = _open_l3_dataset(source)
+    if region_id is None:
+        region_id = _infer_l3_region_id(data, source_path)
+    if start_datetime is None:
+        if "time" not in data.coords or data.sizes.get("time", 0) == 0:
+            raise ValueError("L3 extension requires a time coordinate.")
+        start_datetime = pd.Timestamp(data.time.values[0])
+    if end_datetime is None:
+        if "time" not in data.coords or data.sizes.get("time", 0) == 0:
+            raise ValueError("L3 extension requires a time coordinate.")
+        end_datetime = pd.Timestamp(data.time.values[-1])
+    if timestep_months is None:
+        timestep_months = _infer_l3_month_step(data)
+    if window_ntimesteps is None:
+        window_ntimesteps = _infer_l3_window_ntimesteps(data)
+    if spatial_res_meter is None:
+        spatial_res_meter = _infer_l3_spatial_res_meter(data)
+    if crs is None:
+        crs = data.rio.crs if hasattr(data, "rio") else None
+    if output_path is None:
+        output_path = _infer_l3_output_path(
+            data,
+            region_id=region_id,
+            timestep_months=timestep_months,
+            spatial_res_meter=spatial_res_meter,
+            end_datetime=end_datetime,
+            source_path=source_path,
+        )
+    if recompute_start_datetime is None:
+        recompute_start_datetime = pd.Timestamp(end_datetime) - pd.DateOffset(
+            months=timestep_months
+        )
+    recompute_start_datetime = pd.Timestamp(recompute_start_datetime)
+    return L3ExtensionSpec(
+        base_store_path=source_path,
+        output_path=Path(output_path),
+        region_id=region_id,
+        start_datetime=pd.Timestamp(start_datetime),
+        end_datetime=_normalize_l3_end_datetime(end_datetime),
+        timestep_months=int(timestep_months),
+        window_ntimesteps=int(window_ntimesteps),
+        spatial_res_meter=float(spatial_res_meter),
+        crs=crs,
+        recompute_start_datetime=recompute_start_datetime,
+    )
+
+
+def _dataset_time_slice(ds: xr.Dataset, times: pd.DatetimeIndex) -> xr.Dataset:
+    """Select one or more time steps while keeping an empty result valid."""
+    if len(times) == 0:
+        return ds.isel(time=slice(0, 0))
+    return ds.sel(time=times)
+
+
+def _dataset_values_match(
+    left: xr.Dataset,
+    right: xr.Dataset,
+    *,
+    rtol: float = 0.0,
+    atol: float = 0.0,
+) -> bool:
+    """Compare values and coordinates, ignoring attributes."""
+    if set(left.dims) != set(right.dims) or any(left.sizes[k] != right.sizes[k] for k in left.dims):
+        return False
+    if set(left.data_vars) != set(right.data_vars):
+        return False
+    if set(left.coords) != set(right.coords):
+        return False
+    for name in left.data_vars:
+        a = left[name].values
+        b = right[name].values
+        if np.issubdtype(np.asarray(a).dtype, np.number) or np.issubdtype(np.asarray(b).dtype, np.number):
+            if not np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=True):
+                return False
+        elif not np.array_equal(a, b):
+            return False
+    for name in left.coords:
+        a = left.coords[name].values
+        b = right.coords[name].values
+        if np.issubdtype(np.asarray(a).dtype, np.number) or np.issubdtype(np.asarray(b).dtype, np.number):
+            if not np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=True):
+                return False
+        elif not np.array_equal(a, b):
+            return False
+    return True
+
+
+def _merge_l3_extension_segments(
+    base: xr.Dataset,
+    recomputed: xr.Dataset,
+    *,
+    overlap_time_steps: int = 2,
+    overlap_policy: str = "keep_original",
+    overlap_rtol: float = 0.0,
+    overlap_atol: float = 0.0,
+) -> xr.Dataset:
+    """Merge the base dataset with a recomputed tail segment."""
+    if "time" not in base.coords or "time" not in recomputed.coords:
+        raise ValueError("Both datasets must have a time coordinate.")
+    if overlap_time_steps < 1:
+        raise ValueError("overlap_time_steps must be at least 1.")
+    base_times = pd.DatetimeIndex(base.time.values)
+    recomputed_times = pd.DatetimeIndex(recomputed.time.values)
+    overlap_times = base_times.intersection(recomputed_times)
+    if len(overlap_times) == 0:
+        raise ValueError("The recomputed segment does not overlap the base dataset.")
+    overlap_times = overlap_times.sort_values()
+    if len(overlap_times) < overlap_time_steps:
+        raise ValueError(
+            "The recomputed segment does not cover the requested overlap_time_steps."
+        )
+    validate_base = _dataset_time_slice(base, overlap_times[:1])
+    validate_recomputed = _dataset_time_slice(recomputed, overlap_times[:1])
+    exact_match = validate_base.equals(validate_recomputed)
+    almost_match = exact_match or _dataset_values_match(
+        validate_base, validate_recomputed, rtol=overlap_rtol, atol=overlap_atol
+    )
+    if not exact_match:
+        warnings.warn(
+            "The earliest overlapping time step does not match exactly between the "
+            "base and recomputed datasets.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if overlap_policy == "abort" and not exact_match:
+        raise RuntimeError(
+            "The earliest overlapping time step changed; aborting to request a full reprocessing."
+        )
+
+    step = pd.DateOffset(months=_infer_l3_month_step(recomputed))
+    prefix = base.sel(time=slice(None, overlap_times[0] - step))
+    base_overlap = _dataset_time_slice(base, overlap_times)
+    recomputed_overlap = _dataset_time_slice(recomputed, overlap_times)
+    suffix = recomputed.sel(time=slice(overlap_times[-1] + step, None))
+
+    if overlap_policy == "keep_original":
+        pieces = [prefix, base_overlap, suffix]
+    elif overlap_policy == "use_new":
+        pieces = [prefix, recomputed_overlap, suffix]
+    elif overlap_policy == "mixed":
+        if almost_match:
+            pieces = [prefix, base_overlap.isel(time=slice(0, 1)), recomputed_overlap.isel(time=slice(1, None)), suffix]
+        else:
+            pieces = [prefix, recomputed_overlap, suffix]
+    elif overlap_policy == "abort":
+        pieces = [prefix, base_overlap, suffix]
+    else:
+        raise ValueError(
+            "overlap_policy must be one of 'keep_original', 'mixed', 'use_new', or 'abort'."
+        )
+
+    pieces = [piece for piece in pieces if piece.sizes.get("time", 0) > 0]
+    if len(pieces) == 1:
+        return pieces[0]
+    return xr.concat(
+        pieces,
+        dim="time",
+        data_vars="all",
+        coords="minimal",
+        compat="override",
+        combine_attrs="override",
+    )
 
 
 # numba does not do help here easily. using the numpy functions is as fast as it gets.
@@ -229,7 +565,7 @@ def cache_l2_data(
     )
 
 
-def _preallocate_zarr(path, bbox, crs, time_index, data_vars) -> None:
+def _preallocate_zarr(path, bbox, crs, time_index, data_vars, attrs=None) -> None:
     """Create an empty chunked zarr layout for future L3 writes."""
     x_dummy = np.arange(
         (bbox.bounds[0] // 500 + 0.5) * 500, bbox.bounds[2], 500, dtype="i4"
@@ -247,6 +583,7 @@ def _preallocate_zarr(path, bbox, crs, time_index, data_vars) -> None:
     )
     (
         xr.merge([array_dummy.rename(stat) for stat in data_vars])
+        .assign_attrs({} if attrs is None else attrs)
         .rio.write_crs(crs)
         .to_zarr(path, compute=False)
     )
@@ -269,6 +606,7 @@ def build_dataset(
     ),
     cache_filename: str = None,
     cache_filename_extra: str = None,
+    outfilepath: str | Path = None,
     crs: CRS | int = None,
     reprocess: bool = False,
     **l2_from_id_kwargs,
@@ -303,6 +641,8 @@ def build_dataset(
             Defaults to a name derived from the region ID.
         cache_filename_extra (str, optional): Additional string to append to
             the cache filename. Defaults to None.
+        outfilepath (str | Path, optional): Output zarr path. If omitted, it is
+            inferred from the region and grid settings.
         crs (CRS | int, optional): Coordinate reference system for the data.
             If None, a planar CRS is determined automatically. Defaults to None.
         reprocess (bool, optional): Whether to reprocess existing data.
@@ -402,6 +742,18 @@ def build_dataset(
         .to_crs(crs)
         .make_valid()
     )
+    if outfilepath is None:
+        outfilepath = _build_path(region_id, timestep_months, spatial_res_meter)
+    outfilepath = Path(outfilepath)
+    build_attrs = _l3_build_attrs(
+        region_id=region_id,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        timestep_months=timestep_months,
+        window_ntimesteps=window_ntimesteps,
+        spatial_res_meter=spatial_res_meter,
+        outfilepath=outfilepath,
+    )
 
     with sandbox_write_to(cache_fullname) as target:
         l2.from_id(
@@ -429,7 +781,6 @@ def build_dataset(
     )
     # strip GeoSeries-container -> shapely.Geometry
     region_of_interest = region_of_interest.iloc[0]
-    outfilepath = _build_path(region_id, timestep_months, spatial_res_meter)
     if reprocess and os.path.isdir(outfilepath):
         shutil.rmtree(outfilepath)
     if os.path.isdir(outfilepath):
@@ -441,6 +792,7 @@ def build_dataset(
             crs,
             ext_t_axis,
             agg_func_and_meta[1].keys(),
+            attrs=build_attrs,
         )
     ext_t_axis = ext_t_axis.astype("int64")
     node_list = []
@@ -653,7 +1005,158 @@ def build_dataset(
                 print("processed and stored cell", chunk_name)
                 print(l3_data.head())
     print("\n\n+++++++++++++ successfully build dataset ++++++++++++++\n\n")
-    return xr.open_zarr(outfilepath, decode_coords="all")
+    result = xr.open_zarr(outfilepath, decode_coords="all")
+    result.attrs.update(build_attrs)
+    return result
+
+
+def extend_dataset(
+    dataset_or_path: xr.Dataset | str | Path,
+    end_datetime: str | pd.Timestamp,
+    *,
+    recompute_start_datetime: str | pd.Timestamp = None,
+    output_path: str | Path = None,
+    overlap_time_steps: int = 2,
+    overlap_policy: str = "keep_original",
+    overlap_rtol: float = 1e-5,
+    overlap_atol: float = 1e-8,
+    region_of_interest: str | shapely.Polygon = None,
+    l2_type: str = "swath",
+    buffer_region_by: float = None,
+    max_elev_diff: float = 150,
+    timestep_months: int = None,
+    window_ntimesteps: int = None,
+    spatial_res_meter: float = None,
+    agg_func_and_meta: tuple[callable, dict] = (
+        _med_iqr_cnt,
+        {"_median": "f8", "_iqr": "f8", "_count": "i8"},
+    ),
+    cache_filename: str = None,
+    cache_filename_extra: str = None,
+    crs: CRS | int = None,
+    overwrite: bool = False,
+    reprocess: bool = True,
+    **l2_from_id_kwargs,
+):
+    """Extend an existing L3 dataset by recomputing a tail segment."""
+    base = _open_l3_dataset(dataset_or_path)
+    source_path = (
+        Path(dataset_or_path)
+        if not isinstance(dataset_or_path, xr.Dataset)
+        else Path(base.attrs["cryoswath_store_path"])
+        if "cryoswath_store_path" in base.attrs
+        else None
+    )
+    if region_of_interest is None:
+        region_of_interest = _infer_l3_region_id(base, source_path)
+    if timestep_months is None:
+        timestep_months = _infer_l3_month_step(base)
+    if window_ntimesteps is None:
+        window_ntimesteps = _infer_l3_window_ntimesteps(base)
+    if spatial_res_meter is None:
+        spatial_res_meter = _infer_l3_spatial_res_meter(base)
+    if crs is None and hasattr(base, "rio"):
+        crs = base.rio.crs
+    end_datetime = _normalize_l3_end_datetime(end_datetime)
+    if output_path is None:
+        output_path = _infer_l3_output_path(
+            base,
+            region_id=region_of_interest,
+            timestep_months=timestep_months,
+            spatial_res_meter=spatial_res_meter,
+            end_datetime=end_datetime,
+            source_path=source_path,
+        )
+    output_path = Path(output_path)
+    if output_path.exists():
+        if not overwrite:
+            raise FileExistsError(f"Output path already exists: {output_path}")
+        if output_path.is_dir():
+            shutil.rmtree(output_path)
+        else:
+            output_path.unlink()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if "time" not in base.coords or base.sizes.get("time", 0) == 0:
+        raise ValueError("The source L3 dataset must have a time coordinate.")
+    base_times = pd.DatetimeIndex(base.time.values).sort_values()
+    base_start = base_times[0]
+    base_end = base_times[-1]
+    if recompute_start_datetime is None:
+        recompute_start_datetime = base_end - pd.DateOffset(
+            months=timestep_months * (overlap_time_steps - 1)
+        )
+    recompute_start_datetime = pd.Timestamp(recompute_start_datetime)
+    if recompute_start_datetime < base_start:
+        recompute_start_datetime = base_start
+    if recompute_start_datetime > base_end:
+        raise ValueError(
+            "The recompute start must overlap the source dataset; use build_dataset "
+            "for a full reprocessing run."
+        )
+
+    temp_cache_extra = cache_filename_extra
+    if temp_cache_extra is None:
+        temp_cache_extra = (
+            f"extend_{base_start.strftime('%Y%m')}_{end_datetime.strftime('%Y%m')}"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="cryoswath-l3-extend-") as tmpdir:
+        recompute_store = Path(tmpdir) / f"{output_path.stem}__segment.zarr"
+        recomputed = build_dataset(
+            region_of_interest,
+            recompute_start_datetime,
+            end_datetime,
+            l2_type=l2_type,
+            buffer_region_by=buffer_region_by,
+            max_elev_diff=max_elev_diff,
+            timestep_months=timestep_months,
+            window_ntimesteps=window_ntimesteps,
+            spatial_res_meter=spatial_res_meter,
+            agg_func_and_meta=agg_func_and_meta,
+            cache_filename=cache_filename,
+            cache_filename_extra=temp_cache_extra,
+            outfilepath=recompute_store,
+            crs=crs,
+            reprocess=reprocess,
+            **l2_from_id_kwargs,
+        )
+        merged = _merge_l3_extension_segments(
+            base,
+            recomputed,
+            overlap_time_steps=overlap_time_steps,
+            overlap_policy=overlap_policy,
+            overlap_rtol=overlap_rtol,
+            overlap_atol=overlap_atol,
+        )
+        final_attrs = dict(base.attrs)
+        final_attrs.update(
+            _l3_build_attrs(
+                region_id=str(region_of_interest),
+                start_datetime=base_start,
+                end_datetime=end_datetime,
+                timestep_months=timestep_months,
+                window_ntimesteps=window_ntimesteps,
+                spatial_res_meter=spatial_res_meter,
+                outfilepath=output_path,
+            )
+        )
+        final_attrs.update(
+            _l3_extension_attrs(
+                final_attrs,
+                output_path=output_path,
+                source_path=(source_path or output_path),
+                recompute_start_datetime=recompute_start_datetime,
+                overlap_time_steps=overlap_time_steps,
+                overlap_policy=overlap_policy,
+            )
+        )
+        merged = merged.assign_attrs(final_attrs)
+        merged.to_zarr(output_path, mode="w")
+
+    result = xr.open_zarr(output_path, decode_coords="all")
+    result.attrs.update(final_attrs)
+    return result
 
 
 def _build_path(
