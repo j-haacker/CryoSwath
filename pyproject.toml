@@ -57,7 +57,8 @@ dev = ["flit", "pip-tools", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
 production = ["xarray[accel]>=2025.3,<2025.12", "dask[distributed]"]
-all = ["cryoswath[dev,docs,notebooks,production]"]
+zarrguard = ["xzarrguard>=0.1.2; python_version >= '3.12'"]
+all = ["cryoswath[dev,docs,notebooks,production,zarrguard]"]
 
 [project.urls]
 Repository = "https://github.com/j-haacker/cryoswath.git"
