@@ -25,6 +25,8 @@ Supporting modules
   access, and CLI helpers).
 - :mod:`cryoswath.gis`
   Geospatial helper functions for CRS handling and geometry operations.
+- :mod:`cryoswath.provenance`
+  CF-style history helpers and richer provenance serialization for output stores.
 - :mod:`cryoswath.test_plots`
   Plotting utilities for quick validation and diagnostics.
 

@@ -29,5 +29,6 @@ Project repository:
    cryoswath.l3
    cryoswath.l4
    cryoswath.misc
+   cryoswath.provenance
    cryoswath.gis
    cryoswath.test_plots
