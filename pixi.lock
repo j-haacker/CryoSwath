@@ -2194,7 +2194,7 @@ packages:
 - pypi: ./
   name: cryoswath
   version: 0.2.5
-  sha256: fb61a9c893fcbd0abdc8e346ca17e6a97d26c586c89f740d824ca23ceeced410
+  sha256: 5cf3db50bbb6b95159efe2aa94239caf3ad686b4612cfadace2484006f09ae44
   requires_dist:
   - bottleneck
   - dask
@@ -2232,7 +2232,8 @@ packages:
   - ipykernel ; extra == 'notebooks'
   - xarray[accel]>=2025.3,<2025.12 ; extra == 'production'
   - dask[distributed] ; extra == 'production'
-  - cryoswath[dev,docs,notebooks,production] ; extra == 'all'
+  - xzarrguard>=0.1.2 ; python_full_version >= '3.12' and extra == 'zarrguard'
+  - cryoswath[dev,docs,notebooks,production,zarrguard] ; extra == 'all'
   requires_python: '>=3.11'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/cryptography-46.0.5-py311h2005dd1_0.conda
   sha256: 0b427b0f353ccf66a926360b6544ea18566e13099e661dcd35c61ffc9c0924e9
