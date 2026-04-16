@@ -24,11 +24,11 @@ jobs:
             experimental: false
           - name: max-supported
             python: "3.12"
-            xarray: "2025.11.*"
+            xarray: "2026.4.*"
             experimental: false
           - name: py313-observe
             python: "3.13"
-            xarray: "2025.11.*"
+            xarray: "2026.4.*"
             experimental: true
 
     steps:
