@@ -2184,8 +2184,8 @@ packages:
   timestamp: 1769155975008
 - pypi: ./
   name: cryoswath
-  version: 0.2.5
-  sha256: 2f874de3d1bc5e1338213dfbc8cd51ca6a2ef4037fed77fa76fb011c063ac1a6
+  version: 0.2.5.post1
+  sha256: 183d10e2cebb409f3f2a0ce088f375dc4dffb85fdd5ef3a072f34e986c5eb500
   requires_dist:
   - bottleneck
   - dask
