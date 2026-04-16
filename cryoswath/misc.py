@@ -493,9 +493,15 @@ def discard_frontal_retreat_zone(
         #       ds[elev].count().values.item(0), "cells in total")
         return ds
 
-    # If "TypeError: len() of unsized object" is raised, try
-    # xarray <= 2024.11.
-    front_bin = ((tmp > tmp.max() / 2).cumsum() != 0).idxmax().values.item(0)
+    # Temporary downstream workaround for the xarray IntervalIndex idxmax
+    # regression. Remove once upstream idxmax() works again for IntervalIndex
+    # coordinates.
+    front_mask = (tmp > tmp.max() / 2).cumsum() != 0
+    front_positions = np.flatnonzero(front_mask.to_numpy())
+    if front_positions.size == 0:
+        return ds
+    bin_dim = front_mask.dims[0]
+    front_bin = front_mask[bin_dim].to_numpy()[front_positions[0]]
 
     # # debugging:
     # import matplotlib.pyplot as plt
