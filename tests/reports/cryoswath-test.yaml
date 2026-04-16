@@ -13,7 +13,6 @@ dependencies:
 - pytest *
 - tox *
 - python 3.11.*
-- pip *
 - bottleneck *
 - dask *
 - defusedxml *
@@ -30,7 +29,6 @@ dependencies:
 - pyogrio *
 - pyproj *
 - pystac-client *
-- pytables *
 - python-dateutil *
 - rasterio *
 - rioxarray *
@@ -39,9 +37,9 @@ dependencies:
 - shapely *
 - stackstac *
 - statsmodels *
+- pytables *
 - tqdm *
-- xarray >=2025.3,<2025.12
-- xpystac >=0.4,<0.5
+- xarray >=2026.3
 - zarr *
 - pip
 - pip:
