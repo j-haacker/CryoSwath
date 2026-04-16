@@ -54,6 +54,25 @@ def test_resolve_esa_credentials_uses_netrc_when_keyring_missing(monkeypatch):
     assert source == "~/.netrc"
 
 
+def test_resolve_esa_credentials_ignores_obsolete_cryoswath_ftp_env_vars(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("EOIAM_USER", raising=False)
+    monkeypatch.delenv("EOIAM_PASSWORD", raising=False)
+    monkeypatch.setenv("CRYOSWATH_FTP_USER", "legacy-user")
+    monkeypatch.setenv("CRYOSWATH_FTP_PASSWORD", "legacy-password")
+    monkeypatch.setattr(misc, "_resolve_esa_keyring_credentials", lambda: None)
+
+    def _missing_netrc():
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(misc.netrc, "netrc", _missing_netrc)
+
+    with pytest.raises(RuntimeError, match="No ESA credentials found"):
+        misc._resolve_esa_ftp_credentials()
+
+
 def test_update_keyring_stores_and_verifies(monkeypatch):
     store = {}
 
