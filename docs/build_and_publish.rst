@@ -51,3 +51,14 @@ Or directly with Sphinx:
    sphinx-build -b html docs docs/_build/html
 
 The built pages are written to ``docs/_build/html``.
+
+PyPI publishing
+---------------
+
+Package publishing is handled by ``.github/workflows/pypi-publish.yml``.
+
+- Creating a GitHub release automatically builds the sdist and wheel.
+- The workflow checks that the release tag matches ``pyproject.toml``'s
+  version (``v0.2.5`` -> ``0.2.5``).
+- If the version check passes, the workflow publishes to PyPI via GitHub
+  trusted publishing.
