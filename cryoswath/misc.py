@@ -188,7 +188,7 @@ def init_project():
 if (Path().cwd() / "config.ini").is_file():
     config = ConfigParser()
     config.read("config.ini")
-    data_path = Path(config["path"]["data"])
+    data_path = Path(config["path"].get("data", Path(config["path"]["base"], "data")))
 else:
     data_path = Path.cwd() / "data"
     warnings.warn(
