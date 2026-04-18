@@ -42,12 +42,14 @@ import os
 import pandas as pd
 from pathlib import Path
 from pyproj import Transformer
+import requests
 import rioxarray as rioxr
 from scipy.stats import median_abs_deviation, ttest_ind
 import shapely
 from threading import Event
 import tempfile
 import time
+from urllib.parse import parse_qs, urljoin, urlparse
 import warnings
 import xarray as xr
 
@@ -56,7 +58,6 @@ from cryoswath.misc import (
     antenna_baseline,
     cs_time_to_id,
     data_path,
-    download_file as _http_download_file,
     empty_GeoDataFrame,
     ftp_cs2_server,
     gauss_filter_DataArray,
@@ -85,6 +86,10 @@ from cryoswath.gis import (
 from cryoswath.l2 import from_processed_l1b as l2_from_processed_l1b
 
 # requires implicitly rasterio(?), flox(?), dask(?)
+
+_EOCAT_STAC_SEARCH_URL = "https://eocat.esa.int/eo-catalogue/search"
+_ESA_HTTPS_LOGIN_URL = "https://science-pds.cryosat.esa.int/?do=login"
+_ESA_LOGIN_FAILURE_MARKERS = ("authFailure=true", "login.fail.message")
 
 
 def _status(message: str) -> None:
@@ -1205,6 +1210,38 @@ def _https_l1b_base_url(track_id: pd.Timestamp) -> str:
     )
 
 
+def _normalize_l1b_identifier(value: str) -> str:
+    """Return EO-CAT/STAC item id from a filename, URL, or bare stem."""
+    name = str(value).rsplit("/", 1)[-1]
+    if name.endswith(".nc"):
+        name = name[:-3]
+    return name
+
+
+def _resolve_l1b_enclosure_href(
+    identifier_or_filename: str,
+    timeout: int | float = 120,
+) -> str:
+    """Resolve one CryoSat L1b file stem to its EO-CAT enclosure URL."""
+    identifier = _normalize_l1b_identifier(identifier_or_filename)
+    response = requests.get(
+        _EOCAT_STAC_SEARCH_URL,
+        params={"collections": "CryoSat.products", "ids": identifier},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    features = response.json().get("features", [])
+    matching_items = [item for item in features if item.get("id") == identifier]
+    if len(matching_items) != 1:
+        raise FileNotFoundError(
+            f"EO-CAT STAC lookup returned {len(matching_items)} items for {identifier}."
+        )
+    href = matching_items[0].get("assets", {}).get("enclosure", {}).get("href")
+    if not href:
+        raise FileNotFoundError(f"EO-CAT item {identifier} has no enclosure asset.")
+    return href
+
+
 def _validate_netcdf_payload(path: str | Path) -> None:
     """Raise if downloaded payload does not look like NetCDF."""
     path = Path(path)
@@ -1252,26 +1289,101 @@ def _select_lta_then_offl_for_track(track_id: str, remote_files: list[str]) -> s
     raise FileNotFoundError(f"No LTA_ or OFFL product found for track id {track_id}.")
 
 
+def _esa_login_failed(response: requests.Response) -> bool:
+    """Return whether ESA login flow reports an authentication failure."""
+    urls = [response.url] + [item.url for item in response.history]
+    locations = [item.headers.get("location", "") for item in response.history]
+    return any(
+        marker in value
+        for marker in _ESA_LOGIN_FAILURE_MARKERS
+        for value in urls + locations
+    )
+
+
+def _create_esa_https_session(
+    auth: tuple[str, str],
+    timeout: int | float = 120,
+) -> requests.Session:
+    """Create an authenticated ESA HTTPS session for CryoSat downloads."""
+    user, password = auth
+    session = requests.Session()
+    try:
+        login_response = session.get(_ESA_HTTPS_LOGIN_URL, timeout=timeout)
+        session_data_key = parse_qs(urlparse(login_response.url).query).get(
+            "sessionDataKey",
+            [None],
+        )[0]
+        if session_data_key is None:
+            raise RuntimeError(
+                "ESA HTTPS login flow did not expose sessionDataKey for authentication."
+            )
+        auth_response = session.post(
+            urljoin(login_response.url, "../commonauth"),
+            data={
+                "username": user,
+                "password": password,
+                "sessionDataKey": session_data_key,
+            },
+            timeout=timeout,
+        )
+        if _esa_login_failed(auth_response):
+            raise RuntimeError("ESA HTTPS login failed.")
+        return session
+    except Exception:
+        session.close()
+        raise
+
+
+def _download_https_url_atomic(
+    session: requests.Session,
+    url: str,
+    local_path: str | Path,
+    timeout: int | float = 120,
+) -> str:
+    """Download one HTTPS URL to a temporary file, then atomically move."""
+    local_path = Path(local_path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{local_path.name}.",
+            suffix=".part",
+            dir=local_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            with session.get(url, stream=True, timeout=timeout) as response:
+                response.raise_for_status()
+                for chunk in response.iter_content(chunk_size=8192):
+                    tmp_file.write(chunk)
+        os.replace(temp_path, local_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+    return str(local_path)
+
+
 def _download_named_file_https(
-    track_id: pd.Timestamp,
     remote_file: str,
     local_path: str | Path,
-    auth: tuple[str, str],
+    session: requests.Session,
 ) -> str:
     """Download one known remote filename via HTTPS."""
     local_path = Path(local_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    base_url = _https_l1b_base_url(track_id)
     candidate_names = _l1b_product_name_candidates(remote_file)
     last_err = None
     for candidate in candidate_names:
         candidate_local_path = local_path.parent / candidate
         try:
+            url = _resolve_l1b_enclosure_href(candidate)
             _status(f"Downloading {candidate} via https.")
-            downloaded = _http_download_file(
-                url=base_url + candidate,
-                dest=candidate_local_path,
-                auth=auth,
+            downloaded = _download_https_url_atomic(
+                session=session,
+                url=url,
+                local_path=candidate_local_path,
                 timeout=120,
             )
             _validate_netcdf_payload(downloaded)
@@ -1420,6 +1532,7 @@ def download_files(
     """Download all missing monthly L1b files for ``track_idx``."""
     track_idx = pd.DatetimeIndex(track_idx).sort_values()
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
+    https_session = None
     try:
         user, password, _ = _resolve_esa_ftp_credentials()
         https_auth = (user, password)
@@ -1442,58 +1555,74 @@ def download_files(
             + ", ".join(str(x) for x in year_month_str_list)
         )
         return
+    try:
+        https_session = _create_esa_https_session(https_auth)
+    except Exception as err:
+        warnings.warn(
+            f"Could not initialize HTTPS session ({err}). Using FTP download.",
+            category=UserWarning,
+        )
+        _download_files_via_ftp(track_idx, stop_event=stop_event)
+        _status(
+            "Finished downloading tracks for months: "
+            + ", ".join(str(x) for x in year_month_str_list)
+        )
+        return
     fallback_tracks = []
-    for year_month_str in year_month_str_list:
-        _status(f"Scanning {year_month_str} for missing files.")
-        if stop_event is not None and stop_event.is_set():
-            return
-        try:
-            currently_present_files = [
-                x[19:] for x in os.listdir(os.path.join(l1b_path, year_month_str))
-            ]
-        except FileNotFoundError:
-            os.makedirs(os.path.join(l1b_path, year_month_str))
-            currently_present_files = []
-        existing_track_ids = {file_name[:15] for file_name in currently_present_files}
-        month_tracks = track_idx[
-            track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str
-        ]
-        for track_id in month_tracks:
+    try:
+        for year_month_str in year_month_str_list:
+            _status(f"Scanning {year_month_str} for missing files.")
             if stop_event is not None and stop_event.is_set():
                 return
-            track_id_str = track_id.strftime("%Y%m%dT%H%M%S")
-            if track_id_str in existing_track_ids:
-                continue
-            if track_id not in file_names.index:
-                fallback_tracks.append(track_id)
-                continue
-            remote_file = file_names.loc[track_id] + ".nc"
-            local_path = Path(l1b_path, year_month_str, remote_file)
             try:
-                downloaded = Path(
-                    _download_named_file_https(
-                        track_id=track_id,
-                        remote_file=remote_file,
-                        local_path=local_path,
-                        auth=https_auth,
+                currently_present_files = [
+                    x[19:] for x in os.listdir(os.path.join(l1b_path, year_month_str))
+                ]
+            except FileNotFoundError:
+                os.makedirs(os.path.join(l1b_path, year_month_str))
+                currently_present_files = []
+            existing_track_ids = {file_name[:15] for file_name in currently_present_files}
+            month_tracks = track_idx[
+                track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str
+            ]
+            for track_id in month_tracks:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                track_id_str = track_id.strftime("%Y%m%dT%H%M%S")
+                if track_id_str in existing_track_ids:
+                    continue
+                if track_id not in file_names.index:
+                    fallback_tracks.append(track_id)
+                    continue
+                remote_file = file_names.loc[track_id] + ".nc"
+                local_path = Path(l1b_path, year_month_str, remote_file)
+                try:
+                    downloaded = Path(
+                        _download_named_file_https(
+                            remote_file=remote_file,
+                            local_path=local_path,
+                            session=https_session,
+                        )
                     )
-                )
-                currently_present_files.append(downloaded.name[19:])
-                existing_track_ids.add(track_id_str)
-            except Exception as err:
-                warnings.warn(
-                    "HTTPS download failed for "
-                    f"{remote_file}: {err}. Falling back to FTP.",
-                    category=UserWarning,
-                )
-                fallback_tracks.append(track_id)
-    if fallback_tracks:
-        fallback_tracks = pd.DatetimeIndex(fallback_tracks).unique().sort_values()
-        _download_files_via_ftp(fallback_tracks, stop_event=stop_event)
-    _status(
-        "Finished downloading tracks for months: "
-        + ", ".join(str(x) for x in year_month_str_list)
-    )
+                    currently_present_files.append(downloaded.name[19:])
+                    existing_track_ids.add(track_id_str)
+                except Exception as err:
+                    warnings.warn(
+                        "HTTPS download failed for "
+                        f"{remote_file}: {err}. Falling back to FTP.",
+                        category=UserWarning,
+                    )
+                    fallback_tracks.append(track_id)
+        if fallback_tracks:
+            fallback_tracks = pd.DatetimeIndex(fallback_tracks).unique().sort_values()
+            _download_files_via_ftp(fallback_tracks, stop_event=stop_event)
+        _status(
+            "Finished downloading tracks for months: "
+            + ", ".join(str(x) for x in year_month_str_list)
+        )
+    finally:
+        if https_session is not None:
+            https_session.close()
 
 
 def download_single_file(track_id: str) -> str:
@@ -1515,18 +1644,22 @@ def download_single_file(track_id: str) -> str:
         local_path = Path(
             data_path, "L1b", track_id_timestamp.strftime("%Y/%m"), filename
         )
+        https_session = None
         try:
+            https_session = _create_esa_https_session(https_auth)
             return _download_named_file_https(
-                track_id=track_id_timestamp,
                 remote_file=filename,
                 local_path=local_path,
-                auth=https_auth,
+                session=https_session,
             )
         except Exception as err:
             warnings.warn(
                 f"HTTPS download failed for {filename}: {err}. Falling back to FTP.",
                 category=UserWarning,
             )
+        finally:
+            if https_session is not None:
+                https_session.close()
     else:
         warnings.warn(
             f"No file-name catalog entry found for {track_id}. Falling back to FTP.",
