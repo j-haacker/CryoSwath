@@ -203,11 +203,11 @@ If you use CryoSwath, please cite:
 ```bibtex
 @software{cryoswath,
   author       = {Haacker, Jan},
-  title        = {CryoSwath: v0.2.5},
+  title        = {CryoSwath 0.2.5},
   month        = feb,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {v0.2.5},
+  version      = {0.2.5},
   doi          = {10.5281/zenodo.17011635}
 }
 ```
