@@ -296,6 +296,9 @@ _ESA_KEYRING_DEFAULT_USER_KEYS = (
 )
 _ESA_ENV_USER = "EOIAM_USER"
 _ESA_ENV_PASSWORD = "EOIAM_PASSWORD"
+_EARTHDATA_HOST = "urs.earthdata.nasa.gov"
+_EARTHDATA_ENV_USER = "EARTHDATA_USER"
+_EARTHDATA_ENV_PASSWORD = "EARTHDATA_PASSWORD"
 _RGI_DOWNLOAD_BASE_URL = (
     "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files"
 )
@@ -1143,6 +1146,84 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
         f"{_ESA_ENV_PASSWORD}, keyring via cryoswath-update-keyring, or "
         "~/.netrc (plaintext fallback), or use legacy config.ini [user] "
         "name/password. Anonymous login is no longer supported."
+    )
+
+
+def _resolve_earthdata_env_credentials() -> tuple[str, str, str] | None:
+    """Resolve NASA Earthdata credentials from environment variables."""
+    env_user = os.environ.get(_EARTHDATA_ENV_USER)
+    env_password = os.environ.get(_EARTHDATA_ENV_PASSWORD)
+    if env_user and env_password:
+        return env_user, env_password, "environment variables"
+    if env_user or env_password:
+        warnings.warn(
+            f"Both {_EARTHDATA_ENV_USER} and {_EARTHDATA_ENV_PASSWORD} are required "
+            "to use environment-variable credentials. Falling back to keyring/netrc.",
+            category=UserWarning,
+            stacklevel=2,
+        )
+    return None
+
+
+def _resolve_earthdata_keyring_credentials() -> tuple[str, str, str] | None:
+    """Resolve NASA Earthdata credentials from keyring if available."""
+    if keyring is None:
+        return None
+    try:
+        env_users = []
+        user = os.environ.get(_EARTHDATA_ENV_USER)
+        if user:
+            env_users.append(user)
+        for user in env_users:
+            password = keyring.get_password(_EARTHDATA_HOST, user)
+            if password:
+                return user, password, f"keyring service {_EARTHDATA_HOST}"
+        for username_key in _ESA_KEYRING_DEFAULT_USER_KEYS:
+            keyring_user = keyring.get_password(_EARTHDATA_HOST, username_key)
+            if keyring_user:
+                keyring_password = keyring.get_password(_EARTHDATA_HOST, keyring_user)
+                if keyring_password:
+                    return (
+                        keyring_user,
+                        keyring_password,
+                        f"keyring service {_EARTHDATA_HOST}",
+                    )
+    except KeyringError as err:
+        warnings.warn(
+            f"Could not read NASA Earthdata credentials from keyring: {err}",
+            category=UserWarning,
+            stacklevel=2,
+        )
+    return None
+
+
+def _resolve_earthdata_credentials() -> tuple[str, str, str]:
+    """Resolve NASA Earthdata credentials from env, keyring, or netrc."""
+    env_auth = _resolve_earthdata_env_credentials()
+    if env_auth is not None:
+        return env_auth
+
+    keyring_auth = _resolve_earthdata_keyring_credentials()
+    if keyring_auth is not None:
+        return keyring_auth
+
+    try:
+        netrc_auth = netrc.netrc().authenticators(_EARTHDATA_HOST)
+    except (FileNotFoundError, netrc.NetrcParseError):
+        netrc_auth = None
+    if netrc_auth is not None:
+        login, _, password = netrc_auth
+        if login and password:
+            return login, password, "~/.netrc"
+        if password and not login:
+            raise RuntimeError(
+                f"~/.netrc entry for {_EARTHDATA_HOST} is missing login."
+            )
+
+    raise RuntimeError(
+        f"No NASA Earthdata credentials found. Configure {_EARTHDATA_ENV_USER} and "
+        f"{_EARTHDATA_ENV_PASSWORD}, keyring service {_EARTHDATA_HOST}, or "
+        "~/.netrc (plaintext fallback)."
     )
 
 
@@ -2162,12 +2243,15 @@ def load_cs_ground_tracks(
 
 def _normalize_rgi_product(product: str) -> str:
     """Normalize RGI product aliases to `C` or `G`."""
-    if product.upper() == "C" or product == "complexes":
+    product_lower = product.lower()
+    product_upper = product.upper()
+    if product_upper == "C" or product_lower == "complexes":
         return "C"
-    if product.upper() == "G" or product in ["glaciers", "basins"]:
+    if product_upper == "G" or product_lower in {"glaciers", "basins"}:
         return "G"
     raise ValueError(
-        f'Argument product should be either glaciers or complexes not "{product}".'
+        f'Argument product should be either "glaciers" or "complexes", '
+        f"not {product!r}."
     )
 
 
@@ -2178,12 +2262,13 @@ def _normalize_rgi_o1code(o1code: str | int) -> str:
         return f"{int(o1code):02d}"
     match = re.match(r"^([0-9]{2})", o1code)
     if match is None:
-        raise ValueError(f'o1code should start with "01".."20", not "{o1code}".')
+        raise ValueError(f'o1code should start with "01".."20", not {o1code!r}.')
     return match.group(1)
 
 
 def _rgi_remote_product_url(product: str) -> str:
     """Return RGI product directory URL for product code `C` or `G`."""
+    product = _normalize_rgi_product(product)
     return f"{_RGI_DOWNLOAD_BASE_URL}/RGI2000-v7.0-{product}/"
 
 
@@ -2199,27 +2284,30 @@ def _rgi_missing_message(product: str, o1code: str) -> str:
     )
 
 
-def _rgi_o1_archive_stem(o1code: str, product: str) -> str:
+def _rgi_o1_archive_stem(o1code: str | int, product: str) -> str:
     """Build deterministic archive stem from o1 metadata table."""
-    lut = pd.read_feather(
-        os.path.join(rgi_path, "RGI2000-v7.0-o1regions.feather"),
-        columns=["o1region", "long_code"],
-    ).set_index("o1region")
-    long_code = lut.loc[o1code, "long_code"]
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    long_code = rgi_code_translator(o1code, out_type="long_code")
     return f"RGI2000-v7.0-{product}-{long_code}"
 
 
-def _find_rgi_o1region_source(o1code: str, product: str) -> Path | None:
+def _find_rgi_o1region_source(o1code: str | int, product: str) -> Path | None:
     """Return local path for an o1 region product, if available."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+
     try:
-        rgi_files = sorted(os.listdir(rgi_path))
+        candidates = sorted(Path(rgi_path).iterdir())
     except FileNotFoundError:
         return None
-    for file in rgi_files:
-        if re.match(f"RGI2000-v7\\.0-{product}-{o1code}_.*", file):
-            file_path = Path(rgi_path, file)
-            if file.endswith(".feather") or file.endswith(".shp") or file_path.is_dir():
-                return file_path
+
+    pattern = re.compile(rf"RGI2000-v7\.0-{product}-{o1code}_.*")
+    for path in candidates:
+        if pattern.match(path.name) and (
+            path.is_dir() or path.suffix in {".shp", ".feather"}
+        ):
+            return path
     return None
 
 
@@ -2234,7 +2322,7 @@ def _read_rgi_o1region_source(file_path: str | Path) -> gpd.GeoDataFrame:
 
 
 def download_rgi_o1region(
-    o1code: str,
+    o1code: str | int,
     product: str = "complexes",
     force: bool = False,
     timeout: int | float = 120,
@@ -2249,18 +2337,13 @@ def download_rgi_o1region(
             return str(existing_source)
 
     archive_stem = _rgi_o1_archive_stem(o1code, product)
-    remote_url = _rgi_remote_product_url(product) + f"{archive_stem}.zip"
+    remote_url = f"{_rgi_remote_product_url(product)}{archive_stem}.zip"
     rgi_dir = Path(rgi_path)
     rgi_dir.mkdir(parents=True, exist_ok=True)
     archive_path = rgi_dir / f"{archive_stem}.zip"
     target_dir = rgi_dir / archive_stem
-    if force and target_dir.exists():
-        if target_dir.is_dir():
-            shutil.rmtree(target_dir)
-        else:
-            target_dir.unlink()
 
-    user, password, _ = _resolve_esa_ftp_credentials()
+    user, password, _ = _resolve_earthdata_credentials()
     download_file(
         url=remote_url,
         dest=archive_path,
@@ -2807,7 +2890,7 @@ def rgi_code_translator(
     if isinstance(input, list):
         return [rgi_code_translator(element, out_type) for element in input]
     elif isinstance(input, int) or (
-        isinstance(input, str) and len(input) <= 2 and int(input) < 20
+        isinstance(input, str) and len(input) <= 2 and int(input) <= 20
     ):
         return rgi_o1region_translator(int(input), out_type)
     elif (

@@ -31,6 +31,8 @@ from waveform-level processing to gridded elevation products.
   keyring (preferred for interactive setup), then
   `~/.netrc` (plaintext fallback), then legacy `config.ini [user]`
   `name/password` (temporary fallback).
+- Automatic RGI downloads from NSIDC require NASA Earthdata credentials;
+  see the prerequisites docs for setup details.
 - L1b file downloads are HTTPS-first. FTP remains a fallback path and is
   still used for metadata refresh flows (catalog/track updates).
 - Anonymous FTP login is no longer supported.

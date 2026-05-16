@@ -135,15 +135,23 @@ RGI download behavior
 ^^^^^^^^^^^^^^^^^^^^^
 
 If a required RGI o1 region file is missing, CryoSwath now attempts an
-automatic download before raising ``FileNotFoundError``.
+automatic NSIDC download before raising ``FileNotFoundError``.
 
-- Authentication uses the same credential resolver as L1b downloads
-  (``EOIAM_USER``/``EOIAM_PASSWORD``, keyring, ``~/.netrc``, then legacy
-  ``config.ini`` fallback).
-- Downloaded zip archives are extracted into ``data/auxiliary/RGI`` using a
-  directory named like the archive stem
-  (for example ``RGI2000-v7.0-C-09_svalbard``).
-- Zip archives are removed after successful extraction.
+RGI downloads use NASA Earthdata credentials, not ESA credentials. Credential
+resolution order is:
+
+1. ``EARTHDATA_USER`` and ``EARTHDATA_PASSWORD``.
+2. Keyring service ``urs.earthdata.nasa.gov``.
+3. ``~/.netrc`` entry for ``urs.earthdata.nasa.gov`` with explicit
+   ``login`` and ``password`` (plaintext fallback).
+
+``~/.netrc`` stores the password in plaintext and should only be used as a
+fallback if keyring or environment variables are not available.
+
+Downloaded zip archives are extracted into ``data/auxiliary/RGI`` using a
+directory named like the archive stem, for example
+``RGI2000-v7.0-C-09_svalbard``. Zip archives are removed after successful
+extraction.
 
 You can also prefetch a region explicitly:
 
