@@ -285,7 +285,7 @@ def test_load_o1region_raises_filenotfound_after_download_failure(monkeypatch):
     messages = [str(w.message) for w in warnings_record]
     assert "attempting automatic NSIDC download" in messages[0]
     assert "Automatic RGI download failed: boom" in messages[1]
-    assert "cryoswath-download-rgi --o1 09 --product complexes" in messages[1]
+    assert "cryoswath download-rgi --o1 09 --product complexes" in messages[1]
     assert misc._rgi_remote_product_url("complexes") in messages[1]
 
 
@@ -301,13 +301,13 @@ def test_load_o1region_raises_filenotfound_when_download_does_not_create_source(
 
     monkeypatch.setattr(misc, "download_rgi_o1region", fake_download)
     with pytest.warns(UserWarning) as warnings_record:
-        with pytest.raises(FileNotFoundError, match="cryoswath-download-rgi"):
+        with pytest.raises(FileNotFoundError, match="cryoswath download-rgi"):
             misc._load_o1region("09", product="complexes")
 
     messages = [str(w.message) for w in warnings_record]
     assert "attempting automatic NSIDC download" in messages[0]
     assert "docs/prerequisites.rst" in messages[1]
-    assert "cryoswath-download-rgi --o1 09 --product complexes" in messages[1]
+    assert "cryoswath download-rgi --o1 09 --product complexes" in messages[1]
     assert misc._rgi_remote_product_url("complexes") in messages[1]
     assert calls["download"] == 1
 

@@ -36,17 +36,20 @@ Alternative: install from source
 
 Then configure your project paths. Without a config file, CryoSwath uses
 ``./data`` relative to the current working directory. To create a reusable
-project config, run:
+project config and install the default auxiliary baseline, run:
 
 .. code-block:: sh
 
    mkdir <project_dir>
    cd <project_dir>
-   cryoswath-init
+   cryoswath create-config
+   cryoswath download-aux-data
+   cryoswath get-tutorials
 
-``cryoswath-init`` still creates the legacy project scaffolding
-(``data/``, ``scripts/``) and writes ``cryoswath.cfg`` with your base data
-path. You can also set ``CRYOSWATH_DATA`` or more specific
+``cryoswath create-config`` writes ``cryoswath.cfg`` with your base data path.
+``cryoswath download-aux-data`` installs the Zenodo auxiliary-data baseline.
+``cryoswath get-tutorials`` copies packaged tutorial notebooks into
+``tutorials/``. You can also set ``CRYOSWATH_DATA`` or more specific
 ``CRYOSWATH_*`` path variables; environment variables override config files.
 Set ``CRYOSWATH_CONFIG`` to select a config file explicitly. Legacy
 ``config.ini`` and ``scripts/config.ini`` files are still read.
@@ -78,7 +81,7 @@ Preferred interactive setup (keyring):
 
 .. code-block:: sh
 
-   cryoswath-update-keyring
+   cryoswath update-keyring
 
 Automation setup (environment variables):
 
@@ -91,7 +94,7 @@ Plaintext fallback setup (``~/.netrc``):
 
 .. code-block:: sh
 
-   cryoswath-update-netrc
+   cryoswath update-netrc
 
 ``~/.netrc`` stores the password in plaintext and should only be used as a
 fallback if keyring is not available.
@@ -122,6 +125,17 @@ Expected default locations:
 
 You can override paths in ``cryoswath.cfg`` or with environment variables
 such as ``CRYOSWATH_DATA``, ``CRYOSWATH_DEM``, and ``CRYOSWATH_RGI``.
+
+
+Auxiliary-data baseline
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The command ``cryoswath download-aux-data`` downloads the latest CryoSwath
+auxiliary-data snapshot from Zenodo DOI ``10.5281/zenodo.20241526`` and
+extracts it into ``data/auxiliary`` by default. The snapshot contains the
+CryoSat-2 ground-track database, filename catalog, and static RGI metadata.
+Run ``cryoswath update-tracks`` periodically to extend or refresh the local
+track database after installing the baseline.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^
@@ -158,7 +172,7 @@ You can also prefetch a region explicitly:
 
 .. code-block:: sh
 
-   cryoswath-download-rgi --o1 09 --product complexes
+   cryoswath download-rgi --o1 09 --product complexes
 
 Software dependencies
 ---------------------

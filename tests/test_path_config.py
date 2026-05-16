@@ -147,56 +147,32 @@ def test_path_config_uses_user_config_as_last_config_source(tmp_path):
     assert paths["data"] == tmp_path / "user-data"
 
 
-def test_init_project_still_clones_legacy_branches_and_writes_new_config(
-    monkeypatch, tmp_path
-):
-    from git.repo import Repo
-
-    calls = []
-
-    def fake_clone_from(url, target, branch):
-        calls.append((url, target, branch))
-        Path(target).mkdir()
-
+def test_create_config_writes_new_config_without_branch_cloning(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Repo, "clone_from", fake_clone_from)
 
-    misc.init_project()
+    out = misc.create_config()
 
-    assert calls == [
-        ("https://github.com/j-haacker/cryoswath.git", "data", "data"),
-        ("https://github.com/j-haacker/cryoswath.git", "scripts", "scripts"),
-    ]
+    assert out == str(tmp_path / "cryoswath.cfg")
     config = ConfigParser()
     config.read(tmp_path / "cryoswath.cfg")
     assert config["path"]["data"] == "data"
     assert (tmp_path / "data").is_dir()
-    assert not (tmp_path / "scripts" / "config.ini").exists()
+    assert not (tmp_path / "scripts").exists()
 
 
-def test_init_project_keeps_existing_layout_warning(monkeypatch, tmp_path):
-    from git.repo import Repo
-
+def test_create_config_allows_existing_data_directory(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data").mkdir()
-    monkeypatch.setattr(
-        Repo,
-        "clone_from",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("clone should not run when data exists")
-        ),
-    )
 
-    with pytest.warns(UserWarning, match="Make sure"):
-        misc.init_project()
+    misc.create_config()
 
     assert (tmp_path / "cryoswath.cfg").is_file()
+    assert (tmp_path / "data").is_dir()
 
 
 def test_init_project_refuses_to_overwrite_without_force(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data").mkdir()
-    (tmp_path / "scripts").mkdir()
     (tmp_path / "cryoswath.cfg").write_text("[path]\ndata = old\n")
 
     with pytest.raises(FileExistsError, match="--force"):
@@ -208,13 +184,11 @@ def test_init_project_overwrites_with_force_and_preserves_other_sections(
 ):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data").mkdir()
-    (tmp_path / "scripts").mkdir()
     (tmp_path / "cryoswath.cfg").write_text(
         "[path]\ndata = old\n\n[defaults.fill_voids]\noutlier_limit = 4\n"
     )
 
-    with pytest.warns(UserWarning, match="Make sure"):
-        misc.init_project(data="new-data", force=True)
+    misc.init_project(data="new-data", force=True)
 
     config = ConfigParser()
     config.read(tmp_path / "cryoswath.cfg")
@@ -225,16 +199,29 @@ def test_init_project_overwrites_with_force_and_preserves_other_sections(
 
 def test_init_project_honors_custom_config_and_data(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "data").mkdir()
-    (tmp_path / "scripts").mkdir()
 
-    with pytest.warns(UserWarning, match="Make sure"):
-        misc.init_project(config_file="conf/cryoswath.cfg", data="store")
+    misc.init_project(config_file="conf/cryoswath.cfg", data="store")
 
     config = ConfigParser()
     config.read(tmp_path / "conf" / "cryoswath.cfg")
     assert config["path"]["data"] == "store"
     assert (tmp_path / "conf" / "store").is_dir()
+
+
+def test_create_config_honors_base_dir_and_child_discovery(tmp_path):
+    project = tmp_path / "project"
+
+    out = misc.create_config(base_dir=project, data="store")
+
+    assert out == str(project / "cryoswath.cfg")
+    assert (project / "store").is_dir()
+    child = project / "tutorials"
+    child.mkdir()
+
+    _, resolved_config, paths = _resolve(child, _env(tmp_path))
+
+    assert resolved_config == project / "cryoswath.cfg"
+    assert paths["data"] == project / "store"
 
 
 def test_legacy_credentials_are_read_from_discovered_config_ini(

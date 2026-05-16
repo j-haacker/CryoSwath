@@ -26,7 +26,6 @@ dependencies = [
     "defusedxml",
     "earthaccess>=0.18",
     "geopandas>=1.0.1",
-    "gitpython",
     "h5netcdf",
     "h5py",
     "keyring",
@@ -66,6 +65,7 @@ Documentation = "https://cryoswath.readthedocs.io/"
 Issues = "https://github.com/j-haacker/cryoswath/issues"
 
 [project.scripts]
+cryoswath = "cryoswath.misc:cryoswath_cli"
 cryoswath-init = "cryoswath.misc:init_project_cli"
 cryoswath-download-rgi = "cryoswath.misc:download_rgi_cli"
 cryoswath-update-keyring = "cryoswath.misc:update_keyring_cli"

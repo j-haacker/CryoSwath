@@ -12,7 +12,6 @@ dask = "*"
 defusedxml = "*"
 earthaccess = ">=0.18"
 geopandas = ">=1.0.1"
-gitpython = "*"
 h5netcdf = "*"
 h5py = "*"
 keyring = "*"
@@ -83,13 +82,13 @@ cwd = "tests/reports"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [feature.test.tasks.test-tutorial-notebooks]
-args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/scripts" }]
+args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/cryoswath/tutorials" }]
 depends-on = ["export-conda-for-notebooks"]
 cmd = "snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 1 --use-conda"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [feature.test.tasks.test-all]
-args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/scripts" }]
+args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/cryoswath/tutorials" }]
 depends-on = [
   "test-unit",
   "test-notebooks",

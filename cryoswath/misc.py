@@ -6,11 +6,16 @@ __all__ = [
     # functions
     "chunk_idx",
     "convert_all_esri_to_feather",
+    "copy_tutorials",
     "cs_id_to_time",
     "cs_time_to_id",
+    "create_config",
+    "cryoswath_cli",
     "define_elev_band_edges",
     "discard_frontal_retreat_zone",
     "download_file",
+    "download_auxiliary_data",
+    "download_auxiliary_data_cli",
     "download_rgi_o1region",
     "download_rgi_cli",
     "effective_sample_size",
@@ -38,6 +43,7 @@ __all__ = [
     "sel_chunk_idx_range",
     "sel_chunk_range",
     "update_email",
+    "get_tutorials_cli",
     "init_project_cli",
     "update_keyring",
     "update_keyring_cli",
@@ -66,6 +72,8 @@ __all__ = [
 from collections.abc import Iterable, Mapping
 from configparser import ConfigParser
 from contextlib import contextmanager
+import hashlib
+from importlib import resources as importlib_resources
 from dateutil.relativedelta import relativedelta
 from defusedxml.ElementTree import fromstring as ET_from_str
 import fnmatch
@@ -91,7 +99,7 @@ except ImportError:
 
 from packaging.version import Version
 import pandas as pd
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from pyproj import CRS, Geod
 from pystac_client import Client
 import queue
@@ -121,18 +129,17 @@ import zipfile
 from cryoswath import gis
 
 
-def init_project_cli() -> None:
-    """CLI wrapper around :func:`init_project`."""
-    from argparse import ArgumentParser
-
-    parser = ArgumentParser(
-        "cryoswath-init",
-        description="Initialize a project directory with data/scripts scaffolding.",
+def _add_create_config_arguments(parser) -> None:
+    """Add shared project-configuration arguments to an argparse parser."""
+    parser.add_argument(
+        "--base-dir",
+        default=".",
+        help="Project base directory (default: current directory).",
     )
     parser.add_argument(
         "--config",
         default="cryoswath.cfg",
-        help="Configuration file to create (default: cryoswath.cfg).",
+        help="Configuration file to create, relative to --base-dir by default.",
     )
     parser.add_argument(
         "--data",
@@ -144,47 +151,57 @@ def init_project_cli() -> None:
         action="store_true",
         help="Overwrite an existing configuration file.",
     )
+
+
+def _create_config_from_args(args) -> None:
+    """Create a CryoSwath config from parsed CLI arguments."""
+    try:
+        create_config(
+            config_file=args.config,
+            data=args.data,
+            base_dir=args.base_dir,
+            force=args.force,
+        )
+    except FileExistsError as err:
+        raise SystemExit(str(err)) from err
+
+
+def init_project_cli() -> None:
+    """Compatibility CLI wrapper around :func:`create_config`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath-init",
+        description="Create a CryoSwath project path configuration.",
+    )
+    _add_create_config_arguments(parser)
     args = parser.parse_args()
     try:
-        init_project(config_file=args.config, data=args.data, force=args.force)
+        create_config(
+            config_file=args.config,
+            data=args.data,
+            base_dir=args.base_dir,
+            force=args.force,
+        )
     except FileExistsError as err:
         parser.error(str(err))
 
 
-def init_project(
+def create_config(
     config_file: str | Path = "cryoswath.cfg",
     data: str | Path = "data",
     *,
+    base_dir: str | Path = ".",
     force: bool = False,
-):
-    """Initialize a project directory with data/scripts scaffolding."""
+) -> str:
+    """Create a CryoSwath path configuration without cloning data branches."""
+    base_path = Path(base_dir).expanduser().resolve()
     config_path = Path(config_file).expanduser()
     if not config_path.is_absolute():
-        config_path = Path.cwd() / config_path
+        config_path = base_path / config_path
     if config_path.exists() and not force:
         raise FileExistsError(
             f"{config_path} already exists. Use --force to overwrite it."
-        )
-
-    if not (os.path.exists("data") or os.path.exists("scripts")):
-        try:
-            from git.repo import Repo
-
-            Repo.clone_from(
-                "https://github.com/j-haacker/cryoswath.git", "data", branch="data"
-            )
-            Repo.clone_from(
-                "https://github.com/j-haacker/cryoswath.git",
-                "scripts",
-                branch="scripts",
-            )
-        except Exception:
-            os.makedirs("scripts")
-    else:
-        warnings.warn(
-            'Make sure "data" and "scripts" have a structure like the corresponding '
-            "repository branches. If your unsure, move your directories to a backup, "
-            "run `init_project()` again, and restore your backups."
         )
 
     config = ConfigParser()
@@ -234,7 +251,23 @@ def init_project(
                         print(
                             f"Could not configure ~/.netrc automatically: {netrc_err}"
                         )
+    return str(config_path)
 
+
+def init_project(
+    config_file: str | Path = "cryoswath.cfg",
+    data: str | Path = "data",
+    *,
+    force: bool = False,
+    base_dir: str | Path = ".",
+) -> str:
+    """Compatibility wrapper around :func:`create_config`."""
+    return create_config(
+        config_file=config_file,
+        data=data,
+        base_dir=base_dir,
+        force=force,
+    )
 
 # Paths ##############################################################
 
@@ -443,6 +476,11 @@ aux_path = _resolved_paths["aux"]
 dem_path = _resolved_paths["dem"]
 rgi_path = str(_resolved_paths["rgi"])
 cs_ground_tracks_path = str(_resolved_paths["cs_ground_tracks"])
+
+_ZENODO_AUX_CONCEPT_RECORD_API_URL = "https://zenodo.org/api/records/20241526"
+_AUX_DATA_ARCHIVE_KEY = "CryoSwath-aux-data.zip"
+_TUTORIAL_PACKAGE = "cryoswath.tutorials"
+_TUTORIAL_PATTERN = "tutorial__*.ipynb"
 
 __all__.extend(
     [  # pathes
@@ -953,6 +991,196 @@ def _download_earthdata_file(
     return str(dest_path)
 
 
+
+def _fetch_zenodo_record_metadata(timeout: int | float = 120) -> dict:
+    """Fetch metadata for the latest CryoSwath auxiliary-data Zenodo record."""
+    response = requests.get(_ZENODO_AUX_CONCEPT_RECORD_API_URL, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def _zenodo_auxiliary_archive(record_metadata: dict) -> dict:
+    """Return metadata for the single auxiliary-data archive in a Zenodo record."""
+    files = record_metadata.get("files", [])
+    matches = [file_info for file_info in files if file_info.get("key") == _AUX_DATA_ARCHIVE_KEY]
+    if not matches and len(files) == 1:
+        matches = files
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Zenodo auxiliary-data record should contain exactly one "
+            f"{_AUX_DATA_ARCHIVE_KEY!r} file."
+        )
+    file_info = matches[0]
+    if "checksum" not in file_info:
+        raise RuntimeError("Zenodo auxiliary-data archive metadata has no checksum.")
+    try:
+        file_info["links"]["self"]
+    except KeyError as err:
+        raise RuntimeError(
+            "Zenodo auxiliary-data archive metadata has no download link."
+        ) from err
+    return file_info
+
+
+def _verify_checksum(path: str | Path, checksum: str) -> None:
+    """Verify a checksum string in the form ``algorithm:hex``."""
+    try:
+        algorithm, expected = checksum.split(":", 1)
+    except ValueError as err:
+        raise RuntimeError(f"Unsupported checksum format: {checksum!r}") from err
+    try:
+        digest = hashlib.new(algorithm)
+    except ValueError as err:
+        raise RuntimeError(f"Unsupported checksum algorithm: {algorithm!r}") from err
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual.lower() != expected.lower():
+        raise RuntimeError(
+            f"Checksum mismatch for {path}: expected {checksum}, got {algorithm}:{actual}."
+        )
+
+
+def _validate_zip_members(archive_path: str | Path) -> None:
+    """Reject invalid zip files and paths that would escape extraction root."""
+    if not zipfile.is_zipfile(archive_path):
+        raise RuntimeError(f"Downloaded archive is not a zip file: {archive_path}")
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.infolist():
+            member_name = member.filename.replace("\\", "/")
+            member_path = PurePosixPath(member_name)
+            if (
+                member_name.startswith("/")
+                or re.match(r"^[A-Za-z]:", member_name)
+                or ".." in member_path.parts
+            ):
+                raise RuntimeError(
+                    f"Unsafe path {member.filename!r} in archive {archive_path}."
+                )
+
+
+def _merge_extracted_tree(source_dir: Path, target_dir: Path, *, force: bool) -> None:
+    """Move extracted files into a target tree, preserving existing files by default."""
+    for source in sorted(source_dir.rglob("*")):
+        relative = source.relative_to(source_dir)
+        target = target_dir / relative
+        if source.is_dir():
+            if target.exists() and not target.is_dir():
+                if not force:
+                    raise RuntimeError(
+                        f"Cannot create directory {target}; a file already exists. "
+                        "Use force=True to replace it."
+                    )
+                target.unlink()
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if target.exists():
+            if not force:
+                continue
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+
+
+def _extract_auxiliary_archive(
+    archive_path: str | Path,
+    target_dir: str | Path,
+    *,
+    force: bool,
+) -> None:
+    """Safely extract an auxiliary-data zip archive into ``target_dir``."""
+    archive_path = Path(archive_path)
+    target_dir = Path(target_dir)
+    _validate_zip_members(archive_path)
+    extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_path.stem}.", dir=target_dir))
+    try:
+        shutil.unpack_archive(archive_path, extract_root, format="zip")
+        _merge_extracted_tree(extract_root, target_dir, force=force)
+    finally:
+        shutil.rmtree(extract_root, ignore_errors=True)
+
+
+def download_auxiliary_data(
+    base_dir: str | Path = ".",
+    *,
+    force: bool = False,
+    timeout: int | float = 120,
+) -> str:
+    """Download and install the Zenodo CryoSwath auxiliary-data snapshot."""
+    base_path = Path(base_dir).expanduser().resolve()
+    _, _, paths = _resolve_path_configuration(cwd=base_path)
+    target_dir = Path(paths["aux"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    record_metadata = _fetch_zenodo_record_metadata(timeout=timeout)
+    archive_metadata = _zenodo_auxiliary_archive(record_metadata)
+    archive_url = archive_metadata["links"]["self"]
+    checksum = archive_metadata["checksum"]
+
+    temp_archive = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{archive_metadata.get('key', _AUX_DATA_ARCHIVE_KEY)}.",
+            suffix=".zip",
+            dir=target_dir,
+            delete=False,
+        ) as archive_file:
+            temp_archive = Path(archive_file.name)
+        download_file(archive_url, temp_archive, timeout=timeout)
+        _verify_checksum(temp_archive, checksum)
+        _extract_auxiliary_archive(temp_archive, target_dir, force=force)
+    finally:
+        if temp_archive is not None and temp_archive.exists():
+            temp_archive.unlink()
+    return str(target_dir)
+
+
+def _tutorial_resources():
+    """Yield packaged tutorial notebook resources."""
+    tutorial_root = importlib_resources.files(_TUTORIAL_PACKAGE)
+    tutorials = [
+        item
+        for item in tutorial_root.iterdir()
+        if item.is_file() and fnmatch.fnmatch(item.name, _TUTORIAL_PATTERN)
+    ]
+    yield from sorted(tutorials, key=lambda item: item.name)
+
+
+def copy_tutorials(
+    destination: str | Path = None,
+    *,
+    base_dir: str | Path = ".",
+    force: bool = False,
+) -> str:
+    """Copy packaged tutorial notebooks into a project directory."""
+    base_path = Path(base_dir).expanduser().resolve()
+    destination_path = Path(destination) if destination is not None else Path("tutorials")
+    if not destination_path.is_absolute():
+        destination_path = base_path / destination_path
+
+    resources = list(_tutorial_resources())
+    conflicts = [destination_path / resource.name for resource in resources if (destination_path / resource.name).exists()]
+    if conflicts and not force:
+        conflict_list = ", ".join(str(path) for path in conflicts)
+        raise FileExistsError(
+            f"Tutorial file(s) already exist: {conflict_list}. Use --force to overwrite."
+        )
+
+    destination_path.mkdir(parents=True, exist_ok=True)
+    for resource in resources:
+        target = destination_path / resource.name
+        if target.exists() and force:
+            target.unlink()
+        target.write_bytes(resource.read_bytes())
+    return str(destination_path)
+
+
 def drop_small_glaciers(
     df: pd.DataFrame,
     area_threshold: float,  # in km²
@@ -1276,7 +1504,7 @@ def ftp_cs2_server(**kwargs):
         except ftplib.error_perm as err:
             raise RuntimeError(
                 "ESA FTP authentication failed using credentials from "
-                f"{source}. Configure keyring via cryoswath-update-keyring, set "
+                f"{source}. Configure keyring via cryoswath update-keyring, set "
                 f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
                 "~/.netrc (plaintext fallback)."
             ) from err
@@ -1378,7 +1606,7 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
 
     raise RuntimeError(
         f"No ESA credentials found. Configure {_ESA_ENV_USER} and "
-        f"{_ESA_ENV_PASSWORD}, keyring via cryoswath-update-keyring, or "
+        f"{_ESA_ENV_PASSWORD}, keyring via cryoswath update-keyring, or "
         "~/.netrc (plaintext fallback), or use legacy config.ini [user] "
         "name/password. Anonymous login is no longer supported."
     )
@@ -2457,7 +2685,7 @@ def _rgi_missing_message(product: str, o1code: str | int) -> str:
     return (
         f"RGI region {_rgi_region_pattern(product, o1code)} could not be found "
         "or downloaded. See docs/prerequisites.rst; try "
-        f"`cryoswath-download-rgi --o1 {o1code} --product {cli_product}`; "
+        f"`cryoswath download-rgi --o1 {o1code} --product {cli_product}`; "
         f"source: {_rgi_remote_product_url(product)}."
     )
 
@@ -3253,33 +3481,16 @@ def update_keyring(
 
 
 def update_keyring_cli() -> None:
-    """CLI wrapper around :func:`update_keyring`."""
+    """Compatibility CLI wrapper around :func:`update_keyring`."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
         "cryoswath-update-keyring",
         description="Create or update keyring credentials for ESA access.",
     )
-    parser.add_argument("--user", default=None, help="ESA username.")
-    parser.add_argument("--password", default=None, help="ESA password.")
-    parser.add_argument(
-        "--service",
-        default=_ESA_AUTH_IDP_HOST,
-        help="Keyring service name.",
-    )
-    parser.add_argument(
-        "--username-key",
-        default=_ESA_KEYRING_DEFAULT_USER_KEY,
-        help="Keyring username key for storing the default user.",
-    )
+    _add_update_keyring_arguments(parser)
     args = parser.parse_args()
-    user = update_keyring(
-        user=args.user,
-        password=args.password,
-        service=args.service,
-        username_key=args.username_key,
-    )
-    print(f"Stored credentials for {user} in keyring service {args.service}.")
+    _update_keyring_from_args(args)
 
 
 def update_netrc(
@@ -3341,7 +3552,7 @@ def update_netrc(
 
 
 def update_netrc_cli() -> None:
-    """CLI wrapper around :func:`update_netrc`."""
+    """Compatibility CLI wrapper around :func:`update_netrc`."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -3350,33 +3561,13 @@ def update_netrc_cli() -> None:
             "Create or update ~/.netrc credentials for ESA access (plaintext fallback)."
         ),
     )
-    parser.add_argument("--user", default=None, help="ESA username.")
-    parser.add_argument("--password", default=None, help="ESA password.")
-    parser.add_argument(
-        "--machine",
-        default=_ESA_CS2_HOST,
-        help="Netrc machine host key.",
-    )
-    parser.add_argument(
-        "--netrc-file",
-        default=None,
-        help="Override path to netrc file (default: ~/.netrc).",
-    )
+    _add_update_netrc_arguments(parser)
     args = parser.parse_args()
-    netrc_path = update_netrc(
-        user=args.user,
-        password=args.password,
-        machine=args.machine,
-        netrc_file=args.netrc_file,
-    )
-    print(
-        f"Wrote plaintext credentials for {args.machine} to {netrc_path}. "
-        "Prefer keyring for interactive setups."
-    )
+    _update_netrc_from_args(args)
 
 
 def download_rgi_cli() -> None:
-    """CLI wrapper around :func:`download_rgi_o1region`."""
+    """Compatibility CLI wrapper around :func:`download_rgi_o1region`."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -3385,6 +3576,99 @@ def download_rgi_cli() -> None:
             "Download and extract one RGI o1 region file bundle to data/auxiliary/RGI."
         ),
     )
+    _add_download_rgi_arguments(parser)
+    args = parser.parse_args()
+    _download_rgi_from_args(args)
+
+
+
+def _add_download_auxiliary_data_arguments(parser) -> None:
+    """Add shared auxiliary-data download arguments to an argparse parser."""
+    parser.add_argument(
+        "--base-dir",
+        default=".",
+        help="Project base directory used for config discovery (default: current directory).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace files contained in the auxiliary-data archive.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120,
+        help="HTTP timeout in seconds (default: 120).",
+    )
+
+
+def _download_auxiliary_data_from_args(args) -> None:
+    """Download auxiliary data from parsed CLI arguments."""
+    out_path = download_auxiliary_data(
+        base_dir=args.base_dir,
+        force=args.force,
+        timeout=args.timeout,
+    )
+    print(out_path)
+
+
+def download_auxiliary_data_cli() -> None:
+    """CLI wrapper around :func:`download_auxiliary_data`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath download-aux-data",
+        description="Download the CryoSwath auxiliary-data snapshot from Zenodo.",
+    )
+    _add_download_auxiliary_data_arguments(parser)
+    args = parser.parse_args()
+    _download_auxiliary_data_from_args(args)
+
+
+def _add_get_tutorials_arguments(parser) -> None:
+    """Add shared tutorial-copy arguments to an argparse parser."""
+    parser.add_argument(
+        "--base-dir",
+        default=".",
+        help="Project base directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--destination",
+        default=None,
+        help="Directory for tutorials (default: <base-dir>/tutorials).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing tutorial notebooks.",
+    )
+
+
+def _get_tutorials_from_args(args) -> None:
+    """Copy packaged tutorials from parsed CLI arguments."""
+    out_path = copy_tutorials(
+        destination=args.destination,
+        base_dir=args.base_dir,
+        force=args.force,
+    )
+    print(out_path)
+
+
+def get_tutorials_cli() -> None:
+    """CLI wrapper around :func:`copy_tutorials`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath get-tutorials",
+        description="Copy packaged CryoSwath tutorial notebooks into a project.",
+    )
+    _add_get_tutorials_arguments(parser)
+    args = parser.parse_args()
+    _get_tutorials_from_args(args)
+
+
+def _add_download_rgi_arguments(parser) -> None:
+    """Add shared RGI download arguments to an argparse parser."""
     parser.add_argument(
         "--o1",
         required=True,
@@ -3407,7 +3691,10 @@ def download_rgi_cli() -> None:
         default=120,
         help="HTTP timeout in seconds (default: 120).",
     )
-    args = parser.parse_args()
+
+
+def _download_rgi_from_args(args) -> None:
+    """Download RGI data from parsed CLI arguments."""
     out_path = download_rgi_o1region(
         o1code=args.o1,
         product=args.product,
@@ -3415,6 +3702,122 @@ def download_rgi_cli() -> None:
         timeout=args.timeout,
     )
     print(out_path)
+
+
+def _add_update_keyring_arguments(parser) -> None:
+    """Add shared keyring arguments to an argparse parser."""
+    parser.add_argument("--user", default=None, help="ESA username.")
+    parser.add_argument("--password", default=None, help="ESA password.")
+    parser.add_argument(
+        "--service",
+        default=_ESA_AUTH_IDP_HOST,
+        help="Keyring service name.",
+    )
+    parser.add_argument(
+        "--username-key",
+        default=_ESA_KEYRING_DEFAULT_USER_KEY,
+        help="Keyring username key for storing the default user.",
+    )
+
+
+def _update_keyring_from_args(args) -> None:
+    """Update keyring credentials from parsed CLI arguments."""
+    user = update_keyring(
+        user=args.user,
+        password=args.password,
+        service=args.service,
+        username_key=args.username_key,
+    )
+    print(f"Stored credentials for {user} in keyring service {args.service}.")
+
+
+def _add_update_netrc_arguments(parser) -> None:
+    """Add shared netrc arguments to an argparse parser."""
+    parser.add_argument("--user", default=None, help="ESA username.")
+    parser.add_argument("--password", default=None, help="ESA password.")
+    parser.add_argument(
+        "--machine",
+        default=_ESA_CS2_HOST,
+        help="Netrc machine host key.",
+    )
+    parser.add_argument(
+        "--netrc-file",
+        default=None,
+        help="Override path to netrc file (default: ~/.netrc).",
+    )
+
+
+def _update_netrc_from_args(args) -> None:
+    """Update netrc credentials from parsed CLI arguments."""
+    netrc_path = update_netrc(
+        user=args.user,
+        password=args.password,
+        machine=args.machine,
+        netrc_file=args.netrc_file,
+    )
+    print(
+        f"Wrote plaintext credentials for {args.machine} to {netrc_path}. "
+        "Prefer keyring for interactive setups."
+    )
+
+
+def cryoswath_cli(argv: list[str] | None = None) -> None:
+    """Top-level CryoSwath command group."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser("cryoswath", description="CryoSwath command line tools.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    create_config_parser = subparsers.add_parser(
+        "create-config",
+        help="Create a CryoSwath project path configuration.",
+    )
+    _add_create_config_arguments(create_config_parser)
+    create_config_parser.set_defaults(func=_create_config_from_args)
+
+    aux_parser = subparsers.add_parser(
+        "download-aux-data",
+        help="Download the CryoSwath auxiliary-data snapshot from Zenodo.",
+    )
+    _add_download_auxiliary_data_arguments(aux_parser)
+    aux_parser.set_defaults(func=_download_auxiliary_data_from_args)
+
+    tutorials_parser = subparsers.add_parser(
+        "get-tutorials",
+        help="Copy packaged CryoSwath tutorial notebooks into a project.",
+    )
+    _add_get_tutorials_arguments(tutorials_parser)
+    tutorials_parser.set_defaults(func=_get_tutorials_from_args)
+
+    rgi_parser = subparsers.add_parser(
+        "download-rgi",
+        help="Download and extract one RGI o1 region bundle.",
+    )
+    _add_download_rgi_arguments(rgi_parser)
+    rgi_parser.set_defaults(func=_download_rgi_from_args)
+
+    update_tracks_parser = subparsers.add_parser(
+        "update-tracks",
+        help="Refresh cached ground-track and filename lookup tables.",
+    )
+    update_tracks_parser.set_defaults(func=lambda args: update_track_database())
+
+    keyring_parser = subparsers.add_parser(
+        "update-keyring",
+        help="Create or update keyring credentials for ESA access.",
+    )
+    _add_update_keyring_arguments(keyring_parser)
+    keyring_parser.set_defaults(func=_update_keyring_from_args)
+
+    netrc_parser = subparsers.add_parser(
+        "update-netrc",
+        help="Create or update ~/.netrc credentials for ESA access.",
+    )
+    _add_update_netrc_arguments(netrc_parser)
+    netrc_parser.set_defaults(func=_update_netrc_from_args)
+
+    args = parser.parse_args(argv)
+    args.func(args)
 
 
 def update_email(email: str = None):

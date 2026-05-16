@@ -125,37 +125,39 @@ docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jup
 
 CryoSwath keeps project data outside the package install directory. If no
 configuration file is present, paths default to `./data` relative to the
-current working directory. For a reusable project configuration, run
-`cryoswath-init` inside a project folder:
+current working directory. For a reusable project configuration, run the
+bootstrap commands inside a project folder:
 
 ```sh
 mkdir <proj_dir>
 cd <proj_dir>
-cryoswath-init
+cryoswath create-config
+cryoswath download-aux-data
+cryoswath get-tutorials
 ```
 
-`cryoswath-init` still sets up the legacy `data/` and `scripts/` scaffolding,
-and now writes `cryoswath.cfg` with your base data path. You can also set
-`CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path variables; environment
-variables override config files. Set `CRYOSWATH_CONFIG` to select a config
-file explicitly. Legacy `config.ini` files are still read.
+`cryoswath create-config` writes `cryoswath.cfg` with your base data path.
+`cryoswath download-aux-data` installs the Zenodo auxiliary-data baseline.
+`cryoswath get-tutorials` copies packaged tutorial notebooks to `tutorials/`.
+You can also set `CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path
+variables; environment variables override config files. Set `CRYOSWATH_CONFIG`
+to select a config file explicitly. Legacy `config.ini` files are still read.
 
 To avoid storing secrets in config files, use keyring (preferred) or
 environment variables for ESA credentials. You can configure keyring
-credentials interactively with: `cryoswath-update-keyring`.
+credentials interactively with: `cryoswath update-keyring`.
 If you need a fallback, you can write `~/.netrc` (this stores the password in
-plaintext) using:
-`cryoswath-update-netrc`.
+plaintext) using `cryoswath update-netrc`.
 
 ## Tutorials and documentation
 
 - Main docs: [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
 - General workflow tutorial:
-  [`scripts/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__general_step-by-step.ipynb)
+  [`tutorials/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__general_step-by-step.ipynb)
 - First waveform tutorial:
-  [`scripts/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_waveform.ipynb)
+  [`tutorials/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb)
 - First swath tutorial:
-  [`scripts/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_swath.ipynb)
+  [`tutorials/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb)
 
 ## Local testing
 

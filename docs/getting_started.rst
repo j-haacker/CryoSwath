@@ -11,12 +11,16 @@ Quick checklist
    pip install --editable ./cryoswath
    mkdir <project_dir>
    cd <project_dir>
-   cryoswath-init
+   cryoswath create-config
+   cryoswath download-aux-data
+   cryoswath get-tutorials
 
 Then open ``cryoswath.cfg`` in your project directory and confirm that the
-``[path]`` section points to the intended ``data`` location. You can skip
-initialization for simple workflows and let CryoSwath default to ``./data``,
-or set ``CRYOSWATH_DATA`` to choose a data directory explicitly.
+``[path]`` section points to the intended ``data`` location. The auxiliary
+data command installs the Zenodo baseline, and the tutorial command copies
+notebooks into ``tutorials/``. You can skip initialization for simple workflows
+and let CryoSwath default to ``./data``, or set ``CRYOSWATH_DATA`` to choose a
+data directory explicitly.
 
 .. warning::
    Use a dedicated environment for CryoSwath. Installing into a shared
@@ -39,8 +43,8 @@ this is its foundation. Knowledge about the smallest parts of the data
 can help you understand the larger picture.
 
 Notebook:
-`scripts/tutorial__process_first_waveform.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_waveform.ipynb>`_
+`tutorials/tutorial__process_first_waveform.ipynb
+<https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb>`_
 
 
 Processing the first swath
@@ -52,8 +56,8 @@ about a glacier's evolution, but it may help to understand higher level
 data.
 
 Notebook:
-`scripts/tutorial__process_first_swath.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_swath.ipynb>`_
+`tutorials/tutorial__process_first_swath.ipynb
+<https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb>`_
 will give you a hand using CryoSwath to process a single track and
 visualize the data.
 
@@ -66,5 +70,5 @@ to producing a map of elevation change trends. It balances understanding
 the background processes with quickly enabling to use CryoSwath.
 
 Notebook:
-`scripts/tutorial__general_step-by-step.ipynb
-<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__general_step-by-step.ipynb>`_.
+`tutorials/tutorial__general_step-by-step.ipynb
+<https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__general_step-by-step.ipynb>`_.
