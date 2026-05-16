@@ -88,21 +88,24 @@ package-check = "python tools/test_installed_wheel.py --package-check-only"
 test-installed = "python tools/test_installed_wheel.py"
 test-unit = "pytest -q tests/test_*"
 export-conda-for-notebooks = "bash \"$PIXI_PROJECT_ROOT/tests/reports/export_conda_env_from_pixi.sh\""
+prepare-notebook-tests = "python tools/prepare_notebook_tests.py"
+prepare-report-notebooks = "python tools/prepare_notebook_tests.py reports"
+prepare-tutorial-notebooks = "python tools/prepare_notebook_tests.py tutorials"
 
 [feature.test.tasks.test-notebooks]
-depends-on = ["export-conda-for-notebooks"]
-cmd = "snakemake --snakefile Snakefile --cores 1 --use-conda"
+depends-on = ["export-conda-for-notebooks", "prepare-report-notebooks"]
+cmd = "env -u CRYOSWATH_DATA -u CRYOSWATH_L1B -u CRYOSWATH_L2_SWATH -u CRYOSWATH_L2_POCA -u CRYOSWATH_L3 -u CRYOSWATH_L4 -u CRYOSWATH_TMP -u CRYOSWATH_AUX -u CRYOSWATH_DEM -u CRYOSWATH_RGI -u CRYOSWATH_CS_GROUND_TRACKS snakemake --snakefile Snakefile --cores 4 --use-conda"
 cwd = "tests/reports"
-env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
+env = { PYTHONPATH = "$PIXI_PROJECT_ROOT", CRYOSWATH_CONFIG = "$PIXI_PROJECT_ROOT/tests/reports/artifacts/project/cryoswath.cfg" }
 
 [feature.test.tasks.test-tutorial-notebooks]
-args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/cryoswath/tutorials" }]
-depends-on = ["export-conda-for-notebooks"]
-cmd = "snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 4 --use-conda"
-env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
+args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/tests/tutorials/artifacts/project/tutorials" }]
+depends-on = ["export-conda-for-notebooks", "prepare-tutorial-notebooks"]
+cmd = "env -u CRYOSWATH_DATA -u CRYOSWATH_L1B -u CRYOSWATH_L2_SWATH -u CRYOSWATH_L2_POCA -u CRYOSWATH_L3 -u CRYOSWATH_L4 -u CRYOSWATH_TMP -u CRYOSWATH_AUX -u CRYOSWATH_DEM -u CRYOSWATH_RGI -u CRYOSWATH_CS_GROUND_TRACKS snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 4 --use-conda"
+env = { PYTHONPATH = "$PIXI_PROJECT_ROOT", CRYOSWATH_CONFIG = "$PIXI_PROJECT_ROOT/tests/tutorials/artifacts/project/cryoswath.cfg" }
 
 [feature.test.tasks.test-all]
-args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/cryoswath/tutorials" }]
+args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/tests/tutorials/artifacts/project/tutorials" }]
 depends-on = [
   "test-unit",
   "test-installed",

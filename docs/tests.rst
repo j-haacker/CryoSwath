@@ -37,15 +37,21 @@ Run all report notebooks through Snakemake with Pixi:
 
    pixi run -e test test-notebooks
 
+This task prepares ``tests/reports/artifacts/project/cryoswath.cfg``, sets
+``CRYOSWATH_CONFIG`` to that file for the notebook run, and downloads the
+auxiliary-data baseline if the required catalog files are missing.
+
 Run tutorial notebooks through Snakemake with Pixi:
 
 .. code-block:: bash
 
    pixi run -e test test-tutorial-notebooks
 
-If tutorials are stored outside the current checkout, set
-``CRYOSWATH_TUTORIAL_DIR`` to the directory that contains
-``tutorial__*.ipynb`` before running ``test-tutorial-notebooks``.
+This task prepares ``tests/tutorials/artifacts/project/cryoswath.cfg``, copies
+the packaged ``tutorial__*.ipynb`` files into that project with
+``cryoswath get-tutorials`` semantics, and uses the generated project as the
+default Snakemake ``--directory``. If you pass a custom tutorial directory,
+keep it compatible with the generated project layout and ``CRYOSWATH_CONFIG``.
 
 Run unit tests + report notebooks + tutorial notebooks:
 

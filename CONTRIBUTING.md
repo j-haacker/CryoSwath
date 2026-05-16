@@ -37,6 +37,15 @@ the unit suite without importing CryoSwath from the source checkout:
 pixi run -e test test-installed
 ```
 
+For notebook-facing changes, run the relevant notebook task. These tasks create
+isolated test project directories under `tests/*/artifacts/project`, set
+`CRYOSWATH_CONFIG`, and fetch the auxiliary-data baseline when needed:
+
+```sh
+pixi run -e test test-notebooks
+pixi run -e test test-tutorial-notebooks
+```
+
 To run selected GitHub Actions jobs locally, use the Pixi `ci` environment.
 These commands require Docker or a compatible container runtime and are an
 approximation of hosted Ubuntu CI:

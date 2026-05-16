@@ -187,15 +187,20 @@ Run report notebooks only:
 pixi run -e test test-notebooks
 ```
 
+This creates `tests/reports/artifacts/project/cryoswath.cfg`, uses that
+isolated data tree through `CRYOSWATH_CONFIG`, and downloads the auxiliary-data
+baseline if it is missing.
+
 Run tutorial notebooks only:
 
 ```sh
 pixi run -e test test-tutorial-notebooks
 ```
 
-If tutorials are stored outside the current checkout, set
-`CRYOSWATH_TUTORIAL_DIR` to the directory containing
-`tutorial__*.ipynb` before running this task.
+This creates `tests/tutorials/artifacts/project/cryoswath.cfg`, copies the
+packaged tutorial notebooks into that project, and uses the same isolated aux
+setup. If you pass a custom tutorial directory, keep it compatible with this
+generated project layout.
 
 Run selected GitHub Actions jobs locally with `act` through Pixi. This requires
 Docker or a compatible container runtime and approximates the Ubuntu CI jobs:
