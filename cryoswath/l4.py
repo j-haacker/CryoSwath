@@ -413,15 +413,23 @@ def fill_voids(
     elev: str = "ref_elev",
     per: tuple[str] = ("basin", "basin_group"),
     basin_shapes: gpd.GeoDataFrame = None,
+    discard_deglaciated: bool = True,
     outlier_limit: float = 5,
     outlier_replace: bool = False,
     outlier_iterations: int = 1,
     fit_sanity_check: dict = None,
     filled_flag: str = None,
 ) -> xr.Dataset:
-    """Fill spatial/temporal gaps using hierarchical hypsometric strategies."""
-    # mention memory footprint in docstring: reindexing leaks and takes a s**t ton of
-    # memory. roughly 5-10x l3_data size in total.
+    """Fill spatial/temporal gaps using hierarchical hypsometric strategies.
+
+    The routine fills by basin, then basin group, then region-wide, with
+    temporal interpolation for short and edge gaps when time is present.
+    It loads basin outlines if needed, restores missing coordinates and
+    reference elevation, and can record fill provenance in ``filled_flag``.
+
+    This is memory intensive: regrouping, unstacking, and reindexing can
+    temporarily require roughly 5-10x the input L3 dataset size.
+    """
     if any([grouper not in ["basin", "basin_group"] for grouper in per]):
         raise NotImplementedError
     if basin_shapes is None:
@@ -460,9 +468,15 @@ def fill_voids(
             ):
                 pbar.set_description(f"... current basin id: {label:.0f}")
                 if (
-                    "time" in group
-                    and (~group[main_var].isnull()).any("time").sum() > 100
-                ) or (~group[main_var].isnull()).sum() > 100:
+                    discard_deglaciated
+                    and (
+                        (
+                            "time" in group
+                            and (~group[main_var].isnull()).any("time").sum() > 100
+                        )
+                        or (~group[main_var].isnull()).sum() > 100
+                    )
+                ):
                     group = discard_frontal_retreat_zone(
                         group, "basin_id", main_var, elev
                     )
