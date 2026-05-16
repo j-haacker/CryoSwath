@@ -66,11 +66,11 @@ Documentation = "https://cryoswath.readthedocs.io/"
 Issues = "https://github.com/j-haacker/cryoswath/issues"
 
 [project.scripts]
-cryoswath-init = "cryoswath.misc:init_project"
+cryoswath-init = "cryoswath.misc:init_project_cli"
 cryoswath-download-rgi = "cryoswath.misc:download_rgi_cli"
 cryoswath-update-keyring = "cryoswath.misc:update_keyring_cli"
 cryoswath-update-netrc = "cryoswath.misc:update_netrc_cli"
-cryoswath-update-tracks = "cryoswath.misc:update_track_database"
+cryoswath-update-tracks = "cryoswath.misc:update_track_database_cli"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

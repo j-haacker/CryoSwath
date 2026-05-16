@@ -38,11 +38,13 @@ __all__ = [
     "sel_chunk_idx_range",
     "sel_chunk_range",
     "update_email",
+    "init_project_cli",
     "update_keyring",
     "update_keyring_cli",
     "update_netrc",
     "update_netrc_cli",
     "update_track_database",
+    "update_track_database_cli",
     "warn_with_traceback",
     "weighted_mean_excl_outliers",
     "xycut",
@@ -116,6 +118,18 @@ import warnings
 import xarray as xr
 
 from cryoswath import gis
+
+
+def init_project_cli() -> None:
+    """CLI wrapper around :func:`init_project`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath-init",
+        description="Initialize a project directory with data/scripts scaffolding.",
+    )
+    parser.parse_args()
+    init_project()
 
 
 def init_project():
@@ -2425,11 +2439,10 @@ def load_glacier_outlines(
     """
     if isinstance(identifier, list):
         out = _load_basins(identifier)
-    elif len(identifier) == (7 + 4 + 1 + 2 + 5 + 4) and identifier.split("-")[:3] == [
+    elif len(identifier) == (7 + 4 + 1 + 2 + 5 + 4) and identifier.split("-")[:2] == [
         "RGI2000",
         "v4.1",
-        "G",
-    ]:
+    ] and identifier.split("-")[2] in ["C", "G"]:
         out = _load_basins([identifier])
     # the pattern is rather allowing, set it to
     # "^(-?[012][0-9]){2}(_[a-z]+){1,5}(_[0-9][a-z][0-9]?)?$" to make it tight
@@ -3155,15 +3168,21 @@ def update_email(email: str = None):
 
 def update_track_database() -> None:
     """Refresh cached ground-track and filename lookup tables."""
+    load_cs_ground_tracks(update="regular")
+    load_cs_full_file_names(update="regular")
+
+
+def update_track_database_cli() -> None:
+    """CLI wrapper around :func:`update_track_database`."""
     from argparse import ArgumentParser
 
-    ArgumentParser(
+    parser = ArgumentParser(
         "cryoswath-update-tracks",
         description="Updates the track database. Run this once in a while and always "
         "if you wish to include the latest tracks.",
     )
-    load_cs_ground_tracks(update="regular")
-    load_cs_full_file_names(update="regular")
+    parser.parse_args()
+    update_track_database()
 
 
 # CREDIT: mgab https://stackoverflow.com/a/22376126
