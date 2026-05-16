@@ -116,6 +116,7 @@ import traceback
 from typing import Literal, Union
 import warnings
 import xarray as xr
+import zipfile
 
 from cryoswath import gis
 
@@ -296,9 +297,6 @@ _ESA_KEYRING_DEFAULT_USER_KEYS = (
 )
 _ESA_ENV_USER = "EOIAM_USER"
 _ESA_ENV_PASSWORD = "EOIAM_PASSWORD"
-_EARTHDATA_HOST = "urs.earthdata.nasa.gov"
-_EARTHDATA_ENV_USER = "EARTHDATA_USER"
-_EARTHDATA_ENV_PASSWORD = "EARTHDATA_PASSWORD"
 _RGI_DOWNLOAD_BASE_URL = (
     "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files"
 )
@@ -682,6 +680,13 @@ def download_dem(
         )
 
 
+def _stream_download_response(response, tmp_file) -> None:
+    """Write streamed HTTP response content to an open binary file."""
+    response.raise_for_status()
+    for chunk in response.iter_content(chunk_size=8192):
+        tmp_file.write(chunk)
+
+
 def download_file(
     url: str,
     dest: str | Path,
@@ -692,10 +697,6 @@ def download_file(
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
-    # snippet adapted from https://stackoverflow.com/a/16696317
-    # authors: https://stackoverflow.com/users/427457/roman-podlinov
-    #      and https://stackoverflow.com/users/12641442/jenia
-    # NOTE the stream=True parameter below
     try:
         with tempfile.NamedTemporaryFile(
             mode="wb",
@@ -706,12 +707,45 @@ def download_file(
         ) as tmp_file:
             temp_path = Path(tmp_file.name)
             with requests.get(url, stream=True, auth=auth, timeout=timeout) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=8192):
-                    # If you have chunk encoded response uncomment if
-                    # and set chunk_size parameter to None.
-                    # if chunk:
-                    tmp_file.write(chunk)
+                _stream_download_response(r, tmp_file)
+        os.replace(temp_path, dest_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+    return str(dest_path)
+
+
+def _download_earthdata_file(
+    url: str,
+    dest: str | Path,
+    timeout: int | float = 120,
+) -> str:
+    """Download an Earthdata-protected URL to ``dest`` using earthaccess."""
+    try:
+        import earthaccess
+    except ImportError as err:
+        raise RuntimeError(
+            "earthaccess is required for NASA Earthdata downloads. Install the "
+            "project dependencies or add `earthaccess` to your environment."
+        ) from err
+
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{dest_path.name}.",
+            suffix=".part",
+            dir=dest_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            earthaccess.login(strategy="environment", persist=False)
+            session = earthaccess.get_requests_https_session()
+            with session.get(url, stream=True, timeout=timeout) as response:
+                _stream_download_response(response, tmp_file)
         os.replace(temp_path, dest_path)
     except Exception:
         if temp_path is not None and temp_path.exists():
@@ -1146,84 +1180,6 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
         f"{_ESA_ENV_PASSWORD}, keyring via cryoswath-update-keyring, or "
         "~/.netrc (plaintext fallback), or use legacy config.ini [user] "
         "name/password. Anonymous login is no longer supported."
-    )
-
-
-def _resolve_earthdata_env_credentials() -> tuple[str, str, str] | None:
-    """Resolve NASA Earthdata credentials from environment variables."""
-    env_user = os.environ.get(_EARTHDATA_ENV_USER)
-    env_password = os.environ.get(_EARTHDATA_ENV_PASSWORD)
-    if env_user and env_password:
-        return env_user, env_password, "environment variables"
-    if env_user or env_password:
-        warnings.warn(
-            f"Both {_EARTHDATA_ENV_USER} and {_EARTHDATA_ENV_PASSWORD} are required "
-            "to use environment-variable credentials. Falling back to keyring/netrc.",
-            category=UserWarning,
-            stacklevel=2,
-        )
-    return None
-
-
-def _resolve_earthdata_keyring_credentials() -> tuple[str, str, str] | None:
-    """Resolve NASA Earthdata credentials from keyring if available."""
-    if keyring is None:
-        return None
-    try:
-        env_users = []
-        user = os.environ.get(_EARTHDATA_ENV_USER)
-        if user:
-            env_users.append(user)
-        for user in env_users:
-            password = keyring.get_password(_EARTHDATA_HOST, user)
-            if password:
-                return user, password, f"keyring service {_EARTHDATA_HOST}"
-        for username_key in _ESA_KEYRING_DEFAULT_USER_KEYS:
-            keyring_user = keyring.get_password(_EARTHDATA_HOST, username_key)
-            if keyring_user:
-                keyring_password = keyring.get_password(_EARTHDATA_HOST, keyring_user)
-                if keyring_password:
-                    return (
-                        keyring_user,
-                        keyring_password,
-                        f"keyring service {_EARTHDATA_HOST}",
-                    )
-    except KeyringError as err:
-        warnings.warn(
-            f"Could not read NASA Earthdata credentials from keyring: {err}",
-            category=UserWarning,
-            stacklevel=2,
-        )
-    return None
-
-
-def _resolve_earthdata_credentials() -> tuple[str, str, str]:
-    """Resolve NASA Earthdata credentials from env, keyring, or netrc."""
-    env_auth = _resolve_earthdata_env_credentials()
-    if env_auth is not None:
-        return env_auth
-
-    keyring_auth = _resolve_earthdata_keyring_credentials()
-    if keyring_auth is not None:
-        return keyring_auth
-
-    try:
-        netrc_auth = netrc.netrc().authenticators(_EARTHDATA_HOST)
-    except (FileNotFoundError, netrc.NetrcParseError):
-        netrc_auth = None
-    if netrc_auth is not None:
-        login, _, password = netrc_auth
-        if login and password:
-            return login, password, "~/.netrc"
-        if password and not login:
-            raise RuntimeError(
-                f"~/.netrc entry for {_EARTHDATA_HOST} is missing login."
-            )
-
-    raise RuntimeError(
-        f"No NASA Earthdata credentials found. Configure {_EARTHDATA_ENV_USER} and "
-        f"{_EARTHDATA_ENV_PASSWORD}, keyring service {_EARTHDATA_HOST}, or "
-        "~/.netrc (plaintext fallback)."
     )
 
 
@@ -2272,15 +2228,37 @@ def _rgi_remote_product_url(product: str) -> str:
     return f"{_RGI_DOWNLOAD_BASE_URL}/RGI2000-v7.0-{product}/"
 
 
-def _rgi_missing_message(product: str, o1code: str) -> str:
-    """Return user-facing message for missing RGI o1 product."""
+def _rgi_product_cli_name(product: str) -> str:
+    """Return CLI product name for normalized RGI product code."""
+    product = _normalize_rgi_product(product)
+    return "complexes" if product == "C" else "glaciers"
+
+
+def _rgi_region_pattern(product: str, o1code: str | int) -> str:
+    """Return abbreviated RGI o1 region pattern for messages."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    return f"RGI2000-v7.0-{product}-{o1code}_..."
+
+
+def _rgi_auto_download_message(product: str, o1code: str | int) -> str:
+    """Return warning message for the automatic RGI download attempt."""
     return (
-        f"RGI file RGI2000-v7.0-{product}-{o1code}_... couldn't be found. "
-        "Make sure RGI files are available in data/auxiliary/RGI. If you did not "
-        "download them already, you can find them at "
-        f"{_rgi_remote_product_url(product)}. Mind that you need to unzip them. "
-        "If you decide to put them into a directory, name it as the file is named "
-        "(e.g. RGI2000-v7.0-G-01_alaska)."
+        f"RGI region {_rgi_region_pattern(product, o1code)} is missing; "
+        "attempting automatic NSIDC download with NASA Earthdata credentials."
+    )
+
+
+def _rgi_missing_message(product: str, o1code: str | int) -> str:
+    """Return final user-facing message for missing RGI o1 product."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    cli_product = _rgi_product_cli_name(product)
+    return (
+        f"RGI region {_rgi_region_pattern(product, o1code)} could not be found "
+        "or downloaded. See docs/prerequisites.rst; try "
+        f"`cryoswath-download-rgi --o1 {o1code} --product {cli_product}`; "
+        f"source: {_rgi_remote_product_url(product)}."
     )
 
 
@@ -2343,31 +2321,43 @@ def download_rgi_o1region(
     archive_path = rgi_dir / f"{archive_stem}.zip"
     target_dir = rgi_dir / archive_stem
 
-    user, password, _ = _resolve_earthdata_credentials()
-    download_file(
+    _download_earthdata_file(
         url=remote_url,
         dest=archive_path,
-        auth=(user, password),
         timeout=timeout,
     )
 
-    extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir))
     try:
-        shutil.unpack_archive(archive_path, extract_root, format="zip")
-        nested_dir = extract_root / archive_stem
-        if target_dir.exists():
-            if target_dir.is_dir():
-                shutil.rmtree(target_dir)
+        if not zipfile.is_zipfile(archive_path):
+            raise RuntimeError(
+                "Downloaded RGI payload is not a zip archive. This usually means "
+                "NASA Earthdata returned a login or error page; check credentials "
+                f"and source URL: {remote_url}"
+            )
+
+        extract_root = Path(
+            tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir)
+        )
+        try:
+            shutil.unpack_archive(archive_path, extract_root, format="zip")
+            nested_dir = extract_root / archive_stem
+            if target_dir.exists():
+                if target_dir.is_dir():
+                    shutil.rmtree(target_dir)
+                else:
+                    target_dir.unlink()
+            if nested_dir.is_dir() and len(list(extract_root.iterdir())) == 1:
+                shutil.move(str(nested_dir), str(target_dir))
             else:
-                target_dir.unlink()
-        if nested_dir.is_dir() and len(list(extract_root.iterdir())) == 1:
-            shutil.move(str(nested_dir), str(target_dir))
-        else:
-            shutil.move(str(extract_root), str(target_dir))
-            extract_root = None
-    finally:
-        if extract_root is not None and extract_root.exists():
-            shutil.rmtree(extract_root, ignore_errors=True)
+                shutil.move(str(extract_root), str(target_dir))
+                extract_root = None
+        finally:
+            if extract_root is not None and extract_root.exists():
+                shutil.rmtree(extract_root, ignore_errors=True)
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
     archive_path.unlink(missing_ok=True)
     return str(target_dir)
 
@@ -2399,24 +2389,25 @@ def _load_o1region(
     product = _normalize_rgi_product(product)
     o1code = _normalize_rgi_o1code(o1code)
     source = _find_rgi_o1region_source(o1code, product)
-    missing_message = _rgi_missing_message(product, o1code)
     if source is None:
         warnings.warn(
-            missing_message + " Attempting automatic download now.",
+            _rgi_auto_download_message(product, o1code),
             category=UserWarning,
             stacklevel=2,
         )
         try:
             download_rgi_o1region(o1code=o1code, product=product)
         except Exception as err:
+            missing_message = _rgi_missing_message(product, o1code)
             warnings.warn(
-                f"{missing_message} Automatic download failed: {err}",
+                f"Automatic RGI download failed: {err}. {missing_message}",
                 category=UserWarning,
                 stacklevel=2,
             )
             raise FileNotFoundError(missing_message) from err
         source = _find_rgi_o1region_source(o1code, product)
         if source is None:
+            missing_message = _rgi_missing_message(product, o1code)
             warnings.warn(missing_message, category=UserWarning, stacklevel=2)
             raise FileNotFoundError(missing_message)
     return _read_rgi_o1region_source(source)

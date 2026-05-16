@@ -23,7 +23,7 @@ from waveform-level processing to gridded elevation products.
 - Install CryoSwath in a dedicated environment (`pixi`, `conda`/`mamba`,
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
-- Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
+- Supported Python version: **>=3.12**.
 - Downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
 - ESA credentials are resolved in this order:

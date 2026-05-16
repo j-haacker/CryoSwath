@@ -6,10 +6,11 @@ platforms = ["linux-64"]
 conda-pypi-map = { conda-forge = "conda-pypi-map.json", bioconda = "conda-pypi-map.json" }
 
 [dependencies]
-python = "3.11.*"
+python = "3.12.*"
 bottleneck = "*"
 dask = "*"
 defusedxml = "*"
+earthaccess = ">=0.18"
 geopandas = ">=1.0.1"
 gitpython = "*"
 h5netcdf = "*"

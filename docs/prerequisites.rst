@@ -137,16 +137,11 @@ RGI download behavior
 If a required RGI o1 region file is missing, CryoSwath now attempts an
 automatic NSIDC download before raising ``FileNotFoundError``.
 
-RGI downloads use NASA Earthdata credentials, not ESA credentials. Credential
-resolution order is:
+RGI downloads use NASA Earthdata credentials through ``earthaccess``, not ESA
+credentials. For non-interactive downloads, provide either:
 
-1. ``EARTHDATA_USER`` and ``EARTHDATA_PASSWORD``.
-2. Keyring service ``urs.earthdata.nasa.gov``.
-3. ``~/.netrc`` entry for ``urs.earthdata.nasa.gov`` with explicit
-   ``login`` and ``password`` (plaintext fallback).
-
-``~/.netrc`` stores the password in plaintext and should only be used as a
-fallback if keyring or environment variables are not available.
+1. ``EARTHDATA_USERNAME`` and ``EARTHDATA_PASSWORD``.
+2. ``EARTHDATA_TOKEN`` instead of username/password.
 
 Downloaded zip archives are extracted into ``data/auxiliary/RGI`` using a
 directory named like the archive stem, for example
@@ -166,7 +161,7 @@ Python package dependencies are defined in ``pyproject.toml``.
 
 - Runtime dependencies: ``[project.dependencies]``
 - Optional docs/dev extras: ``[project.optional-dependencies]``
-- Supported Python version: ``>=3.11`` (regularly tested on 3.11 and 3.12)
+- Supported Python version: ``>=3.12``
 - Supported xarray window: ``>=2025.3,<2025.12``
 
 The root ``requirements.txt`` is kept for compatibility but is not the
