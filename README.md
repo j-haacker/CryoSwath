@@ -121,10 +121,12 @@ If local dependency resolution fails, you can use Docker:
 docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly
 ```
 
-## Initialize a project
+## Configure a project
 
-CryoSwath expects project data outside the package install directory.
-Run `cryoswath-init` inside a new project folder:
+CryoSwath keeps project data outside the package install directory. If no
+configuration file is present, paths default to `./data` relative to the
+current working directory. For a reusable project configuration, run
+`cryoswath-init` inside a project folder:
 
 ```sh
 mkdir <proj_dir>
@@ -132,14 +134,15 @@ cd <proj_dir>
 cryoswath-init
 ```
 
-`cryoswath-init` sets up the expected data structure and writes
-`scripts/config.ini` with your base data path. The paths can be
-reconfigured in `config.ini` if you use a different layout.
+`cryoswath-init` still sets up the legacy `data/` and `scripts/` scaffolding,
+and now writes `cryoswath.cfg` with your base data path. You can also set
+`CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path variables; environment
+variables override config files. Set `CRYOSWATH_CONFIG` to select a config
+file explicitly. Legacy `config.ini` files are still read.
 
-To avoid storing secrets in `config.ini`, use keyring (preferred) or
-environment variables for ESA credentials and keep `config.ini` focused on
-paths. You can configure keyring credentials interactively with:
-`cryoswath-update-keyring`.
+To avoid storing secrets in config files, use keyring (preferred) or
+environment variables for ESA credentials. You can configure keyring
+credentials interactively with: `cryoswath-update-keyring`.
 If you need a fallback, you can write `~/.netrc` (this stores the password in
 plaintext) using:
 `cryoswath-update-netrc`.

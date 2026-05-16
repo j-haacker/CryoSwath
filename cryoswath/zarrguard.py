@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 from typing import Any
 
@@ -54,6 +53,7 @@ def guarded_to_zarr(
     write_kwargs.setdefault("compute", True)
     _maybe_default_write_empty_chunks(dataset, write_kwargs)
 
+    Path(store_path).parent.mkdir(parents=True, exist_ok=True)
     result = dataset.to_zarr(store_path, **write_kwargs)
     guard_call_kwargs = dict(guard_kwargs or {})
     if command is not None:

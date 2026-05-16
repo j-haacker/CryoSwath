@@ -151,11 +151,31 @@ def test_create_esa_https_session_raises_on_auth_failure(monkeypatch):
     assert session.closed
 
 
+def test_from_id_reads_from_configured_l1b_path(monkeypatch, tmp_path):
+    track_id = "20200101T000000"
+    local_dir = tmp_path / "custom-l1b" / "2020" / "01"
+    local_dir.mkdir(parents=True)
+    local_file = local_dir / f"CS_OFFL_SIR_SIN_1B_{track_id}_TEST.nc"
+    local_file.write_text("placeholder")
+
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path / "custom-l1b"))
+    monkeypatch.setattr(l1b, "read_esa_l1b", lambda path, **kwargs: Path(path))
+    monkeypatch.setattr(
+        l1b,
+        "download_single_file",
+        lambda track_id: (_ for _ in ()).throw(
+            AssertionError("existing L1b file should be read")
+        ),
+    )
+
+    assert l1b.from_id(pd.Timestamp(track_id)) == local_file
+
+
 def test_download_single_file_prefers_https(monkeypatch, tmp_path):
     track_id = "20200101T000000"
     track_time = pd.to_datetime(track_id)
     remote_base_name = "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST"
-    monkeypatch.setattr(l1b, "data_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(
         l1b, "_resolve_esa_ftp_credentials", lambda: ("esa-user", "esa-password", "env")
     )
@@ -183,6 +203,7 @@ def test_download_single_file_prefers_https(monkeypatch, tmp_path):
     result = l1b.download_single_file(track_id)
     assert result.endswith(remote_base_name + ".nc")
     assert calls[0][0] == remote_base_name + ".nc"
+    assert calls[0][1] == tmp_path / "2020" / "01" / (remote_base_name + ".nc")
     assert calls[0][2] is session
     assert session.closed
 
@@ -191,7 +212,7 @@ def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tm
     track_id = "20200101T000000"
     track_time = pd.to_datetime(track_id)
     remote_base_name = "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST"
-    monkeypatch.setattr(l1b, "data_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(
         l1b, "_resolve_esa_ftp_credentials", lambda: ("esa-user", "esa-password", "env")
     )
@@ -471,7 +492,7 @@ def test_live_download_single_file_prefers_https_when_enabled(monkeypatch, tmp_p
     if os.environ.get("CRYOSWATH_RUN_LIVE_ESA") != "1":
         pytest.skip("Set CRYOSWATH_RUN_LIVE_ESA=1 to run the live ESA HTTPS smoke test.")
 
-    monkeypatch.setattr(l1b, "data_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(
         l1b,
         "_download_single_file_via_ftp",

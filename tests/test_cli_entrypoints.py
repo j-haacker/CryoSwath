@@ -36,14 +36,34 @@ def test_console_entry_help_exits_before_work(
 
 
 def test_init_project_cli_dispatches_after_parsing(monkeypatch):
-    calls = []
+    observed = {}
 
-    monkeypatch.setattr(misc, "init_project", lambda: calls.append("init"))
-    monkeypatch.setattr(sys, "argv", ["cryoswath-init"])
+    def fake_init_project(config_file="cryoswath.cfg", data="data", *, force=False):
+        observed["config_file"] = config_file
+        observed["data"] = data
+        observed["force"] = force
+
+    monkeypatch.setattr(misc, "init_project", fake_init_project)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cryoswath-init",
+            "--config",
+            "custom.cfg",
+            "--data",
+            "custom-data",
+            "--force",
+        ],
+    )
 
     misc.init_project_cli()
 
-    assert calls == ["init"]
+    assert observed == {
+        "config_file": "custom.cfg",
+        "data": "custom-data",
+        "force": True,
+    }
 
 
 def test_update_track_database_cli_dispatches_after_parsing(monkeypatch):

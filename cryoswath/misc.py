@@ -63,7 +63,7 @@ __all__ = [
     "patched_xr_decode_scaling",
 ]  # path variables are currently defined below
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from configparser import ConfigParser
 from contextlib import contextmanager
 from dateutil.relativedelta import relativedelta
@@ -129,12 +129,43 @@ def init_project_cli() -> None:
         "cryoswath-init",
         description="Initialize a project directory with data/scripts scaffolding.",
     )
-    parser.parse_args()
-    init_project()
+    parser.add_argument(
+        "--config",
+        default="cryoswath.cfg",
+        help="Configuration file to create (default: cryoswath.cfg).",
+    )
+    parser.add_argument(
+        "--data",
+        default="data",
+        help="Data path to write to the configuration file (default: data).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing configuration file.",
+    )
+    args = parser.parse_args()
+    try:
+        init_project(config_file=args.config, data=args.data, force=args.force)
+    except FileExistsError as err:
+        parser.error(str(err))
 
 
-def init_project():
+def init_project(
+    config_file: str | Path = "cryoswath.cfg",
+    data: str | Path = "data",
+    *,
+    force: bool = False,
+):
     """Initialize a project directory with data/scripts scaffolding."""
+    config_path = Path(config_file).expanduser()
+    if not config_path.is_absolute():
+        config_path = Path.cwd() / config_path
+    if config_path.exists() and not force:
+        raise FileExistsError(
+            f"{config_path} already exists. Use --force to overwrite it."
+        )
+
     if not (os.path.exists("data") or os.path.exists("scripts")):
         try:
             from git.repo import Repo
@@ -155,13 +186,20 @@ def init_project():
             "repository branches. If your unsure, move your directories to a backup, "
             "run `init_project()` again, and restore your backups."
         )
-    config_file = os.path.join("scripts", "config.ini")
+
     config = ConfigParser()
-    if os.path.isfile(config_file):
-        config.read(os.path.join("scripts", "config.ini"))
-    config["path"] = {"data": Path().cwd() / "data"}
-    with open(config_file, "w") as f:
+    if config_path.is_file():
+        config.read(config_path)
+    if "path" not in config:
+        config["path"] = {}
+    config["path"]["data"] = str(data)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data_dir = _resolve_path_value(data, config_path.parent)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w") as f:
         config.write(f)
+    print(f"Wrote CryoSwath path configuration to {config_path}.")
     print(
         "Set credentials in environment variables "
         f"{_ESA_ENV_USER} and its corresponding password variable, "
@@ -200,51 +238,211 @@ def init_project():
 
 # Paths ##############################################################
 
-if (Path().cwd() / "config.ini").is_file():
-    config = ConfigParser()
-    config.read("config.ini")
-    data_path = Path(config["path"].get("data", Path(config["path"].get("base", "."), "data")))
-else:
-    data_path = Path.cwd() / "data"
-    warnings.warn(
-        "Base path not defined. Path variables may be wrong. Make sure to have run "
-        '`cryoswath-init` and your working directory is "scripts".'
+_CRYOSWATH_CONFIG_FILE = "cryoswath.cfg"
+_LEGACY_CONFIG_FILE = "config.ini"
+_CRYOSWATH_CONFIG_ENV = "CRYOSWATH_CONFIG"
+
+_PATH_ENV_VARS = {
+    "data": "CRYOSWATH_DATA",
+    "l1b": "CRYOSWATH_L1B",
+    "l2_swath": "CRYOSWATH_L2_SWATH",
+    "l2_poca": "CRYOSWATH_L2_POCA",
+    "l3": "CRYOSWATH_L3",
+    "l4": "CRYOSWATH_L4",
+    "tmp": "CRYOSWATH_TMP",
+    "aux": "CRYOSWATH_AUX",
+    "dem": "CRYOSWATH_DEM",
+    "rgi": "CRYOSWATH_RGI",
+    "cs_ground_tracks": "CRYOSWATH_CS_GROUND_TRACKS",
+}
+
+
+def _resolve_path_value(value: str | Path, base: Path) -> Path:
+    """Resolve a configured path value against a base path."""
+    path = Path(os.path.expandvars(str(value))).expanduser()
+    if path.is_absolute():
+        return path
+    return base / path
+
+
+def _parent_dirs(start: Path) -> Iterable[Path]:
+    """Yield a directory and all of its parents."""
+    start = Path(start).expanduser().resolve()
+    yield start
+    yield from start.parents
+
+
+def _discover_legacy_config_file(cwd: str | Path = None) -> Path | None:
+    """Find a legacy config.ini in or above the current project layout."""
+    start = Path.cwd() if cwd is None else Path(cwd)
+    for directory in _parent_dirs(start):
+        candidates = (
+            directory / _LEGACY_CONFIG_FILE,
+            directory / "scripts" / _LEGACY_CONFIG_FILE,
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _user_config_file(environ: Mapping[str, str], cwd: Path) -> Path:
+    """Return the per-user CryoSwath config path."""
+    if "XDG_CONFIG_HOME" in environ:
+        base = _resolve_path_value(environ["XDG_CONFIG_HOME"], cwd)
+    else:
+        base = Path.home() / ".config"
+    return base / "cryoswath" / _CRYOSWATH_CONFIG_FILE
+
+
+def _discover_path_config_file(
+    cwd: str | Path = None, environ: Mapping[str, str] = None
+) -> Path | None:
+    """Find the CryoSwath path config file to use."""
+    start = Path.cwd() if cwd is None else Path(cwd)
+    start = start.expanduser().resolve()
+    environ = os.environ if environ is None else environ
+
+    explicit_config = environ.get(_CRYOSWATH_CONFIG_ENV)
+    if explicit_config:
+        return _resolve_path_value(explicit_config, start)
+
+    for directory in _parent_dirs(start):
+        candidate = directory / _CRYOSWATH_CONFIG_FILE
+        if candidate.is_file():
+            return candidate
+
+    legacy_config = _discover_legacy_config_file(start)
+    if legacy_config is not None:
+        return legacy_config
+
+    user_config = _user_config_file(environ, start)
+    if user_config.is_file():
+        return user_config
+    return None
+
+
+def _config_base_dir(config_file: Path | None, cwd: Path) -> Path:
+    """Return the directory against which relative config paths resolve."""
+    if config_file is None:
+        return cwd
+    if (
+        config_file.name == _LEGACY_CONFIG_FILE
+        and config_file.parent.name == "scripts"
+    ):
+        return config_file.parent.parent
+    return config_file.parent
+
+
+def _read_path_config(config_file: Path | None) -> ConfigParser:
+    """Read a path config file, returning an empty path section if absent."""
+    path_config = ConfigParser()
+    if config_file is not None:
+        read_files = path_config.read(config_file)
+        if not read_files:
+            warnings.warn(
+                f"Could not read CryoSwath config file {config_file}. "
+                "Falling back to default paths.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+    if "path" not in path_config:
+        path_config["path"] = {}
+    return path_config
+
+
+def _resolve_config_path(
+    key: str,
+    default: str,
+    base: Path,
+    path_config: ConfigParser,
+    environ: Mapping[str, str],
+) -> Path:
+    """Resolve one path key from env, config, or a default child path."""
+    env_value = environ.get(_PATH_ENV_VARS[key])
+    if env_value is not None:
+        return _resolve_path_value(env_value, base)
+    if key in path_config["path"]:
+        return _resolve_path_value(path_config["path"][key], base)
+    return base / default
+
+
+def _resolve_path_configuration(
+    cwd: str | Path = None, environ: Mapping[str, str] = None
+) -> tuple[ConfigParser, Path | None, dict[str, Path]]:
+    """Resolve CryoSwath path configuration and derived path values."""
+    start = Path.cwd() if cwd is None else Path(cwd)
+    start = start.expanduser().resolve()
+    environ = os.environ if environ is None else environ
+    config_file = _discover_path_config_file(start, environ)
+    loaded_config_file = (
+        config_file if config_file is not None and config_file.is_file() else None
     )
-    config = {"path": {}}
+    path_config = _read_path_config(config_file)
+    base_dir = _config_base_dir(loaded_config_file, start)
+    path_section = path_config["path"]
+
+    data_env = environ.get(_PATH_ENV_VARS["data"])
+    if data_env is not None:
+        resolved_data_path = _resolve_path_value(data_env, start)
+    elif "data" in path_section:
+        resolved_data_path = _resolve_path_value(path_section["data"], base_dir)
+    elif "base" in path_section:
+        resolved_data_path = (
+            _resolve_path_value(path_section["base"], base_dir) / "data"
+        )
+    else:
+        resolved_data_path = (
+            start / "data" if loaded_config_file is None else base_dir / "data"
+        )
+
+    resolved_paths = {"data": resolved_data_path}
+    for key, default in {
+        "l1b": "L1b",
+        "l2_swath": "L2_swath",
+        "l2_poca": "L2_poca",
+        "l3": "L3",
+        "l4": "L4",
+        "tmp": "tmp",
+        "aux": "auxiliary",
+    }.items():
+        resolved_paths[key] = _resolve_config_path(
+            key, default, resolved_data_path, path_config, environ
+        )
+
+    aux_path = resolved_paths["aux"]
+    for key, default in {
+        "dem": "DEM",
+        "rgi": "RGI",
+        "cs_ground_tracks": "CryoSat-2_SARIn_ground_tracks.feather",
+    }.items():
+        resolved_paths[key] = _resolve_config_path(
+            key, default, aux_path, path_config, environ
+        )
+    return path_config, loaded_config_file, resolved_paths
 
 
 def _get_path(name: str, base: Path, alternative: str = None) -> str:
     """Resolve configured project path with fallback to default."""
     key = name.lower()
     if key in config["path"]:
-        _value = config["path"][key]
-        if Path(_value).is_absolute():
-            return _value
-        else:
-            return str(base / _value)
-    else:
-        return str(base / (name if alternative is None else alternative))
+        return str(_resolve_path_value(config["path"][key], Path(base)))
+    return str(Path(base) / (name if alternative is None else alternative))
 
 
-# data subdirs
-l1b_path = _get_path("L1b", data_path)
-l2_swath_path = _get_path("L2_swath", data_path)
-l2_poca_path = _get_path("L2_poca", data_path)
-l3_path = _get_path("L3", data_path)
-l4_path = _get_path("L4", data_path)
-tmp_path = _get_path("tmp", data_path)
-aux_path = Path(_get_path("aux", data_path, "auxiliary"))
+config, _path_config_file, _resolved_paths = _resolve_path_configuration()
 
-# aux subdirs
-dem_path = _get_path("DEM", aux_path)
-rgi_path = _get_path("RGI", aux_path)
-cs_ground_tracks_path = _get_path(
-    "cs_ground_tracks", aux_path, "CryoSat-2_SARIn_ground_tracks.feather"
-)
-
-# temporarily, (re)set types (str or Path)
-data_path = str(data_path)
-dem_path = Path(dem_path)
+data_path = str(_resolved_paths["data"])
+l1b_path = str(_resolved_paths["l1b"])
+l2_swath_path = str(_resolved_paths["l2_swath"])
+l2_poca_path = str(_resolved_paths["l2_poca"])
+l3_path = str(_resolved_paths["l3"])
+l4_path = str(_resolved_paths["l4"])
+tmp_path = str(_resolved_paths["tmp"])
+aux_path = _resolved_paths["aux"]
+dem_path = _resolved_paths["dem"]
+rgi_path = str(_resolved_paths["rgi"])
+cs_ground_tracks_path = str(_resolved_paths["cs_ground_tracks"])
 
 __all__.extend(
     [  # pathes
@@ -261,6 +459,7 @@ __all__.extend(
         "tmp_path",
     ]
 )
+
 
 # Config #############################################################
 WGS84_ellpsoid = Geod(ellps="WGS84")
@@ -1158,8 +1357,10 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
                 "Anonymous FTP login is no longer supported."
             )
 
+    legacy_config_file = _discover_legacy_config_file()
     config = ConfigParser()
-    config.read("config.ini")
+    if legacy_config_file is not None:
+        config.read(legacy_config_file)
     if "user" in config:
         section = config["user"]
         if "name" in section and "password" in section:
@@ -2044,18 +2245,17 @@ def load_cs_ground_tracks(
         # the next two function have only a local purpose.
         def save_current_track_list(new_track_series: gpd.GeoSeries):
             """saves the tracklist; backing up the old if older than 5 days."""
-            if (
-                not os.path.isfile(extend_filename(cs_ground_tracks_path, "__backup"))
-                or time.time() - os.path.getmtime(cs_ground_tracks_path)
-                > 5 * 24 * 60 * 60
+            track_path = Path(cs_ground_tracks_path)
+            backup_path = Path(extend_filename(cs_ground_tracks_path, "__backup"))
+            track_path.parent.mkdir(parents=True, exist_ok=True)
+            if track_path.is_file() and (
+                not backup_path.is_file()
+                or time.time() - track_path.stat().st_mtime > 5 * 24 * 60 * 60
             ):
                 print('backing up "old" track file')
-                shutil.copyfile(
-                    cs_ground_tracks_path,
-                    extend_filename(cs_ground_tracks_path, "__backup"),
-                )
+                shutil.copyfile(track_path, backup_path)
             print("saving current track list to file")
-            new_track_series.to_feather(cs_ground_tracks_path)
+            new_track_series.to_feather(track_path)
 
         def collect_missing_tracks(
             remote_files: list[str], present_tracks: gpd.GeoSeries
@@ -2572,7 +2772,9 @@ def merge_l2_cache(
     # e.g., into years and combine the cache files using this function
     # afterward.
     # not tested after migrating here from notebook
-    with h5py.File(os.path.join(tmp_path, destination_file_name), "a") as h5_dest:
+    destination_path = Path(tmp_path) / destination_file_name
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(destination_path, "a") as h5_dest:
         for source_path in sorted(glob.glob(os.path.join(tmp_path, source_glob))):
             print("\n", source_path)
             if any([source_path.endswith(ending) for ending in exclude_endswith]):
@@ -2810,7 +3012,8 @@ def repair_l2_cache(
                     filepath, key=node.name, format="table"
                 )
 
-    tmp_h5 = os.path.join(data_path, "tmp", "tmp")
+    tmp_h5 = os.path.join(tmp_path, "tmp")
+    Path(tmp_h5).parent.mkdir(parents=True, exist_ok=True)
     if os.path.exists(tmp_h5):
         if os.path.isfile(tmp_h5):
             os.remove(tmp_h5)
@@ -2955,6 +3158,7 @@ def rgi_o2region_translator(o1: int, o2: int, out_type: str = "full_name") -> st
 @contextmanager
 def sandbox_write_to(target: str):
     """Guard writes with a lock and recover from stale backup sidecars."""
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
     backup = target + "__backup"
     lock = target + "__lock"
     lock_fd = None

@@ -13,8 +13,10 @@ Quick checklist
    cd <project_dir>
    cryoswath-init
 
-Then open ``scripts/config.ini`` in your project directory and confirm
-that the ``[path]`` section points to the intended ``data`` location.
+Then open ``cryoswath.cfg`` in your project directory and confirm that the
+``[path]`` section points to the intended ``data`` location. You can skip
+initialization for simple workflows and let CryoSwath default to ``./data``,
+or set ``CRYOSWATH_DATA`` to choose a data directory explicitly.
 
 .. warning::
    Use a dedicated environment for CryoSwath. Installing into a shared

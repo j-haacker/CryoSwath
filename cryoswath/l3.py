@@ -25,7 +25,7 @@ import xarray as xr
 
 from cryoswath import l1b, l2
 from cryoswath.misc import (
-    data_path,
+    l3_path,
     dataframe_to_rioxr,
     filter_kwargs,
     find_region_id,
@@ -567,6 +567,7 @@ def cache_l2_data(
 
 def _preallocate_zarr(path, bbox, crs, time_index, data_vars, attrs=None) -> None:
     """Create an empty chunked zarr layout for future L3 writes."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     x_dummy = np.arange(
         (bbox.bounds[0] // 500 + 0.5) * 500, bbox.bounds[2], 500, dtype="i4"
     )
@@ -986,6 +987,9 @@ def build_dataset(
                         )
                         + ".feather",
                     )
+                    Path(safety_net_tmp_file_path).parent.mkdir(
+                        parents=True, exist_ok=True
+                    )
                     l3_data.to_feather(safety_net_tmp_file_path)
                 except Exception as err_inner:
                     print("\n")
@@ -1181,5 +1185,5 @@ def _build_path(
         # if the trailing ".0" should be omitted, that needs to be implemented here
         spatial_res_str = f"{round(spatial_res_meter / 1000, 1)}km"
     return os.path.join(
-        data_path, "L3", "_".join([region_id, timestep_str, spatial_res_str + ".zarr"])
+        l3_path, "_".join([region_id, timestep_str, spatial_res_str + ".zarr"])
     )

@@ -34,7 +34,9 @@ Alternative: install from source
    git clone https://github.com/j-haacker/cryoswath.git
    pip install --editable ./cryoswath
 
-Then initialize your project directory:
+Then configure your project paths. Without a config file, CryoSwath uses
+``./data`` relative to the current working directory. To create a reusable
+project config, run:
 
 .. code-block:: sh
 
@@ -42,8 +44,12 @@ Then initialize your project directory:
    cd <project_dir>
    cryoswath-init
 
-``cryoswath-init`` creates a project layout (``data/``, ``scripts/``) and
-writes ``scripts/config.ini`` that stores your base data path.
+``cryoswath-init`` still creates the legacy project scaffolding
+(``data/``, ``scripts/``) and writes ``cryoswath.cfg`` with your base data
+path. You can also set ``CRYOSWATH_DATA`` or more specific
+``CRYOSWATH_*`` path variables; environment variables override config files.
+Set ``CRYOSWATH_CONFIG`` to select a config file explicitly. Legacy
+``config.ini`` and ``scripts/config.ini`` files are still read.
 
 Access requirements
 -------------------
@@ -114,8 +120,8 @@ Expected default locations:
 - DEMs: ``data/auxiliary/DEM``
 - RGI files: ``data/auxiliary/RGI``
 
-You can override paths in ``config.ini`` or by adapting path handling in
-:mod:`cryoswath.misc`.
+You can override paths in ``cryoswath.cfg`` or with environment variables
+such as ``CRYOSWATH_DATA``, ``CRYOSWATH_DEM``, and ``CRYOSWATH_RGI``.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^

@@ -14,6 +14,7 @@ import multiprocessing as mp
 import numpy as np
 import os
 import pandas as pd
+from pathlib import Path
 from pyarrow.lib import ArrowInvalid
 from pyproj import CRS
 import re
@@ -29,7 +30,6 @@ from cryoswath.misc import (
     cryosat_id_pattern,
     cs_id_to_time,
     cs_time_to_id,
-    data_path,
     empty_GeoDataFrame,
     filter_kwargs,
     load_cs_full_file_names,
@@ -185,16 +185,18 @@ def from_id(
             continue
         current_subdir = current_month.strftime(f"%Y{os.path.sep}%m")
         l2_paths = pd.DataFrame(columns=["swath", "poca"])
-        for l2_type in ["swath", "poca"]:
-            if os.path.isdir(os.path.join(data_path, f"L2_{l2_type}", current_subdir)):
-                for filename in os.listdir(
-                    os.path.join(data_path, f"L2_{l2_type}", current_subdir)
-                ):
+        for l2_type, l2_base_path in (
+            ("swath", l2_swath_path),
+            ("poca", l2_poca_path),
+        ):
+            current_l2_dir = Path(l2_base_path, current_subdir)
+            if current_l2_dir.is_dir():
+                for filename in os.listdir(current_l2_dir):
                     match = re.search(cryosat_id_pattern, filename)
                     if match is not None:
                         l2_paths.loc[cs_id_to_time(match.group()), l2_type] = filename
             else:
-                os.makedirs(os.path.join(data_path, f"L2_{l2_type}", current_subdir))
+                current_l2_dir.mkdir(parents=True, exist_ok=True)
         print("start processing", current_month)
         # # indices per month with work-around :/ should be easier
         # current_track_indices = pd.Series(index=track_idx).loc[
@@ -273,6 +275,7 @@ def from_id(
                             tmp[j] = tmp[j].clip(kwargs["bbox"])
                 collective_swath_poca_list[i] = tuple(tmp)
         if cache_fullname is not None:
+            Path(cache_fullname).parent.mkdir(parents=True, exist_ok=True)
             # when postprocessing, loading the data caching here takes a substatial
             # amount of time. not sure, but maybe the format can be improved. there
             # is parquet or the data could be saved per month using
@@ -717,20 +720,20 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             # performance loss is on the order of seconds. however, there might be
             # better options
             try:
-                swath_poca_tuple[0].to_feather(
-                    os.path.join(
-                        l2_swath_path,
-                        current_subdir,
-                        cs_full_file_names.loc[idx] + ".feather",
-                    )
+                swath_path = Path(
+                    l2_swath_path,
+                    current_subdir,
+                    cs_full_file_names.loc[idx] + ".feather",
                 )
-                swath_poca_tuple[1].to_feather(
-                    os.path.join(
-                        l2_poca_path,
-                        current_subdir,
-                        cs_full_file_names.loc[idx] + ".feather",
-                    )
+                poca_path = Path(
+                    l2_poca_path,
+                    current_subdir,
+                    cs_full_file_names.loc[idx] + ".feather",
                 )
+                swath_path.parent.mkdir(parents=True, exist_ok=True)
+                poca_path.parent.mkdir(parents=True, exist_ok=True)
+                swath_poca_tuple[0].to_feather(swath_path)
+                swath_poca_tuple[1].to_feather(poca_path)
             except ValueError:
                 if swath_poca_tuple[0].empty:
                     which = "Neither POCA nor swath"
