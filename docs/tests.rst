@@ -53,6 +53,30 @@ Run unit tests + report notebooks + tutorial notebooks:
 
    pixi run -e test test-all
 
+Run the fast unit tests against the editable checkout:
+
+.. code-block:: bash
+
+   pixi run -e test test-unit
+
+Run the installed-package unit tests, which build the wheel, install it into a
+temporary environment outside the repository, and guard against importing from
+the source checkout:
+
+.. code-block:: bash
+
+   pixi run -e test test-installed
+
+Run selected GitHub Actions jobs locally with ``act`` through Pixi. These
+commands require Docker or a compatible container runtime and approximate the
+hosted Ubuntu CI jobs:
+
+.. code-block:: bash
+
+   pixi run -e ci local-ci-pixi-test
+   pixi run -e ci local-ci-docs
+   pixi run -e ci local-ci-dependency-matrix
+
 Notebooks starting with ``0-l4_`` are intentionally excluded from this workflow.
 
 These notebooks are smoke/regression tests, not a full scientific

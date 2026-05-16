@@ -161,6 +161,20 @@ plaintext) using `cryoswath update-netrc`.
 
 ## Local testing
 
+Run the fast unit tests against the editable checkout:
+
+```sh
+pixi run -e test test-unit
+```
+
+Run the installed-package check. This builds the wheel, installs it into a
+temporary environment outside the repository, and runs the unit tests against
+that installed package rather than the source checkout:
+
+```sh
+pixi run -e test test-installed
+```
+
 Run the full local test pipeline:
 
 ```sh
@@ -182,6 +196,15 @@ pixi run -e test test-tutorial-notebooks
 If tutorials are stored outside the current checkout, set
 `CRYOSWATH_TUTORIAL_DIR` to the directory containing
 `tutorial__*.ipynb` before running this task.
+
+Run selected GitHub Actions jobs locally with `act` through Pixi. This requires
+Docker or a compatible container runtime and approximates the Ubuntu CI jobs:
+
+```sh
+pixi run -e ci local-ci-pixi-test
+pixi run -e ci local-ci-docs
+pixi run -e ci local-ci-dependency-matrix
+```
 
 Notebook tests may download required larger data from first-hand sources
 at runtime, so network availability and valid ESA credentials matter.

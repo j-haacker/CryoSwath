@@ -29,9 +29,26 @@ pixi run -e test format-check
 pixi run -e test test-unit
 ```
 
+For package-facing changes, also run the installed-package test. It builds the
+wheel, installs it into a temporary environment outside the repository, and runs
+the unit suite without importing CryoSwath from the source checkout:
+
+```sh
+pixi run -e test test-installed
+```
+
+To run selected GitHub Actions jobs locally, use the Pixi `ci` environment.
+These commands require Docker or a compatible container runtime and are an
+approximation of hosted Ubuntu CI:
+
+```sh
+pixi run -e ci local-ci-pixi-test
+pixi run -e ci local-ci-docs
+pixi run -e ci local-ci-dependency-matrix
+```
+
 Ruff is the intended linting and formatting tool for Python files and
-notebooks. The existing `[flake8]` section in `tox.ini` is kept only for
-manual compatibility; the current tox commands do not invoke Flake8.
+notebooks.
 
 ## Guidelines
 

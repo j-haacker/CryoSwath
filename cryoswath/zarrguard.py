@@ -115,7 +115,7 @@ def _maybe_default_write_empty_chunks(
 
 
 def _load_xzarrguard_module() -> Any | None:
-    """Import xzarrguard lazily so CryoSwath still imports on Python 3.11."""
+    """Import xzarrguard lazily."""
 
     try:
         return importlib.import_module(_XZARRGUARD_MODULE)

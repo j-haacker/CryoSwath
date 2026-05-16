@@ -47,6 +47,7 @@ channels = ["conda-forge", "bioconda", "nodefaults"]
 # Keep this list limited to test-only additions. The test environment already
 # inherits top-level [dependencies], and Pixi's conda export preserves repeated
 # package entries if a package is declared in both places.
+python-build = "*"
 distributed = "*"
 ipykernel = "*"
 nbconvert = "*"
@@ -55,7 +56,7 @@ pre-commit = "*"
 snakemake = "*"
 pytest = "*"
 ruff = "*"
-tox = "*"
+twine = "*"
 
 [feature.docs]
 channels = ["conda-forge", "nodefaults"]
@@ -64,14 +65,27 @@ channels = ["conda-forge", "nodefaults"]
 sphinx = "*"
 pydata-sphinx-theme = "*"
 
+[feature.ci]
+channels = ["conda-forge", "nodefaults"]
+
+[feature.ci.dependencies]
+act = "*"
+
 [feature.docs.tasks]
 docs-build = "python -m sphinx -b html docs docs/_build/html"
 docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
+
+[feature.ci.tasks]
+local-ci-pixi-test = "act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest -W .github/workflows/pixi-locked.yml -j test"
+local-ci-docs = "act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest -W .github/workflows/pixi-locked.yml -j docs"
+local-ci-dependency-matrix = "act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest -W .github/workflows/dependency-matrix.yml -j compatibility"
 
 [feature.test.tasks]
 lint = "ruff check ."
 format-check = "ruff format --check ."
 pre-commit-validate = "pre-commit validate-config"
+package-check = "python tools/test_installed_wheel.py --package-check-only"
+test-installed = "python tools/test_installed_wheel.py"
 test-unit = "pytest -q tests/test_*"
 export-conda-for-notebooks = "bash \"$PIXI_PROJECT_ROOT/tests/reports/export_conda_env_from_pixi.sh\""
 
@@ -84,13 +98,14 @@ env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 [feature.test.tasks.test-tutorial-notebooks]
 args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/cryoswath/tutorials" }]
 depends-on = ["export-conda-for-notebooks"]
-cmd = "snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 1 --use-conda"
+cmd = "snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 4 --use-conda"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [feature.test.tasks.test-all]
 args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/cryoswath/tutorials" }]
 depends-on = [
   "test-unit",
+  "test-installed",
   "test-notebooks",
   { task = "test-tutorial-notebooks", args = ["{{ tutorial_dir }}"] },
 ]
@@ -99,3 +114,4 @@ depends-on = [
 default = { features = ["runtime"], solve-group = "runtime" }
 test = { features = ["runtime", "test"], solve-group = "runtime" }
 docs = { features = ["runtime", "docs"], solve-group = "docs" }
+ci = { features = ["ci"], no-default-feature = true }
