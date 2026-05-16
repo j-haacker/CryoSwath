@@ -52,8 +52,10 @@ distributed = "*"
 ipykernel = "*"
 nbconvert = "*"
 papermill = "*"
+pre-commit = "*"
 snakemake = "*"
 pytest = "*"
+ruff = "*"
 tox = "*"
 
 [feature.docs]
@@ -68,6 +70,9 @@ docs-build = "python -m sphinx -b html docs docs/_build/html"
 docs-build-strict = "python -m sphinx -W -b html docs docs/_build/html"
 
 [feature.test.tasks]
+lint = "ruff check ."
+format-check = "ruff format --check ."
+pre-commit-validate = "pre-commit validate-config"
 test-unit = "pytest -q tests/test_*"
 export-conda-for-notebooks = "bash \"$PIXI_PROJECT_ROOT/tests/reports/export_conda_env_from_pixi.sh\""
 

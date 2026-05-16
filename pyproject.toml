@@ -53,7 +53,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["flit", "pip-tools", "ruff"]
+dev = ["flit", "pip-tools", "pre-commit", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
 production = ["xarray[accel]>=2025.3,<2025.12", "dask[distributed]"]
@@ -74,3 +74,11 @@ cryoswath-update-tracks = "cryoswath.misc:update_track_database_cli"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+include = ["*.py", "*.pyi", "*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

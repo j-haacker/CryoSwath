@@ -51,6 +51,8 @@ from waveform-level processing to gridded elevation products.
 For full setup details, see the docs:
 [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
 
+For development setup and contribution checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### Option 1: reproducible setup with pixi (recommended)
 
 ```sh
