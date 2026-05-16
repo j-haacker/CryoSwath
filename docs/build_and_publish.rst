@@ -23,8 +23,8 @@ Sphinx project configuration
   ``READTHEDOCS_GIT_COMMIT_HASH`` -> ``git rev-parse HEAD`` ->
   ``READTHEDOCS_GIT_IDENTIFIER`` -> ``main``
 
-The documentation imports local package sources by adding the project
-root to ``sys.path``.
+The documentation assumes CryoSwath is installed in the build environment;
+the Pixi and pip commands below install it before running Sphinx.
 
 Build locally
 -------------

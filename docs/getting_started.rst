@@ -18,7 +18,8 @@ Quick checklist
 Then open ``cryoswath.cfg`` in your project directory and confirm that the
 ``[path]`` section points to the intended ``data`` location. The auxiliary
 data command installs the Zenodo baseline, and the tutorial command copies
-notebooks into ``tutorials/``. You can skip initialization for simple workflows
+notebooks into ``tutorials/``. The copied notebooks import CryoSwath from
+the active Python environment. You can skip initialization for simple workflows
 and let CryoSwath default to ``./data``, or set ``CRYOSWATH_DATA`` to choose a
 data directory explicitly.
 

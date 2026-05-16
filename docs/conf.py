@@ -6,10 +6,7 @@
 
 # -- Path setup --------------------------------------------------------------
 
-# If extensions (or modules to document with autodoc) are in another directory,
-# add these directories to sys.path here. If the directory is relative to the
-# documentation root, use os.path.abspath to make it absolute, like shown here.
-#
+# CryoSwath is expected to be installed in the documentation build environment.
 import os
 import re
 import subprocess
@@ -22,9 +19,6 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 
-sys.path.insert(0, os.path.abspath(".."))
-# sys.path.insert(0, os.path.abspath(os.path.join('..', 'cryoswath')))
-# print(sys.path)
 
 
 # -- Project information -----------------------------------------------------
@@ -125,6 +119,7 @@ def linkcode_resolve(domain, info):
         return None
 
     import inspect
+
     import cryoswath
 
     modname = info["module"]

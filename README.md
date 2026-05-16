@@ -139,6 +139,8 @@ cryoswath get-tutorials
 `cryoswath create-config` writes `cryoswath.cfg` with your base data path.
 `cryoswath download-aux-data` installs the Zenodo auxiliary-data baseline.
 `cryoswath get-tutorials` copies packaged tutorial notebooks to `tutorials/`.
+The tutorial notebooks assume CryoSwath is installed in the active Python
+environment and import it directly.
 You can also set `CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path
 variables; environment variables override config files. Set `CRYOSWATH_CONFIG`
 to select a config file explicitly. Legacy `config.ini` files are still read.

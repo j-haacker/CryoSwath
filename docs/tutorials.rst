@@ -1,8 +1,9 @@
 Tutorials
 =========
 
-Tutorials are packaged with CryoSwath and can be copied into a project
-directory after installation:
+Tutorials are packaged with CryoSwath and assume the package is installed
+in the active Python environment. After installation, copy them into a
+project directory with:
 
 .. code-block:: sh
 
