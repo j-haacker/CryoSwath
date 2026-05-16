@@ -59,6 +59,25 @@ Run unit tests + report notebooks + tutorial notebooks:
 
    pixi run -e test test-all
 
+Run the same pipeline from a copy of the current tracked worktree with a fresh
+Pixi test environment and fresh home directory:
+
+.. code-block:: bash
+
+   pixi run -e test test-fresh
+
+For a release-style check of committed ``HEAD`` only, use:
+
+.. code-block:: bash
+
+   pixi run -e test test-fresh-committed
+
+``test-fresh`` passes credential variables such as ``EOIAM_USER``,
+``EOIAM_PASSWORD``, ``EARTHDATA_USERNAME``, and ``EARTHDATA_PASSWORD`` through
+to the temporary environment. It intentionally drops local CryoSwath path
+overrides by default; pass extra variables with ``--pass-env NAME`` when needed.
+Untracked files are not copied into the fresh checkout.
+
 Run the fast unit tests against the editable checkout:
 
 .. code-block:: bash

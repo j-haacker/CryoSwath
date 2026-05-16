@@ -46,6 +46,22 @@ pixi run -e test test-notebooks
 pixi run -e test test-tutorial-notebooks
 ```
 
+Before a release or after dependency-sensitive changes, run the slow fresh
+environment check. It copies the current tracked worktree, installs the locked
+Pixi test environment in a temporary checkout, and runs `test-all` with a fresh
+home directory:
+
+```sh
+pixi run -e test test-fresh
+```
+
+For a release-style check that ignores uncommitted tracked changes and tests
+committed `HEAD`, run:
+
+```sh
+pixi run -e test test-fresh-committed
+```
+
 To run selected GitHub Actions jobs locally, use the Pixi `ci` environment.
 These commands require Docker or a compatible container runtime and are an
 approximation of hosted Ubuntu CI:

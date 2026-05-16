@@ -183,6 +183,23 @@ Run the full local test pipeline:
 pixi run -e test test-all
 ```
 
+Run the full pipeline from a copy of the current tracked worktree with a fresh
+Pixi environment and fresh home directory:
+
+```sh
+pixi run -e test test-fresh
+```
+
+For a release-style check of committed `HEAD` only, use:
+
+```sh
+pixi run -e test test-fresh-committed
+```
+
+These commands pass credential environment variables such as `EOIAM_USER`,
+`EOIAM_PASSWORD`, `EARTHDATA_USERNAME`, and `EARTHDATA_PASSWORD`, but they do
+not pass local CryoSwath path variables unless requested explicitly.
+
 Run report notebooks only:
 
 ```sh
