@@ -144,11 +144,11 @@ plaintext) using:
 
 - Main docs: [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
 - General workflow tutorial:
-  [`scripts/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb)
+  [`scripts/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__general_step-by-step.ipynb)
 - First waveform tutorial:
-  [`scripts/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb)
+  [`scripts/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_waveform.ipynb)
 - First swath tutorial:
-  [`scripts/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb)
+  [`scripts/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_swath.ipynb)
 
 ## Local testing
 

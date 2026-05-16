@@ -22,7 +22,7 @@ jobs:
         with:
           cache: true
       - name: Check dependency definitions are synchronized
-        run: bash scripts/sync_dependency_definitions.sh --check
+        run: bash tools/sync_dependency_definitions.sh --check
 
   test:
     name: pixi test (locked)

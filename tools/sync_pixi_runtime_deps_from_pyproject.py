@@ -239,7 +239,7 @@ def main() -> int:
         for issue in issues:
             print(f"- {issue}", file=sys.stderr)
         print(
-            "Run: python scripts/sync_pixi_runtime_deps_from_pyproject.py",
+            "Run: python tools/sync_pixi_runtime_deps_from_pyproject.py",
             file=sys.stderr,
         )
         return 1

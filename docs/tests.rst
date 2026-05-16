@@ -19,16 +19,16 @@ Recommended checks after changing core processing logic:
    <https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l2_tested_data_comparison.py.ipynb>`_
    Comparison against validated reference output.
 5. `scripts/tutorial__general_step-by-step.ipynb
-   <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb>`_
+   <https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__general_step-by-step.ipynb>`_
    End-to-end processing tutorial executed directly in tests.
 6. `scripts/tutorial__process_first_waveform.ipynb
-   <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb>`_
+   <https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_waveform.ipynb>`_
    Waveform tutorial executed directly in tests.
 7. `scripts/tutorial__process_first_swath.ipynb
-   <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb>`_
+   <https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_swath.ipynb>`_
    Swath tutorial executed directly in tests.
 8. `scripts/tutorial__poca.ipynb
-   <https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__poca.ipynb>`_
+   <https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__poca.ipynb>`_
    POCA tutorial executed directly in tests.
 
 Run all report notebooks through Snakemake with Pixi:

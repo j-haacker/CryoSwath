@@ -39,7 +39,7 @@ can help you understand the larger picture.
 
 Notebook:
 `scripts/tutorial__process_first_waveform.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb>`_
+<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_waveform.ipynb>`_
 
 
 Processing the first swath
@@ -52,7 +52,7 @@ data.
 
 Notebook:
 `scripts/tutorial__process_first_swath.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb>`_
+<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__process_first_swath.ipynb>`_
 will give you a hand using CryoSwath to process a single track and
 visualize the data.
 
@@ -66,4 +66,4 @@ the background processes with quickly enabling to use CryoSwath.
 
 Notebook:
 `scripts/tutorial__general_step-by-step.ipynb
-<https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb>`_.
+<https://github.com/j-haacker/cryoswath/blob/scripts/tutorial__general_step-by-step.ipynb>`_.

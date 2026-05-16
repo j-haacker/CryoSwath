@@ -58,10 +58,10 @@ if missing:
 fi
 
 if [[ "$mode" == "check" ]]; then
-  "$python_exe" "$repo_root/scripts/sync_pixi_runtime_deps_from_pyproject.py" --check
-  PIXI_EXE="$pixi_exe" bash "$repo_root/scripts/sync_environment_yml_from_pixi.sh" --check
+  "$python_exe" "$repo_root/tools/sync_pixi_runtime_deps_from_pyproject.py" --check
+  PIXI_EXE="$pixi_exe" bash "$repo_root/tools/sync_environment_yml_from_pixi.sh" --check
   exit 0
 fi
 
-"$python_exe" "$repo_root/scripts/sync_pixi_runtime_deps_from_pyproject.py"
-PIXI_EXE="$pixi_exe" bash "$repo_root/scripts/sync_environment_yml_from_pixi.sh"
+"$python_exe" "$repo_root/tools/sync_pixi_runtime_deps_from_pyproject.py"
+PIXI_EXE="$pixi_exe" bash "$repo_root/tools/sync_environment_yml_from_pixi.sh"
