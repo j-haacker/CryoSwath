@@ -16,6 +16,7 @@ from cryoswath import misc
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PROJECT = REPO_ROOT / "tests" / "reports" / "artifacts" / "project"
 TUTORIAL_PROJECT = REPO_ROOT / "tests" / "tutorials" / "artifacts" / "project"
+TEST_DEM_ENV_VAR = "CRYOSWATH_TEST_DEM_DIR"
 
 AUXILIARY_SENTINELS = (
     Path("data/auxiliary/CryoSat-2_SARIn_file_names.pkl"),
@@ -79,7 +80,25 @@ def _using_cryoswath_config(config_path: Path):
                 os.environ[name] = old_value
 
 
-def _write_project_config(project_dir: Path) -> Path:
+def _normalize_dem_path(dem_path: str | Path | None) -> Path | None:
+    if dem_path is None:
+        return None
+
+    path = Path(dem_path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"DEM path does not exist: {path}")
+    if not path.is_dir():
+        raise NotADirectoryError(
+            f"DEM path should be a directory containing DEM files, not {path}"
+        )
+    return path
+
+
+def _write_project_config(
+    project_dir: Path,
+    *,
+    dem_path: str | Path | None = None,
+) -> Path:
     project_dir.mkdir(parents=True, exist_ok=True)
     config_path = project_dir / "cryoswath.cfg"
     config = ConfigParser()
@@ -88,6 +107,11 @@ def _write_project_config(project_dir: Path) -> Path:
     if "path" not in config:
         config["path"] = {}
     config["path"]["data"] = "data"
+    resolved_dem_path = _normalize_dem_path(dem_path)
+    if resolved_dem_path is None:
+        config["path"].pop("dem", None)
+    else:
+        config["path"]["dem"] = str(resolved_dem_path)
     with config_path.open("w") as file_obj:
         config.write(file_obj)
     (project_dir / "data").mkdir(parents=True, exist_ok=True)
@@ -179,9 +203,10 @@ def prepare_report_project(
     *,
     timeout: int | float = 120,
     skip_aux_download: bool = False,
+    dem_path: str | Path | None = None,
 ) -> PreparedNotebookProject:
     project_path = Path(project_dir).expanduser().resolve()
-    config_path = _write_project_config(project_path)
+    config_path = _write_project_config(project_path, dem_path=dem_path)
     _ensure_auxiliary_data(
         project_path,
         config_path,
@@ -197,10 +222,11 @@ def prepare_tutorial_project(
     repo_root: str | Path = REPO_ROOT,
     timeout: int | float = 120,
     skip_aux_download: bool = False,
+    dem_path: str | Path | None = None,
 ) -> PreparedNotebookProject:
     project_path = Path(project_dir).expanduser().resolve()
     repo_path = Path(repo_root).expanduser().resolve()
-    config_path = _write_project_config(project_path)
+    config_path = _write_project_config(project_path, dem_path=dem_path)
     _ensure_auxiliary_data(
         project_path,
         config_path,
@@ -246,6 +272,18 @@ def _build_parser() -> ArgumentParser:
         action="store_true",
         help="Fail if auxiliary data is missing instead of downloading it.",
     )
+    dem_path_default = os.environ.get(TEST_DEM_ENV_VAR) or None
+    parser.add_argument(
+        "--dem-dir",
+        "--dem-path",
+        dest="dem_path",
+        default=dem_path_default,
+        type=Path,
+        help=(
+            "Directory containing cached DEM files for notebook tests. "
+            f"Can also be set with {TEST_DEM_ENV_VAR}."
+        ),
+    )
     return parser
 
 
@@ -259,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.report_project,
                 timeout=args.timeout,
                 skip_aux_download=args.skip_aux_download,
+                dem_path=args.dem_path,
             )
         )
     if args.target in {"all", "tutorials"}:
@@ -267,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.tutorial_project,
                 timeout=args.timeout,
                 skip_aux_download=args.skip_aux_download,
+                dem_path=args.dem_path,
             )
         )
 

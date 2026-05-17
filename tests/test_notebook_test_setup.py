@@ -37,6 +37,82 @@ def test_prepare_report_project_creates_config_and_downloads_auxiliary(
     assert calls == [(tmp_path / "reports", False, 7)]
 
 
+def test_prepare_report_project_writes_external_dem_path(monkeypatch, tmp_path):
+    dem_dir = tmp_path / "external-dem"
+    dem_dir.mkdir()
+
+    def fake_download_auxiliary_data(base_dir=".", *, force=False, timeout=120):
+        _write_auxiliary_sentinels(Path(base_dir))
+        return str(Path(base_dir) / "data" / "auxiliary")
+
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "download_auxiliary_data",
+        fake_download_auxiliary_data,
+    )
+
+    project = notebook_setup.prepare_report_project(
+        tmp_path / "reports",
+        dem_path=dem_dir,
+    )
+
+    config = ConfigParser()
+    config.read(project.config_path)
+    assert config["path"]["dem"] == str(dem_dir.resolve())
+
+
+def test_prepare_report_project_clears_stale_dem_path(monkeypatch, tmp_path):
+    project_dir = tmp_path / "reports"
+    project_dir.mkdir()
+    config_path = project_dir / "cryoswath.cfg"
+    config_path.write_text("[path]\ndata = data\ndem = /stale/dem\n")
+    _write_auxiliary_sentinels(project_dir)
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "download_auxiliary_data",
+        lambda *args, **kwargs: pytest.fail("download should not be called"),
+    )
+
+    project = notebook_setup.prepare_report_project(project_dir)
+
+    config = ConfigParser()
+    config.read(project.config_path)
+    assert "dem" not in config["path"]
+
+
+def test_prepare_report_project_rejects_file_dem_path(tmp_path):
+    dem_file = tmp_path / "dem.tif"
+    dem_file.write_text("not a directory")
+
+    with pytest.raises(NotADirectoryError, match="DEM path should be a directory"):
+        notebook_setup.prepare_report_project(
+            tmp_path / "reports",
+            skip_aux_download=True,
+            dem_path=dem_file,
+        )
+
+
+def test_main_uses_test_dem_env(monkeypatch, tmp_path):
+    report_project = tmp_path / "reports"
+    dem_dir = tmp_path / "external-dem"
+    dem_dir.mkdir()
+    _write_auxiliary_sentinels(report_project)
+    monkeypatch.setenv(notebook_setup.TEST_DEM_ENV_VAR, str(dem_dir))
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "download_auxiliary_data",
+        lambda *args, **kwargs: pytest.fail("download should not be called"),
+    )
+
+    assert (
+        notebook_setup.main(["reports", "--report-project", str(report_project)]) == 0
+    )
+
+    config = ConfigParser()
+    config.read(report_project / "cryoswath.cfg")
+    assert config["path"]["dem"] == str(dem_dir.resolve())
+
+
 def test_prepare_report_project_reuses_existing_auxiliary(monkeypatch, tmp_path):
     _write_auxiliary_sentinels(tmp_path / "reports")
     monkeypatch.setattr(
