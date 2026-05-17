@@ -3183,17 +3183,25 @@ def request_workers(
         queue.Queue: Task queue.
     """
     task_queue = queue.Queue()
+    task_queue.worker_errors = []
 
     def worker():
         while True:
+            next_task = task_queue.get()
             try:
-                next_task = task_queue.get()
-            except TypeError:
-                continue
-            if next_task is not None:
+                if next_task is None:
+                    return
                 result = task_func(*next_task)
                 if result_queue is not None:
                     result_queue.put(result)
+            except BaseException as err:
+                task_queue.worker_errors.append((err, traceback.format_exc()))
+                warnings.warn(
+                    "Worker task failed; continuing with remaining queued work. "
+                    f"Original error: {err!r}",
+                    category=UserWarning,
+                )
+            finally:
                 task_queue.task_done()
 
     for i in range(n_workers):

@@ -235,6 +235,21 @@ def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tm
     assert l1b.download_single_file(track_id) == "ftp-path"
 
 
+def test_download_wrapper_returns_failure_when_worker_fails(monkeypatch):
+    def failing_download_files(track_idx, stop_event=None):
+        raise RuntimeError("remote unavailable")
+
+    monkeypatch.setattr(l1b, "download_files", failing_download_files)
+
+    with pytest.warns(UserWarning):
+        result = l1b.download_wrapper(
+            track_idx=pd.DatetimeIndex(["2020-09-01"]),
+            n_threads=1,
+        )
+
+    assert result == 1
+
+
 def test_download_files_uses_https_and_falls_back_for_unresolved_tracks(
     monkeypatch, tmp_path
 ):

@@ -1177,6 +1177,8 @@ def download_wrapper(
         # print(track_idx.normalize()+pd.DateOffset(day=1))
         idx_selection = track_idx[track_idx.normalize() + pd.DateOffset(day=1) == month]
         task_queue.put((idx_selection, stop_event))
+    for _ in range(n_threads):
+        task_queue.put(None)
     # wait for threads to finish
     try:
         task_queue.join()
@@ -1195,6 +1197,22 @@ def download_wrapper(
         )
         return 2
     else:
+        worker_errors = getattr(task_queue, "worker_errors", [])
+        if worker_errors:
+            stop_event.set()
+            first_error, first_traceback = worker_errors[0]
+            warnings.warn(
+                "One or more L1B download workers failed. Some files may still "
+                f"be missing. First error: {first_error!r}",
+                category=UserWarning,
+            )
+            _status(
+                f"{len(worker_errors)} download task(s) failed. Some files may "
+                "still be missing."
+            )
+            _status("First download worker traceback follows.")
+            print(first_traceback)
+            return 1
         _status("All downloads finished.")
         return 0
 

@@ -708,8 +708,9 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             else:
                 # raise
                 warnings.warn(
-                    f"Error {str(err)} occured while processing l1b {idx}. Continuing "
-                    "with next file."
+                    "Could not load, download, or process L1B for "
+                    f"{idx}: {err}. Continuing with empty output for this track.",
+                    category=UserWarning,
                 )
                 swath_poca_tuple = (empty_GeoDataFrame, empty_GeoDataFrame)
         if save_or_return != "return":
