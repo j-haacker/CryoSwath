@@ -2,7 +2,7 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
-## 0.2.6 - Unreleased
+## 0.2.6 - 2026-05-17
 
 - Added configurable project layouts and package-backed setup helpers so processing projects and notebooks no longer depend on branch-local bootstrap code.
 - Added automatic RGI and auxiliary-data preparation paths, including notebook test project initialization.
