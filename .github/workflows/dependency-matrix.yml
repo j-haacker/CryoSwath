@@ -19,15 +19,15 @@ jobs:
       matrix:
         include:
           - name: min-supported
-            python: "3.11"
+            python: "3.12"
             xarray: "2025.3.*"
             experimental: false
           - name: max-supported
-            python: "3.12"
+            python: "3.13"
             xarray: "2026.4.*"
             experimental: false
-          - name: py313-observe
-            python: "3.13"
+          - name: py314-observe
+            python: "3.14"
             xarray: "2026.4.*"
             experimental: true
 

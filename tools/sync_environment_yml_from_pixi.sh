@@ -49,7 +49,7 @@ if [[ "$mode" == "check" ]]; then
   fi
 
   echo "environment.yml is out of sync with the Pixi default environment." >&2
-  echo "Run: bash scripts/sync_environment_yml_from_pixi.sh" >&2
+  echo "Run: bash tools/sync_environment_yml_from_pixi.sh" >&2
   if [[ -f "$env_yaml" ]]; then
     diff -u "$env_yaml" "$tmp_yaml" || true
   else

@@ -57,7 +57,6 @@ from cryoswath.misc import (
     _resolve_esa_ftp_credentials,
     antenna_baseline,
     cs_time_to_id,
-    data_path,
     empty_GeoDataFrame,
     ftp_cs2_server,
     gauss_filter_DataArray,
@@ -581,9 +580,7 @@ def from_id(track_id: str | pd.Timestamp, **kwargs) -> xr.Dataset:
         full_file_names = load_cs_full_file_names(update="no")
         idx_loc = full_file_names.index.get_indexer([track_id], method="pad")[0]
         track_id = full_file_names.index[idx_loc]
-    l1b_data_dir = os.path.join(
-        data_path, "L1b", track_id.strftime(f"%Y{os.path.sep}%m")
-    )
+    l1b_data_dir = os.path.join(l1b_path, track_id.strftime(f"%Y{os.path.sep}%m"))
     track_id = cs_time_to_id(track_id)
     if os.path.isdir(l1b_data_dir):
         for file_name in os.listdir(l1b_data_dir):
@@ -1180,6 +1177,8 @@ def download_wrapper(
         # print(track_idx.normalize()+pd.DateOffset(day=1))
         idx_selection = track_idx[track_idx.normalize() + pd.DateOffset(day=1) == month]
         task_queue.put((idx_selection, stop_event))
+    for _ in range(n_threads):
+        task_queue.put(None)
     # wait for threads to finish
     try:
         task_queue.join()
@@ -1198,6 +1197,22 @@ def download_wrapper(
         )
         return 2
     else:
+        worker_errors = getattr(task_queue, "worker_errors", [])
+        if worker_errors:
+            stop_event.set()
+            first_error, first_traceback = worker_errors[0]
+            warnings.warn(
+                "One or more L1B download workers failed. Some files may still "
+                f"be missing. First error: {first_error!r}",
+                category=UserWarning,
+            )
+            _status(
+                f"{len(worker_errors)} download task(s) failed. Some files may "
+                "still be missing."
+            )
+            _status("First download worker traceback follows.")
+            print(first_traceback)
+            return 1
         _status("All downloads finished.")
         return 0
 
@@ -1501,7 +1516,7 @@ def _download_single_file_via_ftp(track_id: str) -> str:
                 ftp.cwd("/SIR_SIN_L1/" + pd.to_datetime(track_id).strftime("%Y/%m"))
                 remote_file = _select_lta_then_offl_for_track(track_id, ftp.nlst())
                 local_path = os.path.join(
-                    data_path, "L1b", pd.to_datetime(track_id).strftime("%Y/%m")
+                    l1b_path, pd.to_datetime(track_id).strftime("%Y/%m")
                 )
                 if not os.path.isdir(local_path):
                     os.makedirs(local_path)
@@ -1641,9 +1656,7 @@ def download_single_file(track_id: str) -> str:
     file_names = _load_cs_full_file_names_for(pd.DatetimeIndex([track_id_timestamp]))
     if file_names is not None and track_id_timestamp in file_names.index:
         filename = file_names.loc[track_id_timestamp] + ".nc"
-        local_path = Path(
-            data_path, "L1b", track_id_timestamp.strftime("%Y/%m"), filename
-        )
+        local_path = Path(l1b_path, track_id_timestamp.strftime("%Y/%m"), filename)
         https_session = None
         try:
             https_session = _create_esa_https_session(https_auth)

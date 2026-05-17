@@ -5,19 +5,22 @@ channels:
 - nodefaults
 - nodefaults
 dependencies:
+- python-build *
 - distributed *
 - ipykernel *
 - nbconvert *
 - papermill *
+- pre-commit *
 - snakemake *
 - pytest *
-- tox *
-- python 3.11.*
+- ruff *
+- twine *
+- python 3.12.*
 - bottleneck *
 - dask *
 - defusedxml *
+- earthaccess >=0.18
 - geopandas >=1.0.1
-- gitpython *
 - h5netcdf *
 - h5py *
 - keyring *

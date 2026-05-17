@@ -6,11 +6,16 @@ __all__ = [
     # functions
     "chunk_idx",
     "convert_all_esri_to_feather",
+    "copy_tutorials",
     "cs_id_to_time",
     "cs_time_to_id",
+    "create_config",
+    "cryoswath_cli",
     "define_elev_band_edges",
     "discard_frontal_retreat_zone",
     "download_file",
+    "download_auxiliary_data",
+    "download_auxiliary_data_cli",
     "download_rgi_o1region",
     "download_rgi_cli",
     "effective_sample_size",
@@ -38,11 +43,14 @@ __all__ = [
     "sel_chunk_idx_range",
     "sel_chunk_range",
     "update_email",
+    "get_tutorials_cli",
+    "init_project_cli",
     "update_keyring",
     "update_keyring_cli",
     "update_netrc",
     "update_netrc_cli",
     "update_track_database",
+    "update_track_database_cli",
     "warn_with_traceback",
     "weighted_mean_excl_outliers",
     "xycut",
@@ -61,9 +69,11 @@ __all__ = [
     "patched_xr_decode_scaling",
 ]  # path variables are currently defined below
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from configparser import ConfigParser
 from contextlib import contextmanager
+import hashlib
+from importlib import resources as importlib_resources
 from dateutil.relativedelta import relativedelta
 from defusedxml.ElementTree import fromstring as ET_from_str
 import fnmatch
@@ -89,7 +99,7 @@ except ImportError:
 
 from packaging.version import Version
 import pandas as pd
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from pyproj import CRS, Geod
 from pystac_client import Client
 import queue
@@ -114,39 +124,99 @@ import traceback
 from typing import Literal, Union
 import warnings
 import xarray as xr
+import zipfile
 
 from cryoswath import gis
 
 
-def init_project():
-    """Initialize a project directory with data/scripts scaffolding."""
-    if not (os.path.exists("data") or os.path.exists("scripts")):
-        try:
-            from git.repo import Repo
+def _add_create_config_arguments(parser) -> None:
+    """Add shared project-configuration arguments to an argparse parser."""
+    parser.add_argument(
+        "--base-dir",
+        default=".",
+        help="Project base directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--config",
+        default="cryoswath.cfg",
+        help="Configuration file to create, relative to --base-dir by default.",
+    )
+    parser.add_argument(
+        "--data",
+        default="data",
+        help="Data path to write to the configuration file (default: data).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing configuration file.",
+    )
 
-            Repo.clone_from(
-                "https://github.com/j-haacker/cryoswath.git", "data", branch="data"
-            )
-            Repo.clone_from(
-                "https://github.com/j-haacker/cryoswath.git",
-                "scripts",
-                branch="scripts",
-            )
-        except Exception:
-            os.makedirs("scripts")
-    else:
-        warnings.warn(
-            'Make sure "data" and "scripts" have a structure like the corresponding '
-            "repository branches. If your unsure, move your directories to a backup, "
-            "run `init_project()` again, and restore your backups."
+
+def _create_config_from_args(args) -> None:
+    """Create a CryoSwath config from parsed CLI arguments."""
+    try:
+        create_config(
+            config_file=args.config,
+            data=args.data,
+            base_dir=args.base_dir,
+            force=args.force,
         )
-    config_file = os.path.join("scripts", "config.ini")
+    except FileExistsError as err:
+        raise SystemExit(str(err)) from err
+
+
+def init_project_cli() -> None:
+    """Compatibility CLI wrapper around :func:`create_config`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath-init",
+        description="Create a CryoSwath project path configuration.",
+    )
+    _add_create_config_arguments(parser)
+    args = parser.parse_args()
+    try:
+        create_config(
+            config_file=args.config,
+            data=args.data,
+            base_dir=args.base_dir,
+            force=args.force,
+        )
+    except FileExistsError as err:
+        parser.error(str(err))
+
+
+def create_config(
+    config_file: str | Path = "cryoswath.cfg",
+    data: str | Path = "data",
+    *,
+    base_dir: str | Path = ".",
+    force: bool = False,
+) -> str:
+    """Create a CryoSwath path configuration without cloning data branches."""
+    base_path = Path(base_dir).expanduser().resolve()
+    config_path = Path(config_file).expanduser()
+    if not config_path.is_absolute():
+        config_path = base_path / config_path
+    if config_path.exists() and not force:
+        raise FileExistsError(
+            f"{config_path} already exists. Use --force to overwrite it."
+        )
+
     config = ConfigParser()
-    if os.path.isfile(config_file):
-        config.read(os.path.join("scripts", "config.ini"))
-    config["path"] = {"data": Path().cwd() / "data"}
-    with open(config_file, "w") as f:
+    if config_path.is_file():
+        config.read(config_path)
+    if "path" not in config:
+        config["path"] = {}
+    config["path"]["data"] = str(data)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data_dir = _resolve_path_value(data, config_path.parent)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w") as f:
         config.write(f)
+    print(f"Wrote CryoSwath path configuration to {config_path}.")
     print(
         "Set credentials in environment variables "
         f"{_ESA_ENV_USER} and its corresponding password variable, "
@@ -181,55 +251,236 @@ def init_project():
                         print(
                             f"Could not configure ~/.netrc automatically: {netrc_err}"
                         )
+    return str(config_path)
 
+
+def init_project(
+    config_file: str | Path = "cryoswath.cfg",
+    data: str | Path = "data",
+    *,
+    force: bool = False,
+    base_dir: str | Path = ".",
+) -> str:
+    """Compatibility wrapper around :func:`create_config`."""
+    return create_config(
+        config_file=config_file,
+        data=data,
+        base_dir=base_dir,
+        force=force,
+    )
 
 # Paths ##############################################################
 
-if (Path().cwd() / "config.ini").is_file():
-    config = ConfigParser()
-    config.read("config.ini")
-    data_path = Path(config["path"].get("data", Path(config["path"].get("base"), "data")))
-else:
-    data_path = Path.cwd() / "data"
-    warnings.warn(
-        "Base path not defined. Path variables may be wrong. Make sure to have run "
-        '`cryoswath-init` and your working directory is "scripts".'
+_CRYOSWATH_CONFIG_FILE = "cryoswath.cfg"
+_LEGACY_CONFIG_FILE = "config.ini"
+_CRYOSWATH_CONFIG_ENV = "CRYOSWATH_CONFIG"
+
+_PATH_ENV_VARS = {
+    "data": "CRYOSWATH_DATA",
+    "l1b": "CRYOSWATH_L1B",
+    "l2_swath": "CRYOSWATH_L2_SWATH",
+    "l2_poca": "CRYOSWATH_L2_POCA",
+    "l3": "CRYOSWATH_L3",
+    "l4": "CRYOSWATH_L4",
+    "tmp": "CRYOSWATH_TMP",
+    "aux": "CRYOSWATH_AUX",
+    "dem": "CRYOSWATH_DEM",
+    "rgi": "CRYOSWATH_RGI",
+    "cs_ground_tracks": "CRYOSWATH_CS_GROUND_TRACKS",
+}
+
+
+def _resolve_path_value(value: str | Path, base: Path) -> Path:
+    """Resolve a configured path value against a base path."""
+    path = Path(os.path.expandvars(str(value))).expanduser()
+    if path.is_absolute():
+        return path
+    return base / path
+
+
+def _parent_dirs(start: Path) -> Iterable[Path]:
+    """Yield a directory and all of its parents."""
+    start = Path(start).expanduser().resolve()
+    yield start
+    yield from start.parents
+
+
+def _discover_legacy_config_file(cwd: str | Path = None) -> Path | None:
+    """Find a legacy config.ini in or above the current project layout."""
+    start = Path.cwd() if cwd is None else Path(cwd)
+    for directory in _parent_dirs(start):
+        candidates = (
+            directory / _LEGACY_CONFIG_FILE,
+            directory / "scripts" / _LEGACY_CONFIG_FILE,
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _user_config_file(environ: Mapping[str, str], cwd: Path) -> Path:
+    """Return the per-user CryoSwath config path."""
+    if "XDG_CONFIG_HOME" in environ:
+        base = _resolve_path_value(environ["XDG_CONFIG_HOME"], cwd)
+    else:
+        base = Path.home() / ".config"
+    return base / "cryoswath" / _CRYOSWATH_CONFIG_FILE
+
+
+def _discover_path_config_file(
+    cwd: str | Path = None, environ: Mapping[str, str] = None
+) -> Path | None:
+    """Find the CryoSwath path config file to use."""
+    start = Path.cwd() if cwd is None else Path(cwd)
+    start = start.expanduser().resolve()
+    environ = os.environ if environ is None else environ
+
+    explicit_config = environ.get(_CRYOSWATH_CONFIG_ENV)
+    if explicit_config:
+        return _resolve_path_value(explicit_config, start)
+
+    for directory in _parent_dirs(start):
+        candidate = directory / _CRYOSWATH_CONFIG_FILE
+        if candidate.is_file():
+            return candidate
+
+    legacy_config = _discover_legacy_config_file(start)
+    if legacy_config is not None:
+        return legacy_config
+
+    user_config = _user_config_file(environ, start)
+    if user_config.is_file():
+        return user_config
+    return None
+
+
+def _config_base_dir(config_file: Path | None, cwd: Path) -> Path:
+    """Return the directory against which relative config paths resolve."""
+    if config_file is None:
+        return cwd
+    if (
+        config_file.name == _LEGACY_CONFIG_FILE
+        and config_file.parent.name == "scripts"
+    ):
+        return config_file.parent.parent
+    return config_file.parent
+
+
+def _read_path_config(config_file: Path | None) -> ConfigParser:
+    """Read a path config file, returning an empty path section if absent."""
+    path_config = ConfigParser()
+    if config_file is not None:
+        read_files = path_config.read(config_file)
+        if not read_files:
+            warnings.warn(
+                f"Could not read CryoSwath config file {config_file}. "
+                "Falling back to default paths.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+    if "path" not in path_config:
+        path_config["path"] = {}
+    return path_config
+
+
+def _resolve_config_path(
+    key: str,
+    default: str,
+    base: Path,
+    path_config: ConfigParser,
+    environ: Mapping[str, str],
+) -> Path:
+    """Resolve one path key from env, config, or a default child path."""
+    env_value = environ.get(_PATH_ENV_VARS[key])
+    if env_value is not None:
+        return _resolve_path_value(env_value, base)
+    if key in path_config["path"]:
+        return _resolve_path_value(path_config["path"][key], base)
+    return base / default
+
+
+def _resolve_path_configuration(
+    cwd: str | Path = None, environ: Mapping[str, str] = None
+) -> tuple[ConfigParser, Path | None, dict[str, Path]]:
+    """Resolve CryoSwath path configuration and derived path values."""
+    start = Path.cwd() if cwd is None else Path(cwd)
+    start = start.expanduser().resolve()
+    environ = os.environ if environ is None else environ
+    config_file = _discover_path_config_file(start, environ)
+    loaded_config_file = (
+        config_file if config_file is not None and config_file.is_file() else None
     )
-    config = {"path": {}}
+    path_config = _read_path_config(config_file)
+    base_dir = _config_base_dir(loaded_config_file, start)
+    path_section = path_config["path"]
+
+    data_env = environ.get(_PATH_ENV_VARS["data"])
+    if data_env is not None:
+        resolved_data_path = _resolve_path_value(data_env, start)
+    elif "data" in path_section:
+        resolved_data_path = _resolve_path_value(path_section["data"], base_dir)
+    elif "base" in path_section:
+        resolved_data_path = (
+            _resolve_path_value(path_section["base"], base_dir) / "data"
+        )
+    else:
+        resolved_data_path = (
+            start / "data" if loaded_config_file is None else base_dir / "data"
+        )
+
+    resolved_paths = {"data": resolved_data_path}
+    for key, default in {
+        "l1b": "L1b",
+        "l2_swath": "L2_swath",
+        "l2_poca": "L2_poca",
+        "l3": "L3",
+        "l4": "L4",
+        "tmp": "tmp",
+        "aux": "auxiliary",
+    }.items():
+        resolved_paths[key] = _resolve_config_path(
+            key, default, resolved_data_path, path_config, environ
+        )
+
+    aux_path = resolved_paths["aux"]
+    for key, default in {
+        "dem": "DEM",
+        "rgi": "RGI",
+        "cs_ground_tracks": "CryoSat-2_SARIn_ground_tracks.feather",
+    }.items():
+        resolved_paths[key] = _resolve_config_path(
+            key, default, aux_path, path_config, environ
+        )
+    return path_config, loaded_config_file, resolved_paths
 
 
 def _get_path(name: str, base: Path, alternative: str = None) -> str:
     """Resolve configured project path with fallback to default."""
     key = name.lower()
     if key in config["path"]:
-        _value = config["path"][key]
-        if Path(_value).is_absolute():
-            return _value
-        else:
-            return str(base / _value)
-    else:
-        return str(base / (name if alternative is None else alternative))
+        return str(_resolve_path_value(config["path"][key], Path(base)))
+    return str(Path(base) / (name if alternative is None else alternative))
 
 
-# data subdirs
-l1b_path = _get_path("L1b", data_path)
-l2_swath_path = _get_path("L2_swath", data_path)
-l2_poca_path = _get_path("L2_poca", data_path)
-l3_path = _get_path("L3", data_path)
-l4_path = _get_path("L4", data_path)
-tmp_path = _get_path("tmp", data_path)
-aux_path = Path(_get_path("aux", data_path, "auxiliary"))
+config, _path_config_file, _resolved_paths = _resolve_path_configuration()
 
-# aux subdirs
-dem_path = _get_path("DEM", aux_path)
-rgi_path = _get_path("RGI", aux_path)
-cs_ground_tracks_path = _get_path(
-    "cs_ground_tracks", aux_path, "CryoSat-2_SARIn_ground_tracks.feather"
-)
+data_path = str(_resolved_paths["data"])
+l1b_path = str(_resolved_paths["l1b"])
+l2_swath_path = str(_resolved_paths["l2_swath"])
+l2_poca_path = str(_resolved_paths["l2_poca"])
+l3_path = str(_resolved_paths["l3"])
+l4_path = str(_resolved_paths["l4"])
+tmp_path = str(_resolved_paths["tmp"])
+aux_path = _resolved_paths["aux"]
+dem_path = _resolved_paths["dem"]
+rgi_path = str(_resolved_paths["rgi"])
+cs_ground_tracks_path = str(_resolved_paths["cs_ground_tracks"])
 
-# temporarily, (re)set types (str or Path)
-data_path = str(data_path)
-dem_path = Path(dem_path)
+_ZENODO_AUX_CONCEPT_RECORD_API_URL = "https://zenodo.org/api/records/20241526"
+_AUX_DATA_ARCHIVE_KEY = "CryoSwath-aux-data.zip"
+_TUTORIAL_PACKAGE = "cryoswath.tutorials"
+_TUTORIAL_PATTERN = "tutorial__*.ipynb"
 
 __all__.extend(
     [  # pathes
@@ -246,6 +497,7 @@ __all__.extend(
         "tmp_path",
     ]
 )
+
 
 # Config #############################################################
 WGS84_ellpsoid = Geod(ellps="WGS84")
@@ -665,6 +917,13 @@ def download_dem(
         )
 
 
+def _stream_download_response(response, tmp_file) -> None:
+    """Write streamed HTTP response content to an open binary file."""
+    response.raise_for_status()
+    for chunk in response.iter_content(chunk_size=8192):
+        tmp_file.write(chunk)
+
+
 def download_file(
     url: str,
     dest: str | Path,
@@ -675,10 +934,6 @@ def download_file(
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
-    # snippet adapted from https://stackoverflow.com/a/16696317
-    # authors: https://stackoverflow.com/users/427457/roman-podlinov
-    #      and https://stackoverflow.com/users/12641442/jenia
-    # NOTE the stream=True parameter below
     try:
         with tempfile.NamedTemporaryFile(
             mode="wb",
@@ -689,18 +944,241 @@ def download_file(
         ) as tmp_file:
             temp_path = Path(tmp_file.name)
             with requests.get(url, stream=True, auth=auth, timeout=timeout) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=8192):
-                    # If you have chunk encoded response uncomment if
-                    # and set chunk_size parameter to None.
-                    # if chunk:
-                    tmp_file.write(chunk)
+                _stream_download_response(r, tmp_file)
         os.replace(temp_path, dest_path)
     except Exception:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink()
         raise
     return str(dest_path)
+
+
+def _download_earthdata_file(
+    url: str,
+    dest: str | Path,
+    timeout: int | float = 120,
+) -> str:
+    """Download an Earthdata-protected URL to ``dest`` using earthaccess."""
+    try:
+        import earthaccess
+    except ImportError as err:
+        raise RuntimeError(
+            "earthaccess is required for NASA Earthdata downloads. Install the "
+            "project dependencies or add `earthaccess` to your environment."
+        ) from err
+
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{dest_path.name}.",
+            suffix=".part",
+            dir=dest_path.parent,
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            earthaccess.login(strategy="environment", persist=False)
+            session = earthaccess.get_requests_https_session()
+            with session.get(url, stream=True, timeout=timeout) as response:
+                _stream_download_response(response, tmp_file)
+        os.replace(temp_path, dest_path)
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+    return str(dest_path)
+
+
+
+def _fetch_zenodo_record_metadata(timeout: int | float = 120) -> dict:
+    """Fetch metadata for the latest CryoSwath auxiliary-data Zenodo record."""
+    response = requests.get(_ZENODO_AUX_CONCEPT_RECORD_API_URL, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def _zenodo_auxiliary_archive(record_metadata: dict) -> dict:
+    """Return metadata for the single auxiliary-data archive in a Zenodo record."""
+    files = record_metadata.get("files", [])
+    matches = [file_info for file_info in files if file_info.get("key") == _AUX_DATA_ARCHIVE_KEY]
+    if not matches and len(files) == 1:
+        matches = files
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Zenodo auxiliary-data record should contain exactly one "
+            f"{_AUX_DATA_ARCHIVE_KEY!r} file."
+        )
+    file_info = matches[0]
+    if "checksum" not in file_info:
+        raise RuntimeError("Zenodo auxiliary-data archive metadata has no checksum.")
+    try:
+        file_info["links"]["self"]
+    except KeyError as err:
+        raise RuntimeError(
+            "Zenodo auxiliary-data archive metadata has no download link."
+        ) from err
+    return file_info
+
+
+def _verify_checksum(path: str | Path, checksum: str) -> None:
+    """Verify a checksum string in the form ``algorithm:hex``."""
+    try:
+        algorithm, expected = checksum.split(":", 1)
+    except ValueError as err:
+        raise RuntimeError(f"Unsupported checksum format: {checksum!r}") from err
+    try:
+        digest = hashlib.new(algorithm)
+    except ValueError as err:
+        raise RuntimeError(f"Unsupported checksum algorithm: {algorithm!r}") from err
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual.lower() != expected.lower():
+        raise RuntimeError(
+            f"Checksum mismatch for {path}: expected {checksum}, got {algorithm}:{actual}."
+        )
+
+
+def _validate_zip_members(archive_path: str | Path) -> None:
+    """Reject invalid zip files and paths that would escape extraction root."""
+    if not zipfile.is_zipfile(archive_path):
+        raise RuntimeError(f"Downloaded archive is not a zip file: {archive_path}")
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.infolist():
+            member_name = member.filename.replace("\\", "/")
+            member_path = PurePosixPath(member_name)
+            if (
+                member_name.startswith("/")
+                or re.match(r"^[A-Za-z]:", member_name)
+                or ".." in member_path.parts
+            ):
+                raise RuntimeError(
+                    f"Unsafe path {member.filename!r} in archive {archive_path}."
+                )
+
+
+def _merge_extracted_tree(source_dir: Path, target_dir: Path, *, force: bool) -> None:
+    """Move extracted files into a target tree, preserving existing files by default."""
+    for source in sorted(source_dir.rglob("*")):
+        relative = source.relative_to(source_dir)
+        target = target_dir / relative
+        if source.is_dir():
+            if target.exists() and not target.is_dir():
+                if not force:
+                    raise RuntimeError(
+                        f"Cannot create directory {target}; a file already exists. "
+                        "Use force=True to replace it."
+                    )
+                target.unlink()
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if target.exists():
+            if not force:
+                continue
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+
+
+def _extract_auxiliary_archive(
+    archive_path: str | Path,
+    target_dir: str | Path,
+    *,
+    force: bool,
+) -> None:
+    """Safely extract an auxiliary-data zip archive into ``target_dir``."""
+    archive_path = Path(archive_path)
+    target_dir = Path(target_dir)
+    _validate_zip_members(archive_path)
+    extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_path.stem}.", dir=target_dir))
+    try:
+        shutil.unpack_archive(archive_path, extract_root, format="zip")
+        _merge_extracted_tree(extract_root, target_dir, force=force)
+    finally:
+        shutil.rmtree(extract_root, ignore_errors=True)
+
+
+def download_auxiliary_data(
+    base_dir: str | Path = ".",
+    *,
+    force: bool = False,
+    timeout: int | float = 120,
+) -> str:
+    """Download and install the Zenodo CryoSwath auxiliary-data snapshot."""
+    base_path = Path(base_dir).expanduser().resolve()
+    _, _, paths = _resolve_path_configuration(cwd=base_path)
+    target_dir = Path(paths["aux"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    record_metadata = _fetch_zenodo_record_metadata(timeout=timeout)
+    archive_metadata = _zenodo_auxiliary_archive(record_metadata)
+    archive_url = archive_metadata["links"]["self"]
+    checksum = archive_metadata["checksum"]
+
+    temp_archive = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{archive_metadata.get('key', _AUX_DATA_ARCHIVE_KEY)}.",
+            suffix=".zip",
+            dir=target_dir,
+            delete=False,
+        ) as archive_file:
+            temp_archive = Path(archive_file.name)
+        download_file(archive_url, temp_archive, timeout=timeout)
+        _verify_checksum(temp_archive, checksum)
+        _extract_auxiliary_archive(temp_archive, target_dir, force=force)
+    finally:
+        if temp_archive is not None and temp_archive.exists():
+            temp_archive.unlink()
+    return str(target_dir)
+
+
+def _tutorial_resources():
+    """Yield packaged tutorial notebook resources."""
+    tutorial_root = importlib_resources.files(_TUTORIAL_PACKAGE)
+    tutorials = [
+        item
+        for item in tutorial_root.iterdir()
+        if item.is_file() and fnmatch.fnmatch(item.name, _TUTORIAL_PATTERN)
+    ]
+    yield from sorted(tutorials, key=lambda item: item.name)
+
+
+def copy_tutorials(
+    destination: str | Path = None,
+    *,
+    base_dir: str | Path = ".",
+    force: bool = False,
+) -> str:
+    """Copy packaged tutorial notebooks into a project directory."""
+    base_path = Path(base_dir).expanduser().resolve()
+    destination_path = Path(destination) if destination is not None else Path("tutorials")
+    if not destination_path.is_absolute():
+        destination_path = base_path / destination_path
+
+    resources = list(_tutorial_resources())
+    conflicts = [destination_path / resource.name for resource in resources if (destination_path / resource.name).exists()]
+    if conflicts and not force:
+        conflict_list = ", ".join(str(path) for path in conflicts)
+        raise FileExistsError(
+            f"Tutorial file(s) already exist: {conflict_list}. Use --force to overwrite."
+        )
+
+    destination_path.mkdir(parents=True, exist_ok=True)
+    for resource in resources:
+        target = destination_path / resource.name
+        if target.exists() and force:
+            target.unlink()
+        target.write_bytes(resource.read_bytes())
+    return str(destination_path)
 
 
 def drop_small_glaciers(
@@ -1026,7 +1504,7 @@ def ftp_cs2_server(**kwargs):
         except ftplib.error_perm as err:
             raise RuntimeError(
                 "ESA FTP authentication failed using credentials from "
-                f"{source}. Configure keyring via cryoswath-update-keyring, set "
+                f"{source}. Configure keyring via cryoswath update-keyring, set "
                 f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
                 "~/.netrc (plaintext fallback)."
             ) from err
@@ -1107,8 +1585,10 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
                 "Anonymous FTP login is no longer supported."
             )
 
+    legacy_config_file = _discover_legacy_config_file()
     config = ConfigParser()
-    config.read("config.ini")
+    if legacy_config_file is not None:
+        config.read(legacy_config_file)
     if "user" in config:
         section = config["user"]
         if "name" in section and "password" in section:
@@ -1126,7 +1606,7 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
 
     raise RuntimeError(
         f"No ESA credentials found. Configure {_ESA_ENV_USER} and "
-        f"{_ESA_ENV_PASSWORD}, keyring via cryoswath-update-keyring, or "
+        f"{_ESA_ENV_PASSWORD}, keyring via cryoswath update-keyring, or "
         "~/.netrc (plaintext fallback), or use legacy config.ini [user] "
         "name/password. Anonymous login is no longer supported."
     )
@@ -1993,18 +2473,17 @@ def load_cs_ground_tracks(
         # the next two function have only a local purpose.
         def save_current_track_list(new_track_series: gpd.GeoSeries):
             """saves the tracklist; backing up the old if older than 5 days."""
-            if (
-                not os.path.isfile(extend_filename(cs_ground_tracks_path, "__backup"))
-                or time.time() - os.path.getmtime(cs_ground_tracks_path)
-                > 5 * 24 * 60 * 60
+            track_path = Path(cs_ground_tracks_path)
+            backup_path = Path(extend_filename(cs_ground_tracks_path, "__backup"))
+            track_path.parent.mkdir(parents=True, exist_ok=True)
+            if track_path.is_file() and (
+                not backup_path.is_file()
+                or time.time() - track_path.stat().st_mtime > 5 * 24 * 60 * 60
             ):
                 print('backing up "old" track file')
-                shutil.copyfile(
-                    cs_ground_tracks_path,
-                    extend_filename(cs_ground_tracks_path, "__backup"),
-                )
+                shutil.copyfile(track_path, backup_path)
             print("saving current track list to file")
-            new_track_series.to_feather(cs_ground_tracks_path)
+            new_track_series.to_feather(track_path)
 
         def collect_missing_tracks(
             remote_files: list[str], present_tracks: gpd.GeoSeries
@@ -2148,12 +2627,15 @@ def load_cs_ground_tracks(
 
 def _normalize_rgi_product(product: str) -> str:
     """Normalize RGI product aliases to `C` or `G`."""
-    if product.upper() == "C" or product == "complexes":
+    product_lower = product.lower()
+    product_upper = product.upper()
+    if product_upper == "C" or product_lower == "complexes":
         return "C"
-    if product.upper() == "G" or product in ["glaciers", "basins"]:
+    if product_upper == "G" or product_lower in {"glaciers", "basins"}:
         return "G"
     raise ValueError(
-        f'Argument product should be either glaciers or complexes not "{product}".'
+        f'Argument product should be either "glaciers" or "complexes", '
+        f"not {product!r}."
     )
 
 
@@ -2164,48 +2646,74 @@ def _normalize_rgi_o1code(o1code: str | int) -> str:
         return f"{int(o1code):02d}"
     match = re.match(r"^([0-9]{2})", o1code)
     if match is None:
-        raise ValueError(f'o1code should start with "01".."20", not "{o1code}".')
+        raise ValueError(f'o1code should start with "01".."20", not {o1code!r}.')
     return match.group(1)
 
 
 def _rgi_remote_product_url(product: str) -> str:
     """Return RGI product directory URL for product code `C` or `G`."""
+    product = _normalize_rgi_product(product)
     return f"{_RGI_DOWNLOAD_BASE_URL}/RGI2000-v7.0-{product}/"
 
 
-def _rgi_missing_message(product: str, o1code: str) -> str:
-    """Return user-facing message for missing RGI o1 product."""
+def _rgi_product_cli_name(product: str) -> str:
+    """Return CLI product name for normalized RGI product code."""
+    product = _normalize_rgi_product(product)
+    return "complexes" if product == "C" else "glaciers"
+
+
+def _rgi_region_pattern(product: str, o1code: str | int) -> str:
+    """Return abbreviated RGI o1 region pattern for messages."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    return f"RGI2000-v7.0-{product}-{o1code}_..."
+
+
+def _rgi_auto_download_message(product: str, o1code: str | int) -> str:
+    """Return warning message for the automatic RGI download attempt."""
     return (
-        f"RGI file RGI2000-v7.0-{product}-{o1code}_... couldn't be found. "
-        "Make sure RGI files are available in data/auxiliary/RGI. If you did not "
-        "download them already, you can find them at "
-        f"{_rgi_remote_product_url(product)}. Mind that you need to unzip them. "
-        "If you decide to put them into a directory, name it as the file is named "
-        "(e.g. RGI2000-v7.0-G-01_alaska)."
+        f"RGI region {_rgi_region_pattern(product, o1code)} is missing; "
+        "attempting automatic NSIDC download with NASA Earthdata credentials."
     )
 
 
-def _rgi_o1_archive_stem(o1code: str, product: str) -> str:
+def _rgi_missing_message(product: str, o1code: str | int) -> str:
+    """Return final user-facing message for missing RGI o1 product."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    cli_product = _rgi_product_cli_name(product)
+    return (
+        f"RGI region {_rgi_region_pattern(product, o1code)} could not be found "
+        "or downloaded. See docs/prerequisites.rst; try "
+        f"`cryoswath download-rgi --o1 {o1code} --product {cli_product}`; "
+        f"source: {_rgi_remote_product_url(product)}."
+    )
+
+
+def _rgi_o1_archive_stem(o1code: str | int, product: str) -> str:
     """Build deterministic archive stem from o1 metadata table."""
-    lut = pd.read_feather(
-        os.path.join(rgi_path, "RGI2000-v7.0-o1regions.feather"),
-        columns=["o1region", "long_code"],
-    ).set_index("o1region")
-    long_code = lut.loc[o1code, "long_code"]
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+    long_code = rgi_code_translator(o1code, out_type="long_code")
     return f"RGI2000-v7.0-{product}-{long_code}"
 
 
-def _find_rgi_o1region_source(o1code: str, product: str) -> Path | None:
+def _find_rgi_o1region_source(o1code: str | int, product: str) -> Path | None:
     """Return local path for an o1 region product, if available."""
+    product = _normalize_rgi_product(product)
+    o1code = _normalize_rgi_o1code(o1code)
+
     try:
-        rgi_files = sorted(os.listdir(rgi_path))
+        candidates = sorted(Path(rgi_path).iterdir())
     except FileNotFoundError:
         return None
-    for file in rgi_files:
-        if re.match(f"RGI2000-v7\\.0-{product}-{o1code}_.*", file):
-            file_path = Path(rgi_path, file)
-            if file.endswith(".feather") or file.endswith(".shp") or file_path.is_dir():
-                return file_path
+
+    pattern = re.compile(rf"RGI2000-v7\.0-{product}-{o1code}_.*")
+    for path in candidates:
+        if pattern.match(path.name) and (
+            path.is_dir() or path.suffix in {".shp", ".feather"}
+        ):
+            return path
     return None
 
 
@@ -2220,7 +2728,7 @@ def _read_rgi_o1region_source(file_path: str | Path) -> gpd.GeoDataFrame:
 
 
 def download_rgi_o1region(
-    o1code: str,
+    o1code: str | int,
     product: str = "complexes",
     force: bool = False,
     timeout: int | float = 120,
@@ -2235,42 +2743,49 @@ def download_rgi_o1region(
             return str(existing_source)
 
     archive_stem = _rgi_o1_archive_stem(o1code, product)
-    remote_url = _rgi_remote_product_url(product) + f"{archive_stem}.zip"
+    remote_url = f"{_rgi_remote_product_url(product)}{archive_stem}.zip"
     rgi_dir = Path(rgi_path)
     rgi_dir.mkdir(parents=True, exist_ok=True)
     archive_path = rgi_dir / f"{archive_stem}.zip"
     target_dir = rgi_dir / archive_stem
-    if force and target_dir.exists():
-        if target_dir.is_dir():
-            shutil.rmtree(target_dir)
-        else:
-            target_dir.unlink()
 
-    user, password, _ = _resolve_esa_ftp_credentials()
-    download_file(
+    _download_earthdata_file(
         url=remote_url,
         dest=archive_path,
-        auth=(user, password),
         timeout=timeout,
     )
 
-    extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir))
     try:
-        shutil.unpack_archive(archive_path, extract_root, format="zip")
-        nested_dir = extract_root / archive_stem
-        if target_dir.exists():
-            if target_dir.is_dir():
-                shutil.rmtree(target_dir)
+        if not zipfile.is_zipfile(archive_path):
+            raise RuntimeError(
+                "Downloaded RGI payload is not a zip archive. This usually means "
+                "NASA Earthdata returned a login or error page; check credentials "
+                f"and source URL: {remote_url}"
+            )
+
+        extract_root = Path(
+            tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir)
+        )
+        try:
+            shutil.unpack_archive(archive_path, extract_root, format="zip")
+            nested_dir = extract_root / archive_stem
+            if target_dir.exists():
+                if target_dir.is_dir():
+                    shutil.rmtree(target_dir)
+                else:
+                    target_dir.unlink()
+            if nested_dir.is_dir() and len(list(extract_root.iterdir())) == 1:
+                shutil.move(str(nested_dir), str(target_dir))
             else:
-                target_dir.unlink()
-        if nested_dir.is_dir() and len(list(extract_root.iterdir())) == 1:
-            shutil.move(str(nested_dir), str(target_dir))
-        else:
-            shutil.move(str(extract_root), str(target_dir))
-            extract_root = None
-    finally:
-        if extract_root is not None and extract_root.exists():
-            shutil.rmtree(extract_root, ignore_errors=True)
+                shutil.move(str(extract_root), str(target_dir))
+                extract_root = None
+        finally:
+            if extract_root is not None and extract_root.exists():
+                shutil.rmtree(extract_root, ignore_errors=True)
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
     archive_path.unlink(missing_ok=True)
     return str(target_dir)
 
@@ -2302,24 +2817,25 @@ def _load_o1region(
     product = _normalize_rgi_product(product)
     o1code = _normalize_rgi_o1code(o1code)
     source = _find_rgi_o1region_source(o1code, product)
-    missing_message = _rgi_missing_message(product, o1code)
     if source is None:
         warnings.warn(
-            missing_message + " Attempting automatic download now.",
+            _rgi_auto_download_message(product, o1code),
             category=UserWarning,
             stacklevel=2,
         )
         try:
             download_rgi_o1region(o1code=o1code, product=product)
         except Exception as err:
+            missing_message = _rgi_missing_message(product, o1code)
             warnings.warn(
-                f"{missing_message} Automatic download failed: {err}",
+                f"Automatic RGI download failed: {err}. {missing_message}",
                 category=UserWarning,
                 stacklevel=2,
             )
             raise FileNotFoundError(missing_message) from err
         source = _find_rgi_o1region_source(o1code, product)
         if source is None:
+            missing_message = _rgi_missing_message(product, o1code)
             warnings.warn(missing_message, category=UserWarning, stacklevel=2)
             raise FileNotFoundError(missing_message)
     return _read_rgi_o1region_source(source)
@@ -2425,11 +2941,10 @@ def load_glacier_outlines(
     """
     if isinstance(identifier, list):
         out = _load_basins(identifier)
-    elif len(identifier) == (7 + 4 + 1 + 2 + 5 + 4) and identifier.split("-")[:3] == [
+    elif len(identifier) == (7 + 4 + 1 + 2 + 5 + 4) and identifier.split("-")[:2] == [
         "RGI2000",
         "v4.1",
-        "G",
-    ]:
+    ] and identifier.split("-")[2] in ["C", "G"]:
         out = _load_basins([identifier])
     # the pattern is rather allowing, set it to
     # "^(-?[012][0-9]){2}(_[a-z]+){1,5}(_[0-9][a-z][0-9]?)?$" to make it tight
@@ -2485,7 +3000,9 @@ def merge_l2_cache(
     # e.g., into years and combine the cache files using this function
     # afterward.
     # not tested after migrating here from notebook
-    with h5py.File(os.path.join(tmp_path, destination_file_name), "a") as h5_dest:
+    destination_path = Path(tmp_path) / destination_file_name
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(destination_path, "a") as h5_dest:
         for source_path in sorted(glob.glob(os.path.join(tmp_path, source_glob))):
             print("\n", source_path)
             if any([source_path.endswith(ending) for ending in exclude_endswith]):
@@ -2666,17 +3183,25 @@ def request_workers(
         queue.Queue: Task queue.
     """
     task_queue = queue.Queue()
+    task_queue.worker_errors = []
 
     def worker():
         while True:
+            next_task = task_queue.get()
             try:
-                next_task = task_queue.get()
-            except TypeError:
-                continue
-            if next_task is not None:
+                if next_task is None:
+                    return
                 result = task_func(*next_task)
                 if result_queue is not None:
                     result_queue.put(result)
+            except BaseException as err:
+                task_queue.worker_errors.append((err, traceback.format_exc()))
+                warnings.warn(
+                    "Worker task failed; continuing with remaining queued work. "
+                    f"Original error: {err!r}",
+                    category=UserWarning,
+                )
+            finally:
                 task_queue.task_done()
 
     for i in range(n_workers):
@@ -2723,7 +3248,8 @@ def repair_l2_cache(
                     filepath, key=node.name, format="table"
                 )
 
-    tmp_h5 = os.path.join(data_path, "tmp", "tmp")
+    tmp_h5 = os.path.join(tmp_path, "tmp")
+    Path(tmp_h5).parent.mkdir(parents=True, exist_ok=True)
     if os.path.exists(tmp_h5):
         if os.path.isfile(tmp_h5):
             os.remove(tmp_h5)
@@ -2794,7 +3320,7 @@ def rgi_code_translator(
     if isinstance(input, list):
         return [rgi_code_translator(element, out_type) for element in input]
     elif isinstance(input, int) or (
-        isinstance(input, str) and len(input) <= 2 and int(input) < 20
+        isinstance(input, str) and len(input) <= 2 and int(input) <= 20
     ):
         return rgi_o1region_translator(int(input), out_type)
     elif (
@@ -2868,6 +3394,7 @@ def rgi_o2region_translator(o1: int, o2: int, out_type: str = "full_name") -> st
 @contextmanager
 def sandbox_write_to(target: str):
     """Guard writes with a lock and recover from stale backup sidecars."""
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
     backup = target + "__backup"
     lock = target + "__lock"
     lock_fd = None
@@ -2962,33 +3489,16 @@ def update_keyring(
 
 
 def update_keyring_cli() -> None:
-    """CLI wrapper around :func:`update_keyring`."""
+    """Compatibility CLI wrapper around :func:`update_keyring`."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
         "cryoswath-update-keyring",
         description="Create or update keyring credentials for ESA access.",
     )
-    parser.add_argument("--user", default=None, help="ESA username.")
-    parser.add_argument("--password", default=None, help="ESA password.")
-    parser.add_argument(
-        "--service",
-        default=_ESA_AUTH_IDP_HOST,
-        help="Keyring service name.",
-    )
-    parser.add_argument(
-        "--username-key",
-        default=_ESA_KEYRING_DEFAULT_USER_KEY,
-        help="Keyring username key for storing the default user.",
-    )
+    _add_update_keyring_arguments(parser)
     args = parser.parse_args()
-    user = update_keyring(
-        user=args.user,
-        password=args.password,
-        service=args.service,
-        username_key=args.username_key,
-    )
-    print(f"Stored credentials for {user} in keyring service {args.service}.")
+    _update_keyring_from_args(args)
 
 
 def update_netrc(
@@ -3050,7 +3560,7 @@ def update_netrc(
 
 
 def update_netrc_cli() -> None:
-    """CLI wrapper around :func:`update_netrc`."""
+    """Compatibility CLI wrapper around :func:`update_netrc`."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -3059,33 +3569,13 @@ def update_netrc_cli() -> None:
             "Create or update ~/.netrc credentials for ESA access (plaintext fallback)."
         ),
     )
-    parser.add_argument("--user", default=None, help="ESA username.")
-    parser.add_argument("--password", default=None, help="ESA password.")
-    parser.add_argument(
-        "--machine",
-        default=_ESA_CS2_HOST,
-        help="Netrc machine host key.",
-    )
-    parser.add_argument(
-        "--netrc-file",
-        default=None,
-        help="Override path to netrc file (default: ~/.netrc).",
-    )
+    _add_update_netrc_arguments(parser)
     args = parser.parse_args()
-    netrc_path = update_netrc(
-        user=args.user,
-        password=args.password,
-        machine=args.machine,
-        netrc_file=args.netrc_file,
-    )
-    print(
-        f"Wrote plaintext credentials for {args.machine} to {netrc_path}. "
-        "Prefer keyring for interactive setups."
-    )
+    _update_netrc_from_args(args)
 
 
 def download_rgi_cli() -> None:
-    """CLI wrapper around :func:`download_rgi_o1region`."""
+    """Compatibility CLI wrapper around :func:`download_rgi_o1region`."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -3094,6 +3584,99 @@ def download_rgi_cli() -> None:
             "Download and extract one RGI o1 region file bundle to data/auxiliary/RGI."
         ),
     )
+    _add_download_rgi_arguments(parser)
+    args = parser.parse_args()
+    _download_rgi_from_args(args)
+
+
+
+def _add_download_auxiliary_data_arguments(parser) -> None:
+    """Add shared auxiliary-data download arguments to an argparse parser."""
+    parser.add_argument(
+        "--base-dir",
+        default=".",
+        help="Project base directory used for config discovery (default: current directory).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace files contained in the auxiliary-data archive.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120,
+        help="HTTP timeout in seconds (default: 120).",
+    )
+
+
+def _download_auxiliary_data_from_args(args) -> None:
+    """Download auxiliary data from parsed CLI arguments."""
+    out_path = download_auxiliary_data(
+        base_dir=args.base_dir,
+        force=args.force,
+        timeout=args.timeout,
+    )
+    print(out_path)
+
+
+def download_auxiliary_data_cli() -> None:
+    """CLI wrapper around :func:`download_auxiliary_data`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath download-aux-data",
+        description="Download the CryoSwath auxiliary-data snapshot from Zenodo.",
+    )
+    _add_download_auxiliary_data_arguments(parser)
+    args = parser.parse_args()
+    _download_auxiliary_data_from_args(args)
+
+
+def _add_get_tutorials_arguments(parser) -> None:
+    """Add shared tutorial-copy arguments to an argparse parser."""
+    parser.add_argument(
+        "--base-dir",
+        default=".",
+        help="Project base directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--destination",
+        default=None,
+        help="Directory for tutorials (default: <base-dir>/tutorials).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing tutorial notebooks.",
+    )
+
+
+def _get_tutorials_from_args(args) -> None:
+    """Copy packaged tutorials from parsed CLI arguments."""
+    out_path = copy_tutorials(
+        destination=args.destination,
+        base_dir=args.base_dir,
+        force=args.force,
+    )
+    print(out_path)
+
+
+def get_tutorials_cli() -> None:
+    """CLI wrapper around :func:`copy_tutorials`."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        "cryoswath get-tutorials",
+        description="Copy packaged CryoSwath tutorial notebooks into a project.",
+    )
+    _add_get_tutorials_arguments(parser)
+    args = parser.parse_args()
+    _get_tutorials_from_args(args)
+
+
+def _add_download_rgi_arguments(parser) -> None:
+    """Add shared RGI download arguments to an argparse parser."""
     parser.add_argument(
         "--o1",
         required=True,
@@ -3116,7 +3699,10 @@ def download_rgi_cli() -> None:
         default=120,
         help="HTTP timeout in seconds (default: 120).",
     )
-    args = parser.parse_args()
+
+
+def _download_rgi_from_args(args) -> None:
+    """Download RGI data from parsed CLI arguments."""
     out_path = download_rgi_o1region(
         o1code=args.o1,
         product=args.product,
@@ -3124,6 +3710,122 @@ def download_rgi_cli() -> None:
         timeout=args.timeout,
     )
     print(out_path)
+
+
+def _add_update_keyring_arguments(parser) -> None:
+    """Add shared keyring arguments to an argparse parser."""
+    parser.add_argument("--user", default=None, help="ESA username.")
+    parser.add_argument("--password", default=None, help="ESA password.")
+    parser.add_argument(
+        "--service",
+        default=_ESA_AUTH_IDP_HOST,
+        help="Keyring service name.",
+    )
+    parser.add_argument(
+        "--username-key",
+        default=_ESA_KEYRING_DEFAULT_USER_KEY,
+        help="Keyring username key for storing the default user.",
+    )
+
+
+def _update_keyring_from_args(args) -> None:
+    """Update keyring credentials from parsed CLI arguments."""
+    user = update_keyring(
+        user=args.user,
+        password=args.password,
+        service=args.service,
+        username_key=args.username_key,
+    )
+    print(f"Stored credentials for {user} in keyring service {args.service}.")
+
+
+def _add_update_netrc_arguments(parser) -> None:
+    """Add shared netrc arguments to an argparse parser."""
+    parser.add_argument("--user", default=None, help="ESA username.")
+    parser.add_argument("--password", default=None, help="ESA password.")
+    parser.add_argument(
+        "--machine",
+        default=_ESA_CS2_HOST,
+        help="Netrc machine host key.",
+    )
+    parser.add_argument(
+        "--netrc-file",
+        default=None,
+        help="Override path to netrc file (default: ~/.netrc).",
+    )
+
+
+def _update_netrc_from_args(args) -> None:
+    """Update netrc credentials from parsed CLI arguments."""
+    netrc_path = update_netrc(
+        user=args.user,
+        password=args.password,
+        machine=args.machine,
+        netrc_file=args.netrc_file,
+    )
+    print(
+        f"Wrote plaintext credentials for {args.machine} to {netrc_path}. "
+        "Prefer keyring for interactive setups."
+    )
+
+
+def cryoswath_cli(argv: list[str] | None = None) -> None:
+    """Top-level CryoSwath command group."""
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser("cryoswath", description="CryoSwath command line tools.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    create_config_parser = subparsers.add_parser(
+        "create-config",
+        help="Create a CryoSwath project path configuration.",
+    )
+    _add_create_config_arguments(create_config_parser)
+    create_config_parser.set_defaults(func=_create_config_from_args)
+
+    aux_parser = subparsers.add_parser(
+        "download-aux-data",
+        help="Download the CryoSwath auxiliary-data snapshot from Zenodo.",
+    )
+    _add_download_auxiliary_data_arguments(aux_parser)
+    aux_parser.set_defaults(func=_download_auxiliary_data_from_args)
+
+    tutorials_parser = subparsers.add_parser(
+        "get-tutorials",
+        help="Copy packaged CryoSwath tutorial notebooks into a project.",
+    )
+    _add_get_tutorials_arguments(tutorials_parser)
+    tutorials_parser.set_defaults(func=_get_tutorials_from_args)
+
+    rgi_parser = subparsers.add_parser(
+        "download-rgi",
+        help="Download and extract one RGI o1 region bundle.",
+    )
+    _add_download_rgi_arguments(rgi_parser)
+    rgi_parser.set_defaults(func=_download_rgi_from_args)
+
+    update_tracks_parser = subparsers.add_parser(
+        "update-tracks",
+        help="Refresh cached ground-track and filename lookup tables.",
+    )
+    update_tracks_parser.set_defaults(func=lambda args: update_track_database())
+
+    keyring_parser = subparsers.add_parser(
+        "update-keyring",
+        help="Create or update keyring credentials for ESA access.",
+    )
+    _add_update_keyring_arguments(keyring_parser)
+    keyring_parser.set_defaults(func=_update_keyring_from_args)
+
+    netrc_parser = subparsers.add_parser(
+        "update-netrc",
+        help="Create or update ~/.netrc credentials for ESA access.",
+    )
+    _add_update_netrc_arguments(netrc_parser)
+    netrc_parser.set_defaults(func=_update_netrc_from_args)
+
+    args = parser.parse_args(argv)
+    args.func(args)
 
 
 def update_email(email: str = None):
@@ -3155,15 +3857,21 @@ def update_email(email: str = None):
 
 def update_track_database() -> None:
     """Refresh cached ground-track and filename lookup tables."""
+    load_cs_ground_tracks(update="regular")
+    load_cs_full_file_names(update="regular")
+
+
+def update_track_database_cli() -> None:
+    """CLI wrapper around :func:`update_track_database`."""
     from argparse import ArgumentParser
 
-    ArgumentParser(
+    parser = ArgumentParser(
         "cryoswath-update-tracks",
         description="Updates the track database. Run this once in a while and always "
         "if you wish to include the latest tracks.",
     )
-    load_cs_ground_tracks(update="regular")
-    load_cs_full_file_names(update="regular")
+    parser.parse_args()
+    update_track_database()
 
 
 # CREDIT: mgab https://stackoverflow.com/a/22376126

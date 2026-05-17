@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "cryoswath"
-version = "0.2.5.post2"
+version = "0.2.6"
 authors = [
   { name="Jan Haacker", email="j.m.haacker@tudelft.nl" },
 ]
@@ -12,10 +12,9 @@ description = "Swath processing toolbox for CryoSat-2"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE.txt"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
@@ -25,8 +24,8 @@ dependencies = [
     "Bottleneck",
     "dask",
     "defusedxml",
+    "earthaccess>=0.18",
     "geopandas>=1.0.1",
-    "gitpython",
     "h5netcdf",
     "h5py",
     "keyring",
@@ -53,7 +52,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["flit", "pip-tools", "ruff"]
+dev = ["flit", "pip-tools", "pre-commit", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
 production = ["xarray[accel]>=2025.3,<2025.12", "dask[distributed]"]
@@ -66,11 +65,20 @@ Documentation = "https://cryoswath.readthedocs.io/"
 Issues = "https://github.com/j-haacker/cryoswath/issues"
 
 [project.scripts]
-cryoswath-init = "cryoswath.misc:init_project"
+cryoswath = "cryoswath.misc:cryoswath_cli"
+cryoswath-init = "cryoswath.misc:init_project_cli"
 cryoswath-download-rgi = "cryoswath.misc:download_rgi_cli"
 cryoswath-update-keyring = "cryoswath.misc:update_keyring_cli"
 cryoswath-update-netrc = "cryoswath.misc:update_netrc_cli"
-cryoswath-update-tracks = "cryoswath.misc:update_track_database"
+cryoswath-update-tracks = "cryoswath.misc:update_track_database_cli"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+include = ["*.py", "*.pyi", "*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

@@ -129,3 +129,12 @@ def test_abort_policy_raises_on_mismatch():
                 overlap_time_steps=2,
                 overlap_policy="abort",
             )
+
+
+def test_build_path_uses_configured_l3_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(l3, "l3_path", str(tmp_path / "custom-l3"))
+
+    path = Path(l3._build_path("05-01", 1, 500))
+
+    assert path.parent == tmp_path / "custom-l3"
+    assert path.name == "05-01_monthly_500m.zarr"

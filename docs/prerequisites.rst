@@ -34,16 +34,26 @@ Alternative: install from source
    git clone https://github.com/j-haacker/cryoswath.git
    pip install --editable ./cryoswath
 
-Then initialize your project directory:
+Then configure your project paths. Without a config file, CryoSwath uses
+``./data`` relative to the current working directory. To create a reusable
+project config and install the default auxiliary baseline, run:
 
 .. code-block:: sh
 
    mkdir <project_dir>
    cd <project_dir>
-   cryoswath-init
+   cryoswath create-config
+   cryoswath download-aux-data
+   cryoswath get-tutorials
 
-``cryoswath-init`` creates a project layout (``data/``, ``scripts/``) and
-writes ``scripts/config.ini`` that stores your base data path.
+``cryoswath create-config`` writes ``cryoswath.cfg`` with your base data path.
+``cryoswath download-aux-data`` installs the Zenodo auxiliary-data baseline.
+``cryoswath get-tutorials`` copies packaged tutorial notebooks into
+``tutorials/``. The notebooks import CryoSwath from the active Python
+environment. You can also set ``CRYOSWATH_DATA`` or more specific
+``CRYOSWATH_*`` path variables; environment variables override config files.
+Set ``CRYOSWATH_CONFIG`` to select a config file explicitly. Legacy
+``config.ini`` and ``scripts/config.ini`` files are still read.
 
 Access requirements
 -------------------
@@ -72,7 +82,7 @@ Preferred interactive setup (keyring):
 
 .. code-block:: sh
 
-   cryoswath-update-keyring
+   cryoswath update-keyring
 
 Automation setup (environment variables):
 
@@ -85,7 +95,7 @@ Plaintext fallback setup (``~/.netrc``):
 
 .. code-block:: sh
 
-   cryoswath-update-netrc
+   cryoswath update-netrc
 
 ``~/.netrc`` stores the password in plaintext and should only be used as a
 fallback if keyring is not available.
@@ -114,8 +124,19 @@ Expected default locations:
 - DEMs: ``data/auxiliary/DEM``
 - RGI files: ``data/auxiliary/RGI``
 
-You can override paths in ``config.ini`` or by adapting path handling in
-:mod:`cryoswath.misc`.
+You can override paths in ``cryoswath.cfg`` or with environment variables
+such as ``CRYOSWATH_DATA``, ``CRYOSWATH_DEM``, and ``CRYOSWATH_RGI``.
+
+
+Auxiliary-data baseline
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The command ``cryoswath download-aux-data`` downloads the latest CryoSwath
+auxiliary-data snapshot from Zenodo DOI ``10.5281/zenodo.20241526`` and
+extracts it into ``data/auxiliary`` by default. The snapshot contains the
+CryoSat-2 ground-track database, filename catalog, and static RGI metadata.
+Run ``cryoswath update-tracks`` periodically to extend or refresh the local
+track database after installing the baseline.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^
@@ -135,21 +156,24 @@ RGI download behavior
 ^^^^^^^^^^^^^^^^^^^^^
 
 If a required RGI o1 region file is missing, CryoSwath now attempts an
-automatic download before raising ``FileNotFoundError``.
+automatic NSIDC download before raising ``FileNotFoundError``.
 
-- Authentication uses the same credential resolver as L1b downloads
-  (``EOIAM_USER``/``EOIAM_PASSWORD``, keyring, ``~/.netrc``, then legacy
-  ``config.ini`` fallback).
-- Downloaded zip archives are extracted into ``data/auxiliary/RGI`` using a
-  directory named like the archive stem
-  (for example ``RGI2000-v7.0-C-09_svalbard``).
-- Zip archives are removed after successful extraction.
+RGI downloads use NASA Earthdata credentials through ``earthaccess``, not ESA
+credentials. For non-interactive downloads, provide either:
+
+1. ``EARTHDATA_USERNAME`` and ``EARTHDATA_PASSWORD``.
+2. ``EARTHDATA_TOKEN`` instead of username/password.
+
+Downloaded zip archives are extracted into ``data/auxiliary/RGI`` using a
+directory named like the archive stem, for example
+``RGI2000-v7.0-C-09_svalbard``. Zip archives are removed after successful
+extraction.
 
 You can also prefetch a region explicitly:
 
 .. code-block:: sh
 
-   cryoswath-download-rgi --o1 09 --product complexes
+   cryoswath download-rgi --o1 09 --product complexes
 
 Software dependencies
 ---------------------
@@ -158,7 +182,7 @@ Python package dependencies are defined in ``pyproject.toml``.
 
 - Runtime dependencies: ``[project.dependencies]``
 - Optional docs/dev extras: ``[project.optional-dependencies]``
-- Supported Python version: ``>=3.11`` (regularly tested on 3.11 and 3.12)
+- Supported Python version: ``>=3.12``
 - Supported xarray window: ``>=2025.3,<2025.12``
 
 The root ``requirements.txt`` is kept for compatibility but is not the

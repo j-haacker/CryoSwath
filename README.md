@@ -23,7 +23,7 @@ from waveform-level processing to gridded elevation products.
 - Install CryoSwath in a dedicated environment (`pixi`, `conda`/`mamba`,
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
-- Supported Python version: **>=3.11** (regularly tested on 3.11 and 3.12).
+- Supported Python version: **>=3.12**.
 - Downloading CryoSat resources
   requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
 - ESA credentials are resolved in this order:
@@ -31,6 +31,8 @@ from waveform-level processing to gridded elevation products.
   keyring (preferred for interactive setup), then
   `~/.netrc` (plaintext fallback), then legacy `config.ini [user]`
   `name/password` (temporary fallback).
+- Automatic RGI downloads from NSIDC require NASA Earthdata credentials;
+  see the prerequisites docs for setup details.
 - L1b file downloads are HTTPS-first. FTP remains a fallback path and is
   still used for metadata refresh flows (catalog/track updates).
 - Anonymous FTP login is no longer supported.
@@ -48,6 +50,8 @@ from waveform-level processing to gridded elevation products.
 
 For full setup details, see the docs:
 [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
+
+For development setup and contribution checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Option 1: reproducible setup with pixi (recommended)
 
@@ -117,40 +121,61 @@ If local dependency resolution fails, you can use Docker:
 docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly
 ```
 
-## Initialize a project
+## Configure a project
 
-CryoSwath expects project data outside the package install directory.
-Run `cryoswath-init` inside a new project folder:
+CryoSwath keeps project data outside the package install directory. If no
+configuration file is present, paths default to `./data` relative to the
+current working directory. For a reusable project configuration, run the
+bootstrap commands inside a project folder:
 
 ```sh
 mkdir <proj_dir>
 cd <proj_dir>
-cryoswath-init
+cryoswath create-config
+cryoswath download-aux-data
+cryoswath get-tutorials
 ```
 
-`cryoswath-init` sets up the expected data structure and writes
-`scripts/config.ini` with your base data path. The paths can be
-reconfigured in `config.ini` if you use a different layout.
+`cryoswath create-config` writes `cryoswath.cfg` with your base data path.
+`cryoswath download-aux-data` installs the Zenodo auxiliary-data baseline.
+`cryoswath get-tutorials` copies packaged tutorial notebooks to `tutorials/`.
+The tutorial notebooks assume CryoSwath is installed in the active Python
+environment and import it directly.
+You can also set `CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path
+variables; environment variables override config files. Set `CRYOSWATH_CONFIG`
+to select a config file explicitly. Legacy `config.ini` files are still read.
 
-To avoid storing secrets in `config.ini`, use keyring (preferred) or
-environment variables for ESA credentials and keep `config.ini` focused on
-paths. You can configure keyring credentials interactively with:
-`cryoswath-update-keyring`.
+To avoid storing secrets in config files, use keyring (preferred) or
+environment variables for ESA credentials. You can configure keyring
+credentials interactively with: `cryoswath update-keyring`.
 If you need a fallback, you can write `~/.netrc` (this stores the password in
-plaintext) using:
-`cryoswath-update-netrc`.
+plaintext) using `cryoswath update-netrc`.
 
 ## Tutorials and documentation
 
 - Main docs: [cryoswath.readthedocs.io](https://cryoswath.readthedocs.io/)
 - General workflow tutorial:
-  [`scripts/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__general_step-by-step.ipynb)
+  [`tutorials/tutorial__general_step-by-step.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__general_step-by-step.ipynb)
 - First waveform tutorial:
-  [`scripts/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_waveform.ipynb)
+  [`tutorials/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb)
 - First swath tutorial:
-  [`scripts/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/scripts/tutorial__process_first_swath.ipynb)
+  [`tutorials/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb)
 
 ## Local testing
+
+Run the fast unit tests against the editable checkout:
+
+```sh
+pixi run -e test test-unit
+```
+
+Run the installed-package check. This builds the wheel, installs it into a
+temporary environment outside the repository, and runs the unit tests against
+that installed package rather than the source checkout:
+
+```sh
+pixi run -e test test-installed
+```
 
 Run the full local test pipeline:
 
@@ -158,11 +183,32 @@ Run the full local test pipeline:
 pixi run -e test test-all
 ```
 
+Run the full pipeline from a copy of the current tracked worktree with a fresh
+Pixi environment and fresh home directory:
+
+```sh
+pixi run -e test test-fresh
+```
+
+For a release-style check of committed `HEAD` only, use:
+
+```sh
+pixi run -e test test-fresh-committed
+```
+
+These commands pass credential environment variables such as `EOIAM_USER`,
+`EOIAM_PASSWORD`, `EARTHDATA_USERNAME`, and `EARTHDATA_PASSWORD`, but they do
+not pass local CryoSwath path variables unless requested explicitly.
+
 Run report notebooks only:
 
 ```sh
 pixi run -e test test-notebooks
 ```
+
+This creates `tests/reports/artifacts/project/cryoswath.cfg`, uses that
+isolated data tree through `CRYOSWATH_CONFIG`, and downloads the auxiliary-data
+baseline if it is missing.
 
 Run tutorial notebooks only:
 
@@ -170,9 +216,19 @@ Run tutorial notebooks only:
 pixi run -e test test-tutorial-notebooks
 ```
 
-If tutorials are stored outside the current checkout, set
-`CRYOSWATH_TUTORIAL_DIR` to the directory containing
-`tutorial__*.ipynb` before running this task.
+This creates `tests/tutorials/artifacts/project/cryoswath.cfg`, copies the
+packaged tutorial notebooks into that project, and uses the same isolated aux
+setup. If you pass a custom tutorial directory, keep it compatible with this
+generated project layout.
+
+Run selected GitHub Actions jobs locally with `act` through Pixi. This requires
+Docker or a compatible container runtime and approximates the Ubuntu CI jobs:
+
+```sh
+pixi run -e ci local-ci-pixi-test
+pixi run -e ci local-ci-docs
+pixi run -e ci local-ci-dependency-matrix
+```
 
 Notebook tests may download required larger data from first-hand sources
 at runtime, so network availability and valid ESA credentials matter.
@@ -203,12 +259,12 @@ If you use CryoSwath, please cite:
 ```bibtex
 @software{cryoswath,
   author       = {Haacker, Jan},
-  title        = {CryoSwath 0.2.5},
+  title        = {CryoSwath 0.2.6},
   month        = feb,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.2.5},
-  doi          = {10.5281/zenodo.17011635}
+  version      = {0.2.6},
+  doi          = {10.5281/zenodo.14825358}
 }
 ```
 

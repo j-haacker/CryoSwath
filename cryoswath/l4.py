@@ -44,7 +44,7 @@ from cryoswath.misc import (
     nanoseconds_per_year,
     _norm_isf_25,
 )
-from cryoswath import misc, l3
+from cryoswath import misc
 
 # notes for future development of `differential_change` and
 # `relative_change`:
@@ -275,6 +275,7 @@ def add_meta_to_default_finalized_l3(
         if all_double:
             for _dict in encoding.values():
                 _dict.update({"dtype": "float64", "_FillValue": np.nan})
+        outpath.parent.mkdir(parents=True, exist_ok=True)
         out.to_netcdf(
             outpath,
             engine="h5netcdf",
@@ -413,15 +414,23 @@ def fill_voids(
     elev: str = "ref_elev",
     per: tuple[str] = ("basin", "basin_group"),
     basin_shapes: gpd.GeoDataFrame = None,
+    discard_deglaciated: bool = True,
     outlier_limit: float = 5,
     outlier_replace: bool = False,
     outlier_iterations: int = 1,
     fit_sanity_check: dict = None,
     filled_flag: str = None,
 ) -> xr.Dataset:
-    """Fill spatial/temporal gaps using hierarchical hypsometric strategies."""
-    # mention memory footprint in docstring: reindexing leaks and takes a s**t ton of
-    # memory. roughly 5-10x l3_data size in total.
+    """Fill spatial/temporal gaps using hierarchical hypsometric strategies.
+
+    The routine fills by basin, then basin group, then region-wide, with
+    temporal interpolation for short and edge gaps when time is present.
+    It loads basin outlines if needed, restores missing coordinates and
+    reference elevation, and can record fill provenance in ``filled_flag``.
+
+    This is memory intensive: regrouping, unstacking, and reindexing can
+    temporarily require roughly 5-10x the input L3 dataset size.
+    """
     if any([grouper not in ["basin", "basin_group"] for grouper in per]):
         raise NotImplementedError
     if basin_shapes is None:
@@ -460,9 +469,15 @@ def fill_voids(
             ):
                 pbar.set_description(f"... current basin id: {label:.0f}")
                 if (
-                    "time" in group
-                    and (~group[main_var].isnull()).any("time").sum() > 100
-                ) or (~group[main_var].isnull()).sum() > 100:
+                    discard_deglaciated
+                    and (
+                        (
+                            "time" in group
+                            and (~group[main_var].isnull()).any("time").sum() > 100
+                        )
+                        or (~group[main_var].isnull()).sum() > 100
+                    )
+                ):
                     group = discard_frontal_retreat_zone(
                         group, "basin_id", main_var, elev
                     )
@@ -794,15 +809,14 @@ def difference_to_reference_dem(
             print(traceback.format_exc())
             print(str(err))
             region_id = str(datetime.now())
+        output_path = Path(misc.l4_path) / (
+            save_to_disk
+            if isinstance(save_to_disk, str)
+            else region_id + "__elev_diff_to_ref_at_monthly_intervals.nc"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         res.to_netcdf(  # .drop_encoding()
-            os.path.join(
-                misc.l4_path,
-                (
-                    save_to_disk
-                    if isinstance(save_to_disk, str)
-                    else region_id + "__elev_diff_to_ref_at_monthly_intervals.nc"
-                ),
-            ),
+            output_path,
             # encoding={  doesn't do anything
             #     _var: {
             #         "dtype": res[_var].dtype,
@@ -927,6 +941,7 @@ def elevation_trend_raster_from_l3(
         )
         residuals = ds._median - model_vals
         fit_rm_outl_res["RMSE"] = (residuals**2).mean("time") ** 0.5
+        Path(interm_res_path).parent.mkdir(parents=True, exist_ok=True)
         fit_rm_outl_res.to_zarr(interm_res_path, mode="w")
     else:
         fit_rm_outl_res = xr.open_zarr(interm_res_path, decode_coords="all").load()
@@ -966,6 +981,7 @@ def elevation_trend_raster_from_l3(
         filled.trend.attrs["_FillValue"] = np.nan
         filled.trend_std.attrs["_FillValue"] = np.nan
         # print(filled.trend.attrs, filled.trend_std.attrs)
+        Path(result_path).parent.mkdir(parents=True, exist_ok=True)
         filled[["trend", "trend_std"]].transpose("y", "x").rio.to_raster(result_path)
     else:
         filled = rioxr.open_rasterio(result_path)
@@ -1091,17 +1107,13 @@ def differential_change(
         outlier_iterations=3,
     )
     if save_to_disk:
-        res.to_netcdf(
-            os.path.join(
-                misc.l4_path,
-                (
-                    save_to_disk
-                    if isinstance(save_to_disk, str)
-                    else find_region_id(data)
-                    + "__yearly_changes_at_monthly_intervals.nc"
-                ),
-            )
+        output_path = Path(misc.l4_path) / (
+            save_to_disk
+            if isinstance(save_to_disk, str)
+            else find_region_id(data) + "__yearly_changes_at_monthly_intervals.nc"
         )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        res.to_netcdf(output_path)
     return res
 
 
@@ -1160,17 +1172,14 @@ def relative_change(
         [res, l3_data.sel(time=ref_period).fillna(0)], join="outer", compat="override"
     )
     if save_to_disk:
-        res.to_netcdf(
-            os.path.join(
-                misc.l4_path,
-                (
-                    save_to_disk
-                    if isinstance(save_to_disk, str)
-                    else find_region_id(l3_data)
-                    + "__relative_elevation_estimates_at_monthly_intervals.nc"
-                ),
-            )
+        output_path = Path(misc.l4_path) / (
+            save_to_disk
+            if isinstance(save_to_disk, str)
+            else find_region_id(l3_data)
+            + "__relative_elevation_estimates_at_monthly_intervals.nc"
         )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        res.to_netcdf(output_path)
     return res
 
 

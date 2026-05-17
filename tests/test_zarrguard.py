@@ -114,3 +114,20 @@ def test_guard_existing_store_cli_fallback_serializes_no_data(monkeypatch, tmp_p
         "check": True,
     }
     assert json.loads(fake_file.getvalue()) == {"a": [[4, 5]]}
+
+
+def test_guarded_to_zarr_creates_missing_parent(monkeypatch, tmp_path: Path):
+    dataset = _FakeDataset()
+    guard_calls = []
+    monkeypatch.setattr(
+        zarrguard,
+        "guard_existing_store",
+        lambda *args, **kwargs: guard_calls.append(args),
+    )
+
+    store_path = tmp_path / "missing" / "store.zarr"
+    zarrguard.guarded_to_zarr(dataset, store_path, to_zarr_kwargs={"mode": "w"})
+
+    assert store_path.parent.is_dir()
+    assert dataset.calls[0][0] == store_path
+    assert guard_calls == [(store_path,)]
