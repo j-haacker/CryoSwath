@@ -33,27 +33,37 @@ __all__ = [
 
 import fnmatch
 import ftplib
-import geopandas as gpd
 import numbers
-import numpy as np
-from numpy.typing import ArrayLike
 import operator
 import os
-import pandas as pd
-from pathlib import Path
-from pyproj import Transformer
-import requests
-import rioxarray as rioxr
-from scipy.stats import median_abs_deviation, ttest_ind
-import shapely
-from threading import Event
 import tempfile
 import time
-from urllib.parse import parse_qs, urljoin, urlparse
 import warnings
-import xarray as xr
+from pathlib import Path
+from threading import Event
+from urllib.parse import parse_qs, urljoin, urlparse
 
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import requests
+import rioxarray as rioxr
+import shapely
+import xarray as xr
+from numpy.typing import ArrayLike
+from pyproj import Transformer
+from scipy.stats import median_abs_deviation, ttest_ind
+
+from cryoswath.gis import (
+    buffer_4326_shp,
+    ensure_pyproj_crs,
+    find_planar_crs,
+    subdivide_region,
+)
+from cryoswath.l2 import from_processed_l1b as l2_from_processed_l1b
 from cryoswath.misc import (
+    Ku_band_freq,
+    WGS84_ellpsoid,
     _resolve_esa_ftp_credentials,
     antenna_baseline,
     cs_time_to_id,
@@ -61,7 +71,6 @@ from cryoswath.misc import (
     ftp_cs2_server,
     gauss_filter_DataArray,
     get_dem_reader,
-    Ku_band_freq,
     l1b_path,
     load_cs_full_file_names,
     load_cs_ground_tracks,
@@ -74,15 +83,7 @@ from cryoswath.misc import (
     rgi_path,
     sample_width,
     speed_of_light,
-    WGS84_ellpsoid,
 )
-from cryoswath.gis import (
-    buffer_4326_shp,
-    ensure_pyproj_crs,
-    find_planar_crs,
-    subdivide_region,
-)
-from cryoswath.l2 import from_processed_l1b as l2_from_processed_l1b
 
 # requires implicitly rasterio(?), flox(?), dask(?)
 
@@ -758,21 +759,15 @@ def tag_groups(ds) -> xr.Dataset:
     Returns:
         xr.Dataset: l1b_ds.
     """
-    # print("debug tag groups 0", flush=True)
     phase_outlier = get_phase_outlier(ds)
-    # print("debug tag groups 0.1", flush=True)
     ignore_mask = (ds.exclude_mask + phase_outlier) != 0
     gap_separator = ignore_mask.rolling(ns_20_ku=3).sum() == 3
-    # print("debug tag groups 0.2", flush=True)
     any_separator = np.logical_or(
         *xr.align(get_phase_jump(ds), gap_separator, join="outer")
     )
-    # print("debug tag groups 0.2.1", flush=True)
     rising_edge_per_waveform_counter = (
         any_separator.astype("int32").diff("ns_20_ku") == -1
     ).cumsum("ns_20_ku") + 1
-    # print(rising_edge_per_waveform_counter)
-    # print("debug tag groups 0.3", flush=True)
     group_tags = rising_edge_per_waveform_counter + xr.DataArray(
         data=np.arange(len(ds.time_20_ku)) * len(ds.ns_20_ku), dims="time_20_ku"
     )
@@ -780,7 +775,6 @@ def tag_groups(ds) -> xr.Dataset:
         ~ignore_mask
     )
 
-    # print("debug tag groups 0.4", flush=True)
     def filter_small_groups(group_ids):
         out = group_ids
         for i in nan_unique(group_ids):
@@ -789,7 +783,6 @@ def tag_groups(ds) -> xr.Dataset:
                 out[mask] = 0
         return out
 
-    # print("debug tag groups 1", flush=True)
     group_tags = xr.apply_ufunc(
         filter_small_groups,
         group_tags,
@@ -1003,7 +996,8 @@ def append_poca_and_swath_idxs(
             # I opted for nan if no poca for transparency. this requires
             # dtype float and is slower
             return np.nan, 0
-        # poca expected `poca_upper` m after coherence exceeds threshold (no solid basis)
+        # poca expected `poca_upper` m after coherence exceeds threshold
+        # (no solid basis)
         poca_idx = (
             np.argmax(
                 smooth_coh[poca_idx : poca_idx + max(1, int(poca_upper / sample_width))]
@@ -1193,7 +1187,8 @@ def download_wrapper(
                 _status("Closed download threads. Some files may still be missing.")
                 return 1
         _status(
-            "Forcing download thread shutdown. Partially written NetCDF files may exist."
+            "Forcing download thread shutdown. Partially written NetCDF "
+            "files may exist."
         )
         return 2
     else:
@@ -1596,7 +1591,9 @@ def download_files(
             except FileNotFoundError:
                 os.makedirs(os.path.join(l1b_path, year_month_str))
                 currently_present_files = []
-            existing_track_ids = {file_name[:15] for file_name in currently_present_files}
+            existing_track_ids = {
+                file_name[:15] for file_name in currently_present_files
+            }
             month_tracks = track_idx[
                 track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str
             ]
