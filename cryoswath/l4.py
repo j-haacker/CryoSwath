@@ -433,27 +433,45 @@ def fill_voids(
     """
     if any([grouper not in ["basin", "basin_group"] for grouper in per]):
         raise NotImplementedError
-    if basin_shapes is None:
+    grouper_vars = {"basin": "basin_id", "basin_group": "group_id"}
+    needs_basin_shapes = any(grouper_vars[grouper] not in ds for grouper in per)
+    if basin_shapes is None and needs_basin_shapes:
         # figure out region. limited to o2 meanwhile
         print("... loading basin outlines")
         o2code = find_region_id(ds, scope="o2")
         basin_shapes = load_glacier_outlines(
             o2code, product="glaciers", union=False, crs=ds.rio.crs
         )
-    else:
+    elif basin_shapes is not None:
         basin_shapes = basin_shapes.to_crs(ds.rio.crs)
+
+    def grouper_domain_mask(ds: xr.Dataset) -> xr.DataArray | None:
+        if "basin_id" in ds:
+            return ~ds.basin_id.isnull()
+        if "group_id" in ds:
+            return ~ds.group_id.isnull()
+        return None
+
     # remove time steps without any data
     if "time" in ds.dims:
         ds = ds.dropna("time", how="all", subset=[main_var])
     # polygons will be repaired in later functions. it may be more
     # transparent to do it here.
-    ds = fill_missing_coords(ds, *basin_shapes.total_bounds)
+    if basin_shapes is None:
+        ds = fill_missing_coords(ds)
+    else:
+        ds = fill_missing_coords(ds, *basin_shapes.total_bounds)
     if (
         elev not in ds
     ):  # tbi: the ref elevs should always be loaded again after fill missing coords!
         print("... appending reference DEM to dataset")
         ds = append_elevation_reference(ds, ref_elev_name=elev)
-    ds[elev] = ds[elev].rio.clip(basin_shapes.make_valid())
+    if basin_shapes is None:
+        domain_mask = grouper_domain_mask(ds)
+        if domain_mask is not None:
+            ds[elev] = ds[elev].where(domain_mask)
+    else:
+        ds[elev] = ds[elev].rio.clip(basin_shapes.make_valid())
     ref_elev_da = ds[elev].copy()
     for grouper in per:
         res = []
@@ -566,27 +584,33 @@ def fill_voids(
         ds[main_var] = _new_main
     # if there are still missing data, interpolate region wide ("global
     # hypsometric interpolation")
-    ds = interpolate_hypsometrically(
-        (
-            ds.where(
-                ~ds.basin_id.isnull(),
-                xr.Dataset(
-                    {
-                        _var: (
-                            ds[_var].attrs["_FillValue"]
-                            if "_FillValue" in ds[_var].attrs
-                            else np.nan
-                        )
-                        for _var in ds.data_vars
-                    }
-                ),
-            )
-            if "basin_id" in ds
-            else ds
+    global_input = (
+        ds.where(
+            ~ds.basin_id.isnull(),
+            xr.Dataset(
+                {
+                    _var: (
+                        ds[_var].attrs["_FillValue"]
+                        if "_FillValue" in ds[_var].attrs
+                        else np.nan
+                    )
+                    for _var in ds.data_vars
+                }
+            ),
         )
-        .rio.clip(basin_shapes.make_valid())
-        .stack({"stacked_x_y": ["x", "y"]})
-        .dropna("stacked_x_y", how="any", subset=[elev]),
+        if "basin_id" in ds
+        else ds
+    )
+    if basin_shapes is None:
+        domain_mask = grouper_domain_mask(global_input)
+        if domain_mask is not None:
+            global_input = global_input.where(domain_mask)
+    else:
+        global_input = global_input.rio.clip(basin_shapes.make_valid())
+    ds = interpolate_hypsometrically(
+        global_input.stack({"stacked_x_y": ["x", "y"]}).dropna(
+            "stacked_x_y", how="any", subset=[elev]
+        ),
         main_var=main_var,
         elev=elev,
         error=error,
