@@ -2,6 +2,10 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
+## Unreleased
+
+- Report PGC STAC API timeout and connectivity failures with a clear runtime error.
+
 ## 0.2.6 - 2026-05-17
 
 - Added configurable project layouts and package-backed setup helpers so processing projects and notebooks no longer depend on branch-local bootstrap code.
