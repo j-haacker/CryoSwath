@@ -264,7 +264,7 @@ If you use CryoSwath, please cite:
   year         = 2026,
   publisher    = {Zenodo},
   version      = {0.2.6},
-  doi          = {10.5281/zenodo.14825358}
+  doi          = {10.5281/zenodo.20257262}
 }
 ```
 
