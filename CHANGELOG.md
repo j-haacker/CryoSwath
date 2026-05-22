@@ -5,6 +5,7 @@ This changelog is intentionally lightweight. It records user-visible changes and
 ## Unreleased
 
 - Report PGC STAC API timeout and connectivity failures with a clear runtime error.
+- Avoid xarray MultiIndex deprecation warnings during hypsometric void filling.
 
 ## 0.2.6 - 2026-05-17
 
