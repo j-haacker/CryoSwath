@@ -6,6 +6,7 @@ This changelog is intentionally lightweight. It records user-visible changes and
 
 - Report PGC STAC API timeout and connectivity failures with a clear runtime error.
 - Avoid xarray MultiIndex deprecation warnings during hypsometric void filling.
+- Allow `fill_voids` to use existing basin/group IDs without requiring basin shape files.
 
 ## 0.2.6 - 2026-05-17
 
