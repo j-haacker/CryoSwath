@@ -65,6 +65,12 @@ channels = ["conda-forge", "nodefaults"]
 sphinx = "*"
 pydata-sphinx-theme = "*"
 
+[feature.lab.dependencies]
+ipykernel = "*"
+
+[feature.lab.pypi-dependencies]
+snippets = { git = "https://github.com/j-haacker/snipGit.git", branch = "main" }
+
 [feature.ci]
 channels = ["conda-forge", "nodefaults"]
 
@@ -120,4 +126,5 @@ depends-on = [
 default = { features = ["runtime"], solve-group = "runtime" }
 test = { features = ["runtime", "test"], solve-group = "runtime" }
 docs = { features = ["runtime", "docs"], solve-group = "docs" }
+lab = { features = ["runtime", "lab"], solve-group = "runtime" }
 ci = { features = ["ci"], no-default-feature = true }

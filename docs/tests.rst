@@ -18,16 +18,19 @@ Recommended checks after changing core processing logic:
 4. `tests/reports/l2_tested_data_comparison.py.ipynb
    <https://github.com/j-haacker/cryoswath/blob/main/tests/reports/l2_tested_data_comparison.py.ipynb>`_
    Comparison against validated reference output.
-5. `cryoswath/tutorials/tutorial__general_step-by-step.ipynb
+5. `cryoswath/tutorials/tutorial__diagnostic_hooks.ipynb
+   <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__diagnostic_hooks.ipynb>`_
+   Diagnostic-hook exploration tutorial executed directly in tests.
+6. `cryoswath/tutorials/tutorial__general_step-by-step.ipynb
    <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__general_step-by-step.ipynb>`_
    End-to-end processing tutorial executed directly in tests.
-6. `cryoswath/tutorials/tutorial__process_first_waveform.ipynb
+7. `cryoswath/tutorials/tutorial__process_first_waveform.ipynb
    <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb>`_
    Waveform tutorial executed directly in tests.
-7. `cryoswath/tutorials/tutorial__process_first_swath.ipynb
+8. `cryoswath/tutorials/tutorial__process_first_swath.ipynb
    <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb>`_
    Swath tutorial executed directly in tests.
-8. `cryoswath/tutorials/tutorial__poca.ipynb
+9. `cryoswath/tutorials/tutorial__poca.ipynb
    <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__poca.ipynb>`_
    POCA tutorial executed directly in tests.
 

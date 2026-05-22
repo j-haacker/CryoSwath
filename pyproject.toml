@@ -54,10 +54,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["flit", "pip-tools", "pre-commit", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
+lab = [
+    "ipykernel",
+    "snippets @ git+https://github.com/j-haacker/snipGit.git@main",
+]
 notebooks = ["ipykernel"]
 production = ["xarray[accel]>=2025.3,<2025.12", "dask[distributed]"]
 zarrguard = ["xzarrguard>=0.1.2; python_version >= '3.12'"]
-all = ["cryoswath[dev,docs,notebooks,production,zarrguard]"]
+all = ["cryoswath[dev,docs,lab,notebooks,production,zarrguard]"]
 
 [project.urls]
 Repository = "https://github.com/j-haacker/cryoswath.git"
