@@ -1,6 +1,6 @@
 import io
-from pathlib import Path
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -101,3 +101,33 @@ def test_get_dem_reader_uses_existing_default_dem_without_download(
 
     out = misc.get_dem_reader(80)
     assert out == ("reader", "arcticdem_mosaic_100m_v4.1_dem.tif")
+
+
+def test_download_dem_wraps_pgc_stac_timeout(monkeypatch):
+    calls = []
+
+    def fake_open(url, *args, **kwargs):
+        calls.append((url, kwargs))
+        raise misc.requests.exceptions.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(misc.Client, "open", fake_open)
+
+    with pytest.raises(RuntimeError, match="PGC STAC API.*did not respond"):
+        misc.download_dem(object())
+
+    assert calls[0][0] == misc._PGC_STAC_API_URL
+    assert calls[0][1]["timeout"] == misc._PGC_STAC_TIMEOUT
+
+
+def test_download_dem_reraises_non_connectivity_pgc_stac_api_error(monkeypatch):
+    error = misc.APIError("server returned HTTP 400")
+
+    def fake_open(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(misc.Client, "open", fake_open)
+
+    with pytest.raises(misc.APIError) as excinfo:
+        misc.download_dem(object())
+
+    assert excinfo.value is error

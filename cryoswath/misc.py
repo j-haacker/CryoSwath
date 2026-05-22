@@ -102,6 +102,8 @@ import pandas as pd
 from pathlib import Path, PurePosixPath
 from pyproj import CRS, Geod
 from pystac_client import Client
+from pystac_client.exceptions import APIError
+from pystac_client.stac_api_io import StacApiIO
 import queue
 import rasterio
 from rasterio.warp import Resampling
@@ -127,6 +129,10 @@ import xarray as xr
 import zipfile
 
 from cryoswath import gis
+
+
+_PGC_STAC_API_URL = "https://stac.pgc.umn.edu/api/v1/"
+_PGC_STAC_TIMEOUT = (10, 60)
 
 
 def _add_create_config_arguments(parser) -> None:
@@ -822,6 +828,68 @@ def _read_stac(item):
     )
 
 
+def _is_pgc_stac_connectivity_error(exc: Exception) -> bool:
+    """Return whether an exception looks like a PGC STAC network failure."""
+    if isinstance(exc, (TimeoutError, requests.exceptions.RequestException)):
+        return True
+    if not isinstance(exc, APIError):
+        return False
+
+    message = str(exc).lower()
+    return any(
+        needle in message
+        for needle in (
+            "connection",
+            "connect timeout",
+            "max retries exceeded",
+            "network",
+            "read timed out",
+            "timed out",
+            "timeout",
+        )
+    )
+
+
+def _raise_pgc_stac_unavailable(exc: Exception) -> None:
+    raise RuntimeError(
+        f"The PGC STAC API at {_PGC_STAC_API_URL} did not respond within the "
+        "configured timeout or could not be reached. This is usually an upstream "
+        "service availability issue. Retry later or check the endpoint manually "
+        "with curl."
+    ) from exc
+
+
+def _open_pgc_stac_catalog():
+    try:
+        return Client.open(
+            _PGC_STAC_API_URL,
+            stac_io=StacApiIO(max_retries=0),
+            timeout=_PGC_STAC_TIMEOUT,
+        )
+    except (APIError, TimeoutError, requests.exceptions.RequestException) as exc:
+        if _is_pgc_stac_connectivity_error(exc):
+            _raise_pgc_stac_unavailable(exc)
+        raise
+
+
+def _pgc_stac_items(catalog, gpd_obj):
+    try:
+        collections = catalog.collection_search(
+            q="((arcticdem AND v4+1) OR (rema AND v2)) AND 32m"
+        ).collections()
+        return list(
+            catalog.search(
+                collections=[coll.id for coll in collections],
+                # not sure how this behaves if it covers the poles
+                bbox=gpd_obj.to_crs(4326).total_bounds,
+            ).items()
+        )
+    except (APIError, TimeoutError, requests.exceptions.RequestException) as exc:
+        if _is_pgc_stac_connectivity_error(exc):
+            _raise_pgc_stac_unavailable(exc)
+        raise
+
+
 def download_dem(
     gpd_obj: Union[gpd.GeoSeries, gpd.GeoDataFrame, gpd.array.GeometryArray],
     provider: Literal["PGC"] = "PGC",
@@ -857,20 +925,10 @@ def download_dem(
       disk operations are performed.
     """
     if provider == "PGC":
-        catalog = Client.open("https://stac.pgc.umn.edu/api/v1/")
-        collections = catalog.collection_search(
-            q="((arcticdem AND v4+1) OR (rema AND v2)) AND 32m"
-        ).collections()
+        catalog = _open_pgc_stac_catalog()
         # transforming collection extent is difficult, maybe the code behind rioxr transform_bounds helps
         limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
-
-    items = list(
-        catalog.search(
-            collections=[coll.id for coll in collections],
-            # not sure how this behaves if it covers the poles
-            bbox=gpd_obj.to_crs(4326).total_bounds,
-        ).items()
-    )
+        items = _pgc_stac_items(catalog, gpd_obj)
 
     this_dem_path = Path(dem_path) / (
         items[0].get_collection().id + "_100m-mean.zarr"  # pyright: ignore[reportOptionalMemberAccess]
