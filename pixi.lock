@@ -345,6 +345,10 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zict-3.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-3.23.0-pyhcf101f3_1.conda
       - pypi: .
+  docker:
+    channels:
+    - url: https://conda.anaconda.org/conda-forge/
+    packages: {}
   docs:
     channels:
     - url: https://conda.anaconda.org/conda-forge/

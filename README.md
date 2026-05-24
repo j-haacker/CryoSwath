@@ -115,11 +115,15 @@ pixi run -e docs docs-build
 
 ### Optional: Docker image
 
-If local dependency resolution fails, you can use Docker:
+If local dependency resolution fails, you can use Docker. The image provides
+the CryoSwath runtime and the `base` JupyterLab kernel:
 
 ```sh
 docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly
 ```
+
+Find setup instruction in the
+[prerequisite documentation](https://cryoswath.readthedocs.io/en/latest/prerequisites.html).
 
 ## Configure a project
 

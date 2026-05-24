@@ -86,6 +86,21 @@ local-ci-pixi-test = "act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-lates
 local-ci-docs = "act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest -W .github/workflows/pixi-locked.yml -j docs"
 local-ci-dependency-matrix = "act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest -W .github/workflows/dependency-matrix.yml -j compatibility"
 
+[feature.docker.tasks.docker-build]
+args = [{ arg = "tag", default = "cryoswath/jupyterlab:nightly" }]
+cmd = "docker build --network=host --pull -f docker/Dockerfile -t {{ tag }} ."
+
+[feature.docker.tasks.docker-push]
+args = [{ arg = "tag", default = "cryoswath/jupyterlab:nightly" }]
+cmd = "docker push {{ tag }}"
+
+[feature.docker.tasks.docker-update]
+args = [{ arg = "tag", default = "cryoswath/jupyterlab:nightly" }]
+depends-on = [
+  { task = "docker-build", args = ["{{ tag }}"] },
+  { task = "docker-push", args = ["{{ tag }}"] },
+]
+
 [feature.test.tasks]
 lint = "ruff check ."
 format-check = "ruff format --check ."
@@ -128,3 +143,4 @@ test = { features = ["runtime", "test"], solve-group = "runtime" }
 docs = { features = ["runtime", "docs"], solve-group = "docs" }
 lab = { features = ["runtime", "lab"], solve-group = "runtime" }
 ci = { features = ["ci"], no-default-feature = true }
+docker = { features = ["docker"], no-default-feature = true }
