@@ -5,7 +5,7 @@
 version: 2
 
 conda:
-  environment: environment.yml
+  environment: docs/environment.yml
 
 # Set the OS, Python version, and other tools you might need
 build:
@@ -16,8 +16,3 @@ build:
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
    configuration: docs/conf.py
-
-# Install theme
-python:
-  install:
-    - requirements: docs/requirements.txt

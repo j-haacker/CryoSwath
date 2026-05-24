@@ -1,0 +1,40 @@
+name: docs
+channels:
+- conda-forge
+- nodefaults
+- nodefaults
+dependencies:
+- sphinx *
+- pydata-sphinx-theme *
+- python 3.12.*
+- bottleneck *
+- dask *
+- defusedxml *
+- earthaccess >=0.18
+- geopandas >=1.0.1
+- h5netcdf *
+- h5py *
+- keyring *
+- matplotlib *
+- numpy *
+- packaging *
+- pandas >=2,<3
+- pyarrow *
+- pyogrio *
+- pyproj *
+- pystac-client *
+- python-dateutil *
+- rasterio *
+- rioxarray *
+- scikit-learn *
+- scipy *
+- shapely *
+- stackstac *
+- statsmodels *
+- pytables *
+- tqdm *
+- xarray >=2026.3
+- zarr *
+- pip
+- pip:
+  - -e .

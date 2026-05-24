@@ -30,9 +30,10 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_yaml="$repo_root/environment.yml"
 tmp_yaml="$(mktemp)"
+docs_yaml="$(mktemp)"
 
 cleanup() {
-  rm -f "$tmp_yaml"
+  rm -f "$tmp_yaml" "$docs_yaml"
 }
 trap cleanup EXIT
 
@@ -41,6 +42,11 @@ trap cleanup EXIT
   -e default \
   -p linux-64 \
   "$tmp_yaml" >/dev/null
+"$pixi_exe" workspace export conda-environment \
+  --manifest-path "$repo_root" \
+  -e docs \
+  -p linux-64 \
+  "$docs_yaml" >/dev/null
 
 if [[ "$mode" == "check" ]]; then
   if [[ -f "$env_yaml" ]] && cmp -s "$env_yaml" "$tmp_yaml"; then
@@ -64,4 +70,5 @@ if [[ -f "$env_yaml" ]] && cmp -s "$env_yaml" "$tmp_yaml"; then
 fi
 
 mv "$tmp_yaml" "$env_yaml"
+mv "$docs_yaml" "$repo_root/docs/environment.yml"
 echo "Updated $env_yaml from the Pixi default environment."
