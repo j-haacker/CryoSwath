@@ -1944,15 +1944,6 @@ def interpolate_hypsometrically(
         else:
             return ds
 
-    def temporary_mask(mask):
-        if (
-            isinstance(mask, xr.DataArray)
-            and "stacked_x_y" in mask.dims
-            and "stacked_x_y" in mask.xindexes
-        ):
-            return mask.reset_index("stacked_x_y", drop=True)
-        return mask
-
     def design_matrix(x_vals):
         return np.hstack([x_vals, x_vals**2, x_vals**3])
 
@@ -2141,7 +2132,7 @@ def interpolate_hypsometrically(
     )
     elev_bin_means = pd.Series(index=group_obj.groups)
     elev_bin_errs = pd.Series(index=group_obj.groups)
-    fill_mask = temporary_mask(-1 * xr.ones_like(ds[main_var]))
+    fill_mask = -1 * xr.ones_like(ds[main_var])
     for label, group in group_obj:
         if (group[weights] > 0).sum() < 6:
             continue
@@ -2162,7 +2153,6 @@ def interpolate_hypsometrically(
         to_be_filled_mask = xr.align(
             fill_mask, to_be_filled_mask, join="left", fill_value=-1
         )[1]
-        to_be_filled_mask = temporary_mask(to_be_filled_mask)
         fill_mask = xr.where(to_be_filled_mask != -1, to_be_filled_mask, fill_mask)
         if np.isnan(avg):
             continue
@@ -2228,8 +2218,8 @@ def interpolate_hypsometrically(
             np.polyval(np.polyder(coeffs), scale(pivot)) * (scale(data) - scale(pivot))
         ).flatten() + const_extrapol(data, pivot)
 
-    extrap_below = temporary_mask(ds[elev] < elev_bin_means.index[0].mid)
-    extrap_above = temporary_mask(ds[elev] > elev_bin_means.index[-1].mid)
+    extrap_below = ds[elev] < elev_bin_means.index[0].mid
+    extrap_above = ds[elev] > elev_bin_means.index[-1].mid
     modelled_list = [
         xr.DataArray(
             fit.predict(design_matrix(scale(ds[elev]))),
@@ -2298,11 +2288,9 @@ def interpolate_hypsometrically(
     local_deviation_metric = (
         np.abs(neighbour_mean - modelled) - outlier_limit * neighbour_std.mean()
     )
-    local_deviation = temporary_mask(
-        np.logical_and(
-            neighbour_count >= 6,
-            np.abs(neighbour_mean - modelled) > outlier_limit * neighbour_std.mean(),
-        )
+    local_deviation = np.logical_and(
+        neighbour_count >= 6,
+        np.abs(neighbour_mean - modelled) > outlier_limit * neighbour_std.mean(),
     )
     emit_diagnostic(
         "hypsometry.local_deviation",
