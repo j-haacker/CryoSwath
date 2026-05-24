@@ -29,7 +29,7 @@ repos:
     hooks:
       - id: sync-dependency-definitions
         name: Sync dependency definitions
-        entry: bash scripts/sync_dependency_definitions.sh
+        entry: bash tools/sync_dependency_definitions.sh
         language: system
         pass_filenames: false
         files: ^(pyproject\.toml|pixi\.toml|environment\.yml|conda-pypi-map\.json)$
