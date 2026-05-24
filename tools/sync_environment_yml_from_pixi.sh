@@ -47,6 +47,7 @@ trap cleanup EXIT
   -e docs \
   -p linux-64 \
   "$docs_yaml" >/dev/null
+sed -i 's/\( \+\|\t\+\)-\( -e\)\? \./\1- ../' "$docs_yaml"
 
 if [[ "$mode" == "check" ]]; then
   if [[ -f "$env_yaml" ]] && cmp -s "$env_yaml" "$tmp_yaml"; then
