@@ -77,16 +77,46 @@ import hashlib
 import inspect
 import netrc
 import os
+import queue
+import re
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import warnings
+import zipfile
 from collections.abc import Callable, Iterable, Mapping
 from configparser import ConfigParser
 from contextlib import contextmanager
 from importlib import resources as importlib_resources
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, Union
 
 import geopandas as gpd
 import h5py
 import numpy as np
+import pandas as pd
+import rasterio
+import requests
+import scipy.stats
+import shapely
+import stackstac
+import xarray as xr
 from dateutil.relativedelta import relativedelta
 from defusedxml.ElementTree import fromstring as ET_from_str
+from packaging.version import Version
+from pyproj import CRS, Geod
+from pystac_client import Client
+from pystac_client.exceptions import APIError
+from pystac_client.stac_api_io import StacApiIO
+from rasterio.warp import Resampling
+from scipy.constants import speed_of_light
+from scipy.stats import median_abs_deviation, norm
+from scipy.stats import t as student_t
+from sklearn import linear_model, preprocessing
+from tables import NaturalNameWarning
 
 try:
     import keyring
@@ -98,45 +128,7 @@ except ImportError:
         """Fallback keyring error if the keyring package is unavailable."""
 
 
-from packaging.version import Version
-import pandas as pd
-from pathlib import Path, PurePosixPath
-from pyproj import CRS, Geod
-from pystac_client import Client
-from pystac_client.exceptions import APIError
-from pystac_client.stac_api_io import StacApiIO
-import queue
-import re
-import shutil
-import sys
-import tempfile
-import threading
-import time
-import traceback
-import warnings
-import zipfile
-from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Union
-
-import pandas as pd
-import rasterio
-import requests
-import scipy.stats
-import shapely
-import stackstac
-import xarray as xr
-from packaging.version import Version
-from pyproj import CRS, Geod
-from pystac_client import Client
-from rasterio.warp import Resampling
-from scipy.constants import speed_of_light
-from scipy.stats import median_abs_deviation, norm
-from scipy.stats import t as student_t
-from sklearn import linear_model, preprocessing
-from tables import NaturalNameWarning
-
 from cryoswath import gis
-
 
 _PGC_STAC_API_URL = "https://stac.pgc.umn.edu/api/v1/"
 _PGC_STAC_TIMEOUT = (10, 60)
@@ -225,45 +217,9 @@ def create_config(
     config["path"]["data"] = str(data)
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    data_dir = _resolve_path_value(data, config_path.parent)
-    data_dir.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
         config.write(f)
     print(f"Wrote CryoSwath path configuration to {config_path}.")
-    print(
-        "Set credentials in environment variables "
-        f"{_ESA_ENV_USER} and its corresponding password variable, "
-        "keyring (preferred for interactive setup), or as plaintext in "
-        "~/.netrc (fallback only). Legacy fallback uses config.ini [user] "
-        "name/password."
-    )
-    if sys.stdin.isatty():
-        answer = input("Configure keyring credentials now? [Y/n]: ").strip().lower()
-        if answer in {"", "y", "yes"}:
-            try:
-                keyring_user = update_keyring()
-                print(
-                    "Stored credentials for "
-                    f"{keyring_user} in keyring service {_ESA_AUTH_IDP_HOST}."
-                )
-            except Exception as err:
-                print(f"Could not configure keyring automatically: {err}")
-                answer = (
-                    input(
-                        "Create ~/.netrc fallback? This stores your password in "
-                        "plaintext. [y/N]: "
-                    )
-                    .strip()
-                    .lower()
-                )
-                if answer in {"y", "yes"}:
-                    try:
-                        netrc_path = update_netrc()
-                        print(f"Wrote plaintext credentials to {netrc_path}.")
-                    except Exception as netrc_err:
-                        print(
-                            f"Could not configure ~/.netrc automatically: {netrc_err}"
-                        )
     return str(config_path)
 
 
