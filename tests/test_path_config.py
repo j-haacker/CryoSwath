@@ -156,7 +156,7 @@ def test_create_config_writes_new_config_without_branch_cloning(monkeypatch, tmp
     config = ConfigParser()
     config.read(tmp_path / "cryoswath.cfg")
     assert config["path"]["data"] == "data"
-    assert (tmp_path / "data").is_dir()
+    assert not (tmp_path / "data").exists()
     assert not (tmp_path / "scripts").exists()
 
 
@@ -194,7 +194,6 @@ def test_init_project_overwrites_with_force_and_preserves_other_sections(
     config.read(tmp_path / "cryoswath.cfg")
     assert config["path"]["data"] == "new-data"
     assert config["defaults.fill_voids"]["outlier_limit"] == "4"
-    assert (tmp_path / "new-data").is_dir()
 
 
 def test_init_project_honors_custom_config_and_data(monkeypatch, tmp_path):
@@ -205,7 +204,6 @@ def test_init_project_honors_custom_config_and_data(monkeypatch, tmp_path):
     config = ConfigParser()
     config.read(tmp_path / "conf" / "cryoswath.cfg")
     assert config["path"]["data"] == "store"
-    assert (tmp_path / "conf" / "store").is_dir()
 
 
 def test_create_config_honors_base_dir_and_child_discovery(tmp_path):
@@ -214,9 +212,8 @@ def test_create_config_honors_base_dir_and_child_discovery(tmp_path):
     out = misc.create_config(base_dir=project, data="store")
 
     assert out == str(project / "cryoswath.cfg")
-    assert (project / "store").is_dir()
     child = project / "tutorials"
-    child.mkdir()
+    child.mkdir(parents=True)
 
     _, resolved_config, paths = _resolve(child, _env(tmp_path))
 
@@ -224,9 +221,7 @@ def test_create_config_honors_base_dir_and_child_discovery(tmp_path):
     assert paths["data"] == project / "store"
 
 
-def test_legacy_credentials_are_read_from_discovered_config_ini(
-    monkeypatch, tmp_path
-):
+def test_legacy_credentials_are_read_from_discovered_config_ini(monkeypatch, tmp_path):
     project = tmp_path / "project"
     scripts = project / "scripts"
     work = project / "notebooks"

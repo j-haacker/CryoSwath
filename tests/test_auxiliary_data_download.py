@@ -1,7 +1,7 @@
-from pathlib import Path
 import hashlib
 import shutil
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -155,9 +155,11 @@ def test_download_auxiliary_data_rejects_bad_checksum(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(misc.requests, "get", fake_get)
-    monkeypatch.setattr(
-        misc, "download_file", lambda url, dest, timeout=120: shutil.copyfile(zip_path, dest)
-    )
+
+    def copy_zip(url, dest, timeout=120):
+        return shutil.copyfile(zip_path, dest)
+
+    monkeypatch.setattr(misc, "download_file", copy_zip)
 
     with pytest.raises(RuntimeError, match="Checksum mismatch"):
         misc.download_auxiliary_data(base_dir=tmp_path)
@@ -192,7 +194,10 @@ def test_download_auxiliary_data_cleans_temp_archive_after_download_failure(
     _clear_path_env(monkeypatch, tmp_path)
     zip_path = _write_zip(tmp_path / "aux.zip", {"file.txt": b"payload"})
 
-    monkeypatch.setattr(misc.requests, "get", lambda url, timeout=120: FakeResponse(_metadata(zip_path)))
+    def metadata_response(url, timeout=120):
+        return FakeResponse(_metadata(zip_path))
+
+    monkeypatch.setattr(misc.requests, "get", metadata_response)
 
     def fail_download(url, dest, timeout=120):
         Path(dest).write_bytes(b"partial")
@@ -211,6 +216,7 @@ def test_packaged_tutorial_resources_are_discoverable():
     names = [resource.name for resource in misc._tutorial_resources()]
 
     assert names == [
+        "tutorial__diagnostic_hooks.ipynb",
         "tutorial__general_step-by-step.ipynb",
         "tutorial__poca.ipynb",
         "tutorial__process_first_swath.ipynb",
@@ -223,6 +229,7 @@ def test_copy_tutorials_defaults_to_base_tutorials(tmp_path):
 
     tutorial_dir = tmp_path / "tutorials"
     assert out == str(tutorial_dir)
+    assert (tutorial_dir / "tutorial__diagnostic_hooks.ipynb").is_file()
     assert (tutorial_dir / "tutorial__general_step-by-step.ipynb").is_file()
     assert (tutorial_dir / "tutorial__process_first_waveform.ipynb").is_file()
 

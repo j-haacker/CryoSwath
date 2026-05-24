@@ -115,11 +115,15 @@ pixi run -e docs docs-build
 
 ### Optional: Docker image
 
-If local dependency resolution fails, you can use Docker:
+If local dependency resolution fails, you can use Docker. The image provides
+the CryoSwath runtime and the `base` JupyterLab kernel:
 
 ```sh
 docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly
 ```
+
+Find setup instruction in the
+[prerequisite documentation](https://cryoswath.readthedocs.io/en/latest/prerequisites.html).
 
 ## Configure a project
 
@@ -160,78 +164,6 @@ plaintext) using `cryoswath update-netrc`.
   [`tutorials/tutorial__process_first_waveform.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb)
 - First swath tutorial:
   [`tutorials/tutorial__process_first_swath.ipynb`](https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb)
-
-## Local testing
-
-Run the fast unit tests against the editable checkout:
-
-```sh
-pixi run -e test test-unit
-```
-
-Run the installed-package check. This builds the wheel, installs it into a
-temporary environment outside the repository, and runs the unit tests against
-that installed package rather than the source checkout:
-
-```sh
-pixi run -e test test-installed
-```
-
-Run the full local test pipeline:
-
-```sh
-pixi run -e test test-all
-```
-
-Run the full pipeline from a copy of the current tracked worktree with a fresh
-Pixi environment and fresh home directory:
-
-```sh
-pixi run -e test test-fresh
-```
-
-For a release-style check of committed `HEAD` only, use:
-
-```sh
-pixi run -e test test-fresh-committed
-```
-
-These commands pass credential environment variables such as `EOIAM_USER`,
-`EOIAM_PASSWORD`, `EARTHDATA_USERNAME`, and `EARTHDATA_PASSWORD`, but they do
-not pass local CryoSwath path variables unless requested explicitly.
-
-Run report notebooks only:
-
-```sh
-pixi run -e test test-notebooks
-```
-
-This creates `tests/reports/artifacts/project/cryoswath.cfg`, uses that
-isolated data tree through `CRYOSWATH_CONFIG`, and downloads the auxiliary-data
-baseline if it is missing.
-
-Run tutorial notebooks only:
-
-```sh
-pixi run -e test test-tutorial-notebooks
-```
-
-This creates `tests/tutorials/artifacts/project/cryoswath.cfg`, copies the
-packaged tutorial notebooks into that project, and uses the same isolated aux
-setup. If you pass a custom tutorial directory, keep it compatible with this
-generated project layout.
-
-Run selected GitHub Actions jobs locally with `act` through Pixi. This requires
-Docker or a compatible container runtime and approximates the Ubuntu CI jobs:
-
-```sh
-pixi run -e ci local-ci-pixi-test
-pixi run -e ci local-ci-docs
-pixi run -e ci local-ci-dependency-matrix
-```
-
-Notebook tests may download required larger data from first-hand sources
-at runtime, so network availability and valid ESA credentials matter.
 
 ## External dependencies and data
 

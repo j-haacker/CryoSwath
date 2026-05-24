@@ -13,6 +13,7 @@ Project repository:
 
    prerequisites
    getting_started
+   exploration
    tutorials
    tests
    build_and_publish

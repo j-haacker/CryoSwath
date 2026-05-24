@@ -27,6 +27,38 @@ For interactive work inside the environment:
 
    pixi shell -e test
 
+Optional: Docker image
+^^^^^^^^^^^^^^^^^^^^^^
+
+If local dependency resolution fails, you can use Docker. The image provides
+the CryoSwath runtime and a JupyterLab kernel named ``Python (CryoSwath)``;
+initialize your project inside the mounted project directory:
+
+.. code-block:: sh
+
+   docker run -it -p 8888:8888 -v <proj_dir>:/home/jovyan/project_dir cryoswath/jupyterlab:nightly
+
+In the docker case, do the configuration (also see below) in a
+JupyterLab terminal inside the container:
+
+.. code-block:: sh
+
+   cryoswath create-config
+   cryoswath download-aux-data
+   cryoswath get-tutorials
+   python -c "from cryoswath.misc import update_netrc as up; up(<user>, <pw>, netrc_file='.netrc')"
+
+
+Here, to make use of the automatic RGI basin shape download in
+notebooks, you will need to add a cell that exports your credentials to
+the current environment:
+
+.. code-block:: python
+
+   import os
+   os.environ["EARTHDATA_USERNAME"] = <user>
+   os.environ["EARTHDATA_PASSWORD"] = <pw>
+
 Alternative: install from source
 
 .. code-block:: sh

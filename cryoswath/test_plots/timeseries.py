@@ -1,11 +1,12 @@
 """Smell-check results by plotting time series"""
 
-__all__ = ["elevation_change"]
+__all__ = ["elevation_change", "timeseries_from_gridded_result"]
 
-from matplotlib import pyplot as plt
-import pandas as pd
 from typing import Any, Iterable, Literal
+
+import pandas as pd
 import xarray as xr
+from matplotlib import pyplot as plt
 
 try:  # lifts seaborn dependency
     import seaborn as sns
@@ -69,4 +70,21 @@ def elevation_change(
     ax.set_ylabel("average elevation change, m")
     # tbi: maybe add option to pass title and axis label
     ax.set_title("")
+    return ax
+
+
+def timeseries_from_gridded_result(payload: dict[str, Any], ax: plt.Axes = None):
+    """Plot a ``timeseries_from_gridded.result`` diagnostic payload."""
+    if ax is None:
+        ax = plt.subplots(figsize=(8, 4))[1]
+    results = payload["results"]
+    ax.fill_between(
+        results.index,
+        results.elevation - results.uncertainty,
+        results.elevation + results.uncertainty,
+        alpha=0.3,
+    )
+    ax.plot(results.index, results.elevation, c="k")
+    ax.set_ylabel("Surface elevation difference, m")
+    ax.set_xlabel("")
     return ax

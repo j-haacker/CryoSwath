@@ -17,21 +17,25 @@ __all__ = [
     # "relative_change",
 ]
 
-from datetime import datetime
-import geopandas as gpd
-from importlib.metadata import version as _version
-import numpy as np
 import os
-import pandas as pd
+from collections.abc import Callable
+from datetime import datetime
+from importlib.metadata import version as _version
 from pathlib import Path
+from typing import Any, Literal
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
 import rasterio.warp
 import rioxarray as rioxr
-from statsmodels.tsa.seasonal import seasonal_decompose
 import tqdm
-from typing import Literal
 import xarray as xr
+from statsmodels.tsa.seasonal import seasonal_decompose
 
+from cryoswath import misc
 from cryoswath.misc import (
+    _norm_isf_25,
     discard_frontal_retreat_zone,
     effective_sample_size,
     fill_missing_coords,
@@ -42,9 +46,7 @@ from cryoswath.misc import (
     l4_path,
     load_glacier_outlines,
     nanoseconds_per_year,
-    _norm_isf_25,
 )
-from cryoswath import misc
 
 # notes for future development of `differential_change` and
 # `relative_change`:
@@ -60,6 +62,23 @@ from cryoswath import misc
 # would be to calculate all relative changes, then find all meaningful
 # combinations, and derive a final product by averaging those
 # combinations.
+
+
+def _diagnostic_hook_with_context(
+    diagnostic_hook: Callable[[str, dict[str, Any]], Any] | None,
+    **context,
+) -> Callable[[str, dict[str, Any]], Any] | None:
+    """Wrap a diagnostic hook and merge context into every payload."""
+    if diagnostic_hook is None:
+        return None
+
+    def emit(name: str, payload: dict[str, Any]) -> Any:
+        payload = dict(payload)
+        payload_context = dict(payload.get("diagnostic_context", {}))
+        payload["diagnostic_context"] = {**context, **payload_context}
+        return diagnostic_hook(name, payload)
+
+    return emit
 
 
 def add_meta_to_default_finalized_l3(
@@ -363,7 +382,8 @@ def append_basin_group(
                 lat = basin_lat_group[0].mid
                 lon = basin_lon_group[0].mid
                 group_id = int(
-                    f"{np.sign(lat) * term_type:.0f}{np.abs(lat):02.0f}{lon % 360:03.0f}"
+                    f"{np.sign(lat) * term_type:.0f}"
+                    f"{np.abs(lat):02.0f}{lon % 360:03.0f}"
                 )
                 mask = xr.where(
                     mask.isnull(), ds.group_id.loc[dict(x=mask.x, y=mask.y)], group_id
@@ -420,6 +440,7 @@ def fill_voids(
     outlier_iterations: int = 1,
     fit_sanity_check: dict = None,
     filled_flag: str = None,
+    diagnostic_hook: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> xr.Dataset:
     """Fill spatial/temporal gaps using hierarchical hypsometric strategies.
 
@@ -431,6 +452,13 @@ def fill_voids(
     This is memory intensive: regrouping, unstacking, and reindexing can
     temporarily require roughly 5-10x the input L3 dataset size.
     """
+
+    def fill_diagnostic_hook(stage: str, group_label=None):
+        context = {"source": "fill_voids", "stage": stage}
+        if group_label is not None:
+            context["group_label"] = group_label
+        return _diagnostic_hook_with_context(diagnostic_hook, **context)
+
     if any([grouper not in ["basin", "basin_group"] for grouper in per]):
         raise NotImplementedError
     grouper_vars = {"basin": "basin_id", "basin_group": "group_id"}
@@ -486,18 +514,19 @@ def fill_voids(
                 )
             ):
                 pbar.set_description(f"... current basin id: {label:.0f}")
-                if (
-                    discard_deglaciated
-                    and (
-                        (
-                            "time" in group
-                            and (~group[main_var].isnull()).any("time").sum() > 100
-                        )
-                        or (~group[main_var].isnull()).sum() > 100
+                if discard_deglaciated and (
+                    (
+                        "time" in group
+                        and (~group[main_var].isnull()).any("time").sum() > 100
                     )
+                    or (~group[main_var].isnull()).sum() > 100
                 ):
                     group = discard_frontal_retreat_zone(
-                        group, "basin_id", main_var, elev
+                        group,
+                        "basin_id",
+                        main_var,
+                        elev,
+                        diagnostic_hook=fill_diagnostic_hook("basin", label),
                     )
                 res.append(
                     interpolate_hypsometrically(
@@ -509,6 +538,7 @@ def fill_voids(
                         outlier_limit=outlier_limit,
                         fit_sanity_check=fit_sanity_check,
                         fill_flag=(None if filled_flag is None else (filled_flag, 2)),
+                        diagnostic_hook=fill_diagnostic_hook("basin", label),
                     )
                 )
         elif grouper == "basin_group":
@@ -534,6 +564,7 @@ def fill_voids(
                         outlier_limit=outlier_limit,
                         fit_sanity_check=fit_sanity_check,
                         fill_flag=(None if filled_flag is None else (filled_flag, 3)),
+                        diagnostic_hook=fill_diagnostic_hook("basin_group", label),
                     )
                 )
         ds = xr.concat(res, "stacked_x_y")
@@ -618,6 +649,7 @@ def fill_voids(
         outlier_limit=outlier_limit,
         fit_sanity_check=fit_sanity_check,
         fill_flag=(None if filled_flag is None else (filled_flag, 5)),
+        diagnostic_hook=fill_diagnostic_hook("region"),
     )
     # if there are STILL missing data, temporally interpolate remaining
     # gaps and fill the margins. this should only occur at first and
@@ -854,7 +886,10 @@ def difference_to_reference_dem(
 
 
 def elevation_trend_raster_from_l3(
-    region_id: str, *, only_intermediate: bool = False
+    region_id: str,
+    *,
+    only_intermediate: bool = False,
+    diagnostic_hook: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> xr.Dataset:
     """Calculate elevation trend for each cell of L3 dataset
 
@@ -872,6 +907,8 @@ def elevation_trend_raster_from_l3(
         only_intermediate (bool, optional): If true, returns after
             calculating the trends where sufficient data is available
             and skips filling voids. Defaults to False.
+        diagnostic_hook (Callable, optional): Opt-in hook called with
+            diagnostic event names and payloads.
 
     Returns:
         xr.Dataset: Dataset of elevation trends and other parameters,
@@ -915,9 +952,17 @@ def elevation_trend_raster_from_l3(
             },
             errors="ignore",
         )
-        # # debugging output:
-        # fit_res.curvefit_coefficients.sel(param="trend").rio.write_crs(ds.rio.crs).rio.to_raster("../figures/source_data/new_outl_still_present_surface_elevation_trend__rgi-o2region_"
-        #                 + f"{o1:02d}-{o2:02d}__m_yr-1.tif")
+        if diagnostic_hook is not None:
+            diagnostic_hook(
+                "elevation_trend.initial_fit",
+                {
+                    "region_id": region_id,
+                    "ds": ds,
+                    "fit_res": fit_res,
+                    "trend": fit_res.curvefit_coefficients.sel(param="trend"),
+                    "diagnostic_context": {},
+                },
+            )
         model_vals = xr.apply_ufunc(
             trend_with_seasons,
             ds.time.astype("int"),
@@ -1000,11 +1045,15 @@ def elevation_trend_raster_from_l3(
             basin_shapes=basin_gdf,
             outlier_replace=True,
             outlier_limit=2,
+            diagnostic_hook=_diagnostic_hook_with_context(
+                diagnostic_hook,
+                source="elevation_trend_raster_from_l3",
+                region_id=region_id,
+            ),
         )
         # give rasterio a hint about the nodata values
         filled.trend.attrs["_FillValue"] = np.nan
         filled.trend_std.attrs["_FillValue"] = np.nan
-        # print(filled.trend.attrs, filled.trend_std.attrs)
         Path(result_path).parent.mkdir(parents=True, exist_ok=True)
         filled[["trend", "trend_std"]].transpose("y", "x").rio.to_raster(result_path)
     else:
@@ -1210,6 +1259,7 @@ def relative_change(
 def timeseries_from_gridded(
     ds: xr.Dataset,
     void_err_type: Literal["confidence", "prediction"] = "prediction",
+    diagnostic_hook: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> pd.DataFrame:
     """Calculates uncertainties of average elevation
 
@@ -1240,6 +1290,8 @@ def timeseries_from_gridded(
             "x", "y", and "time".
         void_err_type (Literal["prediction", "confidence"]): Type of
             errors for filled voids. Defaults to "prediction".
+        diagnostic_hook (Callable, optional): Opt-in hook called with
+            diagnostic event names and payloads.
 
     Returns:
         pd.DataFrame: DataFrame with columns "elevation" and
@@ -1341,26 +1393,16 @@ def timeseries_from_gridded(
 
     results.sort_index(axis=1, inplace=True)
 
-    # debugging
-    # print(_unc.rename("uncertainties").to_dataframe()["uncertainties"].unstack(0).to_string())
-    print(results.to_string())
-    import matplotlib.pyplot as plt
-
-    plt.clf()
-    plt.fill_between(
-        results.index,
-        results.elevation - results.uncertainty,
-        results.elevation + results.uncertainty,
-    )
-    plt.plot(results.index, results.elevation, c="k")
-    plt.ylabel("Surface elevation difference, m")
-    if "o2region" not in ds.attrs:
-        from pickle import dumps
-        from hashlib import md5
-
-        ds.attrs["o2region"] = md5(dumps(ds), usedforsecurity=False).hexdigest()[:7]
-    plt.title(ds.attrs["o2region"])
-    plt.savefig(f"tmp__quick_view_elev_ts_with_unc__{ds.attrs['o2region']}.png")
+    if diagnostic_hook is not None:
+        diagnostic_hook(
+            "timeseries_from_gridded.result",
+            {
+                "ds": ds,
+                "results": results,
+                "void_err_type": void_err_type,
+                "diagnostic_context": {},
+            },
+        )
 
     return results
 

@@ -8,37 +8,38 @@ __all__ = [
     "process_and_save",
 ]
 
-import geopandas as gpd
-import h5py
 import multiprocessing as mp
-import numpy as np
 import os
-import pandas as pd
-from pathlib import Path
-from pyarrow.lib import ArrowInvalid
-from pyproj import CRS
 import re
-import shapely
 import shutil
-from tables import NaturalNameWarning
 
 # from threading import Event, Thread
 import warnings
-import xarray as xr
+from pathlib import Path
 
+import geopandas as gpd
+import h5py
+import numpy as np
+import pandas as pd
+import shapely
+import xarray as xr
+from pyarrow.lib import ArrowInvalid
+from pyproj import CRS
+from tables import NaturalNameWarning
+
+from cryoswath import l1b
 from cryoswath.misc import (
     cryosat_id_pattern,
     cs_id_to_time,
     cs_time_to_id,
     empty_GeoDataFrame,
     filter_kwargs,
-    load_cs_full_file_names,
-    load_cs_ground_tracks,
     l2_poca_path,
     l2_swath_path,
+    load_cs_full_file_names,
+    load_cs_ground_tracks,
     xycut,
 )
-from cryoswath import l1b
 
 
 def _detect_available_cores() -> int:
@@ -673,7 +674,6 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
                 ),
             )
     except (KeyError, FileNotFoundError, RuntimeError, ArrowInvalid):
-        # print("debug 0", idx, flush=True)
         if "cs_full_file_names" in kwargs:
             cs_full_file_names = kwargs["cs_full_file_names"]
         else:
@@ -685,10 +685,8 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             blacklist=["swath_or_poca"],
             whitelist=["crs", "max_elev_diff"],
         )
-        # print("debug 1", idx, flush=True)
         try:
             tmp = l1b.from_id(cs_time_to_id(idx), **l1b_kwargs)
-            # print("debug 2", idx, flush=True)
             # the below is necessary to pass a specific dem file. skipped by default.
             if "dem_file_name_or_path" in kwargs:
                 # tmp = tmp.append_ambiguous_reference_elevation(kwargs.pop(
@@ -698,9 +696,7 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
                     tmp, kwargs["dem_file_name_or_path"]
                 )
                 tmp = l1b.append_best_fit_phase_index(tmp)
-                # print("debug 3", idx, flush=True)
             swath_poca_tuple = l1b.to_l2(tmp, swath_or_poca="both", **to_l2_kwargs)
-            # print("debug 4", idx, flush=True)
             tmp.close()
         except Exception as err:
             if isinstance(err, KeyboardInterrupt):

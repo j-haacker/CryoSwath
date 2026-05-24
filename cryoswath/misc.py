@@ -69,23 +69,54 @@ __all__ = [
     "patched_xr_decode_scaling",
 ]  # path variables are currently defined below
 
-from collections.abc import Iterable, Mapping
-from configparser import ConfigParser
-from contextlib import contextmanager
-import hashlib
-from importlib import resources as importlib_resources
-from dateutil.relativedelta import relativedelta
-from defusedxml.ElementTree import fromstring as ET_from_str
 import fnmatch
 import ftplib
 import getpass
-import geopandas as gpd
 import glob
-import h5py
+import hashlib
 import inspect
-import numpy as np
-import os
 import netrc
+import os
+import queue
+import re
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import warnings
+import zipfile
+from collections.abc import Callable, Iterable, Mapping
+from configparser import ConfigParser
+from contextlib import contextmanager
+from importlib import resources as importlib_resources
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, Union
+
+import geopandas as gpd
+import h5py
+import numpy as np
+import pandas as pd
+import rasterio
+import requests
+import scipy.stats
+import shapely
+import stackstac
+import xarray as xr
+from dateutil.relativedelta import relativedelta
+from defusedxml.ElementTree import fromstring as ET_from_str
+from packaging.version import Version
+from pyproj import CRS, Geod
+from pystac_client import Client
+from pystac_client.exceptions import APIError
+from pystac_client.stac_api_io import StacApiIO
+from rasterio.warp import Resampling
+from scipy.constants import speed_of_light
+from scipy.stats import median_abs_deviation, norm
+from scipy.stats import t as student_t
+from sklearn import linear_model, preprocessing
+from tables import NaturalNameWarning
 
 try:
     import keyring
@@ -97,39 +128,7 @@ except ImportError:
         """Fallback keyring error if the keyring package is unavailable."""
 
 
-from packaging.version import Version
-import pandas as pd
-from pathlib import Path, PurePosixPath
-from pyproj import CRS, Geod
-from pystac_client import Client
-from pystac_client.exceptions import APIError
-from pystac_client.stac_api_io import StacApiIO
-import queue
-import rasterio
-from rasterio.warp import Resampling
-import re
-import requests
-from scipy.constants import speed_of_light
-import scipy.stats
-from scipy.stats import norm, median_abs_deviation
-from scipy.stats import t as student_t
-import shapely
-import shutil
-from sklearn import linear_model, preprocessing
-import stackstac
-import sys
-from tables import NaturalNameWarning
-import tempfile
-import time
-import threading
-import traceback
-from typing import Literal, Union
-import warnings
-import xarray as xr
-import zipfile
-
 from cryoswath import gis
-
 
 _PGC_STAC_API_URL = "https://stac.pgc.umn.edu/api/v1/"
 _PGC_STAC_TIMEOUT = (10, 60)
@@ -218,45 +217,9 @@ def create_config(
     config["path"]["data"] = str(data)
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    data_dir = _resolve_path_value(data, config_path.parent)
-    data_dir.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
         config.write(f)
     print(f"Wrote CryoSwath path configuration to {config_path}.")
-    print(
-        "Set credentials in environment variables "
-        f"{_ESA_ENV_USER} and its corresponding password variable, "
-        "keyring (preferred for interactive setup), or as plaintext in "
-        "~/.netrc (fallback only). Legacy fallback uses config.ini [user] "
-        "name/password."
-    )
-    if sys.stdin.isatty():
-        answer = input("Configure keyring credentials now? [Y/n]: ").strip().lower()
-        if answer in {"", "y", "yes"}:
-            try:
-                keyring_user = update_keyring()
-                print(
-                    "Stored credentials for "
-                    f"{keyring_user} in keyring service {_ESA_AUTH_IDP_HOST}."
-                )
-            except Exception as err:
-                print(f"Could not configure keyring automatically: {err}")
-                answer = (
-                    input(
-                        "Create ~/.netrc fallback? This stores your password in "
-                        "plaintext. [y/N]: "
-                    )
-                    .strip()
-                    .lower()
-                )
-                if answer in {"y", "yes"}:
-                    try:
-                        netrc_path = update_netrc()
-                        print(f"Wrote plaintext credentials to {netrc_path}.")
-                    except Exception as netrc_err:
-                        print(
-                            f"Could not configure ~/.netrc automatically: {netrc_err}"
-                        )
     return str(config_path)
 
 
@@ -274,6 +237,7 @@ def init_project(
         base_dir=base_dir,
         force=force,
     )
+
 
 # Paths ##############################################################
 
@@ -365,10 +329,7 @@ def _config_base_dir(config_file: Path | None, cwd: Path) -> Path:
     """Return the directory against which relative config paths resolve."""
     if config_file is None:
         return cwd
-    if (
-        config_file.name == _LEGACY_CONFIG_FILE
-        and config_file.parent.name == "scripts"
-    ):
+    if config_file.name == _LEGACY_CONFIG_FILE and config_file.parent.name == "scripts":
         return config_file.parent.parent
     return config_file.parent
 
@@ -674,6 +635,7 @@ def discard_frontal_retreat_zone(
     elev: str = "ref_elev",
     mode: str = None,
     threshold: float = None,
+    diagnostic_hook: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> xr.Dataset:
     """Unsets values in zone of frontal retreat
 
@@ -699,6 +661,8 @@ def discard_frontal_retreat_zone(
             inferred from the presence of a ``time`` dimension.
         threshold (float, optional): Detection threshold. If ``None``,
             defaults depend on ``mode``.
+        diagnostic_hook (Callable, optional): Opt-in hook called with
+            diagnostic event names and payloads.
 
     Returns:
         xr.Dataset: Dataset with flagged retreat-zone values masked.
@@ -725,7 +689,6 @@ def discard_frontal_retreat_zone(
         return np.nanmedian(median_abs_deviation(data, 0, **kwargs))
 
     try:
-        # print(define_elev_band_edges(ds[elev]))
         bands = ds[main_var].groupby_bins(
             ds[elev], define_elev_band_edges(ds[elev])[:5], include_lowest=True
         )
@@ -742,13 +705,10 @@ def discard_frontal_retreat_zone(
         tmp = bands.reduce(median_mad, ..., nan_policy="omit")
     else:
         if ds[main_var].count() < 5 or not (bands.count() > 4).all():
-            # print(ds[main_var].count(), bands.count())
             return ds
         tmp = np.abs(bands.mean())
 
     if not (tmp > threshold).any():
-        # print(ds.basin_id.values.item(0), "too small.",
-        #       ds[elev].count().values.item(0), "cells in total")
         return ds
 
     # Temporary downstream workaround for the xarray IntervalIndex idxmax
@@ -761,10 +721,22 @@ def discard_frontal_retreat_zone(
     bin_dim = front_mask.dims[0]
     front_bin = front_mask[bin_dim].to_numpy()[front_positions[0]]
 
-    # # debugging:
-    # import matplotlib.pyplot as plt
-    # tmp.plot()
-    # plt.show()
+    if diagnostic_hook is not None:
+        diagnostic_hook(
+            "frontal_retreat_zone.threshold",
+            {
+                "ds": ds,
+                "replace_vars": replace_vars,
+                "main_var": main_var,
+                "elev": elev,
+                "mode": mode,
+                "threshold": threshold,
+                "band_values": tmp,
+                "front_mask": front_mask,
+                "front_bin": front_bin,
+                "diagnostic_context": {},
+            },
+        )
 
     if isinstance(replace_vars, str):
         replace_vars = [replace_vars]
@@ -910,23 +882,28 @@ def download_dem(
 
     Behavior
     --------
-    - Searches the PGC STAC catalog for arcticdem (v4.1) and rema (v2) 32 m collections covering the
-      provided bbox.
-    - Creates a Zarr store at Path(dem_path) / '<collection_id>.zarr'. Note: the function expects a
-      caller-defined variable `dem_path` to exist and be a valid filesystem path.
-    - Initializes the store on a fixed regular grid (x,y in [-3_500_000, 3_500_000]) with 100 m
-      spacing and chunking tuned for large tile writes.
+    - Searches the PGC STAC catalog for arcticdem (v4.1) and rema (v2)
+      32 m collections covering the provided bbox.
+    - Creates a Zarr store at Path(dem_path) / '<collection_id>.zarr'.
+      Note: the function expects a caller-defined variable `dem_path` to
+      exist and be a valid filesystem path.
+    - Initializes the store on a fixed regular grid
+      (x,y in [-3_500_000, 3_500_000]) with 100 m spacing and chunking
+      tuned for large tile writes.
     - For each discovered STAC item:
-      - Skips writing if the existing store already contains sufficient data for the item's bbox.
-      - Reads the item into an xarray.Dataset, reprojects/resamples it to match the store grid
-        (using rioxarray and rasterio Resampling), fills nodata values from the existing store, and
-        writes the result back into the Zarr store using region writes.
-    - Uses external libraries (stac client, rioxarray, xarray, shapely, numpy); network I/O and heavy
-      disk operations are performed.
+      - Skips writing if the existing store already contains sufficient
+        data for the item's bbox.
+      - Reads the item into an xarray.Dataset, reprojects/resamples it to
+        match the store grid (using rioxarray and rasterio Resampling),
+        fills nodata values from the existing store, and writes the result
+        back into the Zarr store using region writes.
+    - Uses external libraries (stac client, rioxarray, xarray, shapely,
+      numpy); network I/O and heavy disk operations are performed.
     """
     if provider == "PGC":
         catalog = _open_pgc_stac_catalog()
-        # transforming collection extent is difficult, maybe the code behind rioxr transform_bounds helps
+        # transforming collection extent is difficult, maybe the code behind
+        # rioxr transform_bounds helps
         limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
         items = _pgc_stac_items(catalog, gpd_obj)
 
@@ -1049,7 +1026,6 @@ def _download_earthdata_file(
     return str(dest_path)
 
 
-
 def _fetch_zenodo_record_metadata(timeout: int | float = 120) -> dict:
     """Fetch metadata for the latest CryoSwath auxiliary-data Zenodo record."""
     response = requests.get(_ZENODO_AUX_CONCEPT_RECORD_API_URL, timeout=timeout)
@@ -1060,7 +1036,11 @@ def _fetch_zenodo_record_metadata(timeout: int | float = 120) -> dict:
 def _zenodo_auxiliary_archive(record_metadata: dict) -> dict:
     """Return metadata for the single auxiliary-data archive in a Zenodo record."""
     files = record_metadata.get("files", [])
-    matches = [file_info for file_info in files if file_info.get("key") == _AUX_DATA_ARCHIVE_KEY]
+    matches = [
+        file_info
+        for file_info in files
+        if file_info.get("key") == _AUX_DATA_ARCHIVE_KEY
+    ]
     if not matches and len(files) == 1:
         matches = files
     if len(matches) != 1:
@@ -1096,7 +1076,8 @@ def _verify_checksum(path: str | Path, checksum: str) -> None:
     actual = digest.hexdigest()
     if actual.lower() != expected.lower():
         raise RuntimeError(
-            f"Checksum mismatch for {path}: expected {checksum}, got {algorithm}:{actual}."
+            f"Checksum mismatch for {path}: expected {checksum}, "
+            f"got {algorithm}:{actual}."
         )
 
 
@@ -1155,7 +1136,9 @@ def _extract_auxiliary_archive(
     archive_path = Path(archive_path)
     target_dir = Path(target_dir)
     _validate_zip_members(archive_path)
-    extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_path.stem}.", dir=target_dir))
+    extract_root = Path(
+        tempfile.mkdtemp(prefix=f".{archive_path.stem}.", dir=target_dir)
+    )
     try:
         shutil.unpack_archive(archive_path, extract_root, format="zip")
         _merge_extracted_tree(extract_root, target_dir, force=force)
@@ -1218,16 +1201,23 @@ def copy_tutorials(
 ) -> str:
     """Copy packaged tutorial notebooks into a project directory."""
     base_path = Path(base_dir).expanduser().resolve()
-    destination_path = Path(destination) if destination is not None else Path("tutorials")
+    destination_path = (
+        Path(destination) if destination is not None else Path("tutorials")
+    )
     if not destination_path.is_absolute():
         destination_path = base_path / destination_path
 
     resources = list(_tutorial_resources())
-    conflicts = [destination_path / resource.name for resource in resources if (destination_path / resource.name).exists()]
+    conflicts = [
+        destination_path / resource.name
+        for resource in resources
+        if (destination_path / resource.name).exists()
+    ]
     if conflicts and not force:
         conflict_list = ", ".join(str(path) for path in conflicts)
         raise FileExistsError(
-            f"Tutorial file(s) already exist: {conflict_list}. Use --force to overwrite."
+            f"Tutorial file(s) already exist: {conflict_list}. "
+            "Use --force to overwrite."
         )
 
     destination_path.mkdir(parents=True, exist_ok=True)
@@ -1850,7 +1840,8 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
                 download_default_dem(preferred_dem_filename)
             except Exception as err:
                 warnings.warn(
-                    f"Automatic DEM download failed for {preferred_dem_filename}: {err}",
+                    "Automatic DEM download failed for "
+                    f"{preferred_dem_filename}: {err}",
                     category=UserWarning,
                     stacklevel=2,
                 )
@@ -1865,7 +1856,8 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
         # raster_file_list = [file.name for file in dem_path.glob("*.tif")]
         if sys.stdin.isatty() and len(raster_file_list) > 0:
             print(
-                "DEM not found with default filename. Please select from the following:\n",
+                "DEM not found with default filename. "
+                "Please select from the following:\n",
                 ", ".join(raster_file_list),
                 flush=True,
             )
@@ -1889,6 +1881,7 @@ def interpolate_hypsometrically(
     return_coeffs: bool = False,
     fit_sanity_check: dict = None,
     fill_flag: tuple[str, int] = None,
+    diagnostic_hook: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> xr.Dataset:
     """Fills data gaps by hypsometrical interpolation
 
@@ -1939,6 +1932,8 @@ def interpolate_hypsometrically(
             steeper than the threshold the model is rejected.
         fill_flag (tuple[str, int], optional): Defaults to None. If provided,
             assigns `fill_flag[1]` to `ds[fill_flag[0]]` where filled.
+        diagnostic_hook (Callable, optional): Opt-in hook called with
+            diagnostic event names and payloads.
     Returns:
         xr.Dataset: Filled dataset.
     """
@@ -1948,15 +1943,6 @@ def interpolate_hypsometrically(
             return ds, coeffs
         else:
             return ds
-
-    def temporary_mask(mask):
-        if (
-            isinstance(mask, xr.DataArray)
-            and "stacked_x_y" in mask.dims
-            and "stacked_x_y" in mask.xindexes
-        ):
-            return mask.reset_index("stacked_x_y", drop=True)
-        return mask
 
     def design_matrix(x_vals):
         return np.hstack([x_vals, x_vals**2, x_vals**3])
@@ -1972,6 +1958,23 @@ def interpolate_hypsometrically(
                 p3 - mu * p2 + mu**2 * p1 - mu**3 * p0,
             ]
         )
+
+    def emit_diagnostic(name, payload):
+        if diagnostic_hook is None:
+            return
+        payload = {"diagnostic_context": {}, **payload}
+        diagnostic_hook(name, payload)
+
+    def fit_curve_payload(fit, scaler):
+        if diagnostic_hook is None:
+            return {}
+        fit_x_vals = np.linspace(float(ds[elev].min()), float(ds[elev].max()), 50)[
+            :, None
+        ]
+        return {
+            "fit_x_vals": fit_x_vals,
+            "fit_y_vals": fit.predict(design_matrix(scaler.transform(fit_x_vals))),
+        }
 
     if "time" in ds.dims and len(ds.time) > 1:
         # note: `groupby("time")` creates time depencies for all data_vars. this
@@ -1994,6 +1997,7 @@ def interpolate_hypsometrically(
             return_coeffs=return_coeffs,
             fit_sanity_check=fit_sanity_check,
             fill_flag=fill_flag,
+            diagnostic_hook=diagnostic_hook,
         )
         for var_name in no_time_dep:
             ds[var_name] = ds[var_name].isel(time=0)
@@ -2016,11 +2020,9 @@ def interpolate_hypsometrically(
     # abort if too little data (checking elevation and data validity).
     # necessary to prevent errors but also introduces data gaps
     if ds[elev].where(ds[error] > 0).count() < 24:
-        # print("too little data")
         return select_returns(return_coeffs, ds, np.array([np.nan] * 4))
     # also, abort if there isn't anything to do
     if not ds[error].isnull().any() and not outlier_replace:
-        # print("nothing to do")
         return select_returns(return_coeffs, ds, np.array([np.nan] * 4))
 
     # below might need fill_missing_coords. naively: should not be important
@@ -2089,15 +2091,21 @@ def interpolate_hypsometrically(
             np.abs(ds[main_var] - neighbour_mean) / neighbour_std
             - np.abs(ds[elev] - neighbour_elev_mean) / neighbour_elev_std
         ) > outlier_limit
-        # print(neighbour_count>=6, noise)
-        # # debugging plot:
-        # import matplotlib.pyplot as plt
-        # # noise.astype("int").unstack().sortby("x").sortby("y").T.plot(cmap="cool")
-        # # (np.abs(ds[main_var]-neighbour_mean)/neighbour_std - outlier_limit
-        # #  - np.abs(ds[elev]-neighbour_elev_mean)/neighbour_elev_std
-        # # ).unstack().sortby("x").sortby("y").T.plot(cmap="cool")
-        # neighbour_count.unstack().sortby("x").sortby("y").T.plot(cmap="cool")
-        # plt.show()
+        emit_diagnostic(
+            "hypsometry.outlier_neighbour_check",
+            {
+                "ds": ds,
+                "main_var": main_var,
+                "elev": elev,
+                "outlier_limit": outlier_limit,
+                "neighbour_mean": neighbour_mean,
+                "neighbour_std": neighbour_std,
+                "neighbour_count": neighbour_count,
+                "neighbour_elev_mean": neighbour_elev_mean,
+                "neighbour_elev_std": neighbour_elev_std,
+                "noise": noise,
+            },
+        )
         ds[main_var] = xr.where(
             ~np.logical_and(neighbour_count >= 6, noise),
             ds[main_var],
@@ -2124,7 +2132,7 @@ def interpolate_hypsometrically(
     )
     elev_bin_means = pd.Series(index=group_obj.groups)
     elev_bin_errs = pd.Series(index=group_obj.groups)
-    fill_mask = temporary_mask(-1 * xr.ones_like(ds[main_var]))
+    fill_mask = -1 * xr.ones_like(ds[main_var])
     for label, group in group_obj:
         if (group[weights] > 0).sum() < 6:
             continue
@@ -2145,33 +2153,21 @@ def interpolate_hypsometrically(
         to_be_filled_mask = xr.align(
             fill_mask, to_be_filled_mask, join="left", fill_value=-1
         )[1]
-        to_be_filled_mask = temporary_mask(to_be_filled_mask)
         fill_mask = xr.where(to_be_filled_mask != -1, to_be_filled_mask, fill_mask)
         if np.isnan(avg):
-            # print("calc weighted avg failed (probably insufficient data)", label)
             continue
-        # # debugging notice
-        # print("calc weighted avg succeeded", label)
-        # print("avg", avg, "_var", _var, "effective_samp_size", _ess,
-        #       "err", err)
         elev_bin_means.loc[label] = avg
         elev_bin_errs.loc[label] = err
     elev_bin_means.dropna(inplace=True)
     elev_bin_errs.dropna(inplace=True)
-    # print(elev_range_80pctl)
     if elev_bin_means.empty or len(elev_bin_means.index) < 5:
-        # print("data doesn't cover sufficient elevation bands", elev_bin_means)
         return select_returns(return_coeffs, ds, np.array([np.nan] * 4))
-    # print(elev_bin_means, elev_bin_errs)
     # fit polynomial
     try:
         x_vals = np.array([[idx.mid for idx in elev_bin_means.index]]).T
         scaler = preprocessing.StandardScaler().fit(
             x_vals, sample_weight=1 / elev_bin_errs.values
         )
-        # print(x_vals, scaler.transform(x_vals))
-        # print(x_vals, design_matrix(x_vals), elev_bin_means.values,
-        #       1/elev_bin_errs.values)
         # cov = covariance.EmpiricalCovariance().fit(design_matrix(scaler.transform(
         #       x_vals
         # ))).covariance_
@@ -2222,8 +2218,8 @@ def interpolate_hypsometrically(
             np.polyval(np.polyder(coeffs), scale(pivot)) * (scale(data) - scale(pivot))
         ).flatten() + const_extrapol(data, pivot)
 
-    extrap_below = temporary_mask(ds[elev] < elev_bin_means.index[0].mid)
-    extrap_above = temporary_mask(ds[elev] > elev_bin_means.index[-1].mid)
+    extrap_below = ds[elev] < elev_bin_means.index[0].mid
+    extrap_above = ds[elev] > elev_bin_means.index[-1].mid
     modelled_list = [
         xr.DataArray(
             fit.predict(design_matrix(scale(ds[elev]))),
@@ -2273,26 +2269,43 @@ def interpolate_hypsometrically(
     )
     modelled = xr.where(modelled > elev_bin_max, elev_bin_max, modelled)
     modelled = xr.where(modelled < elev_bin_min, elev_bin_min, modelled)
-    # # debugging plot:
-    # import matplotlib.pyplot as plt
-    # _, ax = plt.subplots(ncols=2, figsize=(18,6))
-    # ds[main_var].unstack().sortby("x").sortby("y").T.plot(ax=ax[0], robust=True,
-    #                                                       cmap="RdYlBu")
-    # modelled.unstack().sortby("x").sortby("y").T.plot(ax=ax[1], robust=True,
-    #                                                   cmap="RdYlBu")
-    # plt.show()
+    emit_diagnostic(
+        "hypsometry.model_preview",
+        {
+            "ds": ds,
+            "main_var": main_var,
+            "elev": elev,
+            "modelled": modelled,
+            "x_vals": x_vals,
+            "elev_bin_means": elev_bin_means,
+            "elev_bin_errs": elev_bin_errs,
+            "coeffs": coeffs,
+            "scaler": scaler,
+            **fit_curve_payload(fit, scaler),
+        },
+    )
     residuals = ds[main_var] - modelled
-    # # debugging plot:
-    # import matplotlib.pyplot as plt
-    # (np.abs(
-    #       neighbour_mean-modelled) - outlier_limit * neighbour_std.mean()
-    # ).unstack().sortby("x").sortby("y").T.plot(robust=True, cmap="RdYlBu")
-    # plt.show()
-    local_deviation = temporary_mask(
-        np.logical_and(
-            neighbour_count >= 6,
-            np.abs(neighbour_mean - modelled) > outlier_limit * neighbour_std.mean(),
-        )
+    local_deviation_metric = (
+        np.abs(neighbour_mean - modelled) - outlier_limit * neighbour_std.mean()
+    )
+    local_deviation = np.logical_and(
+        neighbour_count >= 6,
+        np.abs(neighbour_mean - modelled) > outlier_limit * neighbour_std.mean(),
+    )
+    emit_diagnostic(
+        "hypsometry.local_deviation",
+        {
+            "ds": ds,
+            "main_var": main_var,
+            "elev": elev,
+            "modelled": modelled,
+            "neighbour_mean": neighbour_mean,
+            "neighbour_std": neighbour_std,
+            "neighbour_count": neighbour_count,
+            "local_deviation": local_deviation,
+            "local_deviation_metric": local_deviation_metric,
+            "outlier_limit": outlier_limit,
+        },
     )
     modelled = xr.where(local_deviation, neighbour_mean, modelled)
     if outlier_replace:
@@ -2310,29 +2323,24 @@ def interpolate_hypsometrically(
         )
     else:
         fill_mask = ds[main_var].isnull()
-    # # debugging plot:
-    # import matplotlib.pyplot as plt
-    # plt.scatter(ds[elev].where(~fill_mask).values.flatten(),
-    #             ds[main_var].values.flatten())
-    # plt.scatter(ds[elev].where(fill_mask).values.flatten(),
-    #             ds[main_var].values.flatten(), ec="tab:purple", fc="none")
-    # plt.scatter(ds[elev].where(ds[main_var].isnull()).values.flatten(), modelled,
-    #             ec="tab:purple", fc="none")
-    # tmp_x_vals = np.linspace(ds[elev].min(), ds[elev].max(), 50)[:,None]
-    # plt.plot(tmp_x_vals, fit.predict(design_matrix(scaler.transform(tmp_x_vals))),
-    #          c="tab:orange")
-    # tmp = 2*neighbour_std.mean().values.item(0)
-    # plt.plot(tmp_x_vals,
-    #          fit.predict(design_matrix(scaler.transform(tmp_x_vals))) + tmp,
-    #          c="tab:gray", ls="dashed")
-    # plt.plot(tmp_x_vals,
-    #          fit.predict(design_matrix(scaler.transform(tmp_x_vals))) - tmp,
-    #          c="tab:gray", ls="dashed")
-    # plt.errorbar(x_vals, elev_bin_means, elev_bin_errs, ls="none", c="tab:red")
-    # if "time" in ds:
-    #     plt.title(ds.time.values)#.strftime("%Y-%m-%d")
-    # plt.ylim([ds[main_var].min(), ds[main_var].max()])
-    # plt.show()
+    emit_diagnostic(
+        "hypsometry.fit_fill_mask",
+        {
+            "ds": ds,
+            "main_var": main_var,
+            "elev": elev,
+            "fill_mask": fill_mask,
+            "modelled": modelled,
+            "x_vals": x_vals,
+            "elev_bin_means": elev_bin_means,
+            "elev_bin_errs": elev_bin_errs,
+            "neighbour_std": neighbour_std,
+            "residuals": residuals,
+            "coeffs": coeffs,
+            "scaler": scaler,
+            **fit_curve_payload(fit, scaler),
+        },
+    )
     ds[main_var] = xr.where(~fill_mask, ds[main_var], modelled, keep_attrs=True)
     if fill_flag is not None:
         ds[fill_flag[0]] = xr.where(
@@ -2347,7 +2355,6 @@ def interpolate_hypsometrically(
         RMSE *= _norm_isf_25
     elif "95" in error.lower():
         RMSE *= _norm_isf_025
-    # print(fill_mask)
     ds[error] = xr.where(~fill_mask, ds[error], RMSE, keep_attrs=True)
     ds[weights] = xr.where(~fill_mask, ds[weights], 0, keep_attrs=True)
     # # restore data gaps
@@ -2387,7 +2394,8 @@ def load_cs_full_file_names(
         return file_names
     if update != "full" and file_names.empty:
         warnings.warn(
-            f"No local file-name catalog found at {file_names_path}. Switching to full update.",
+            f"No local file-name catalog found at {file_names_path}. "
+            "Switching to full update.",
             category=UserWarning,
         )
         update = "full"
@@ -2704,8 +2712,7 @@ def _normalize_rgi_product(product: str) -> str:
     if product_upper == "G" or product_lower in {"glaciers", "basins"}:
         return "G"
     raise ValueError(
-        f'Argument product should be either "glaciers" or "complexes", '
-        f"not {product!r}."
+        f'Argument product should be either "glaciers" or "complexes", not {product!r}.'
     )
 
 
@@ -2833,9 +2840,7 @@ def download_rgi_o1region(
                 f"and source URL: {remote_url}"
             )
 
-        extract_root = Path(
-            tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir)
-        )
+        extract_root = Path(tempfile.mkdtemp(prefix=f".{archive_stem}.", dir=rgi_dir))
         try:
             shutil.unpack_archive(archive_path, extract_root, format="zip")
             nested_dir = extract_root / archive_stem
@@ -3011,10 +3016,15 @@ def load_glacier_outlines(
     """
     if isinstance(identifier, list):
         out = _load_basins(identifier)
-    elif len(identifier) == (7 + 4 + 1 + 2 + 5 + 4) and identifier.split("-")[:2] == [
-        "RGI2000",
-        "v4.1",
-    ] and identifier.split("-")[2] in ["C", "G"]:
+    elif (
+        len(identifier) == (7 + 4 + 1 + 2 + 5 + 4)
+        and identifier.split("-")[:2]
+        == [
+            "RGI2000",
+            "v4.1",
+        ]
+        and identifier.split("-")[2] in ["C", "G"]
+    ):
         out = _load_basins([identifier])
     # the pattern is rather allowing, set it to
     # "^(-?[012][0-9]){2}(_[a-z]+){1,5}(_[0-9][a-z][0-9]?)?$" to make it tight
@@ -3191,8 +3201,8 @@ def patched_xr_decode_tDel(num_timedeltas, units: str, time_unit="ns") -> np.nda
     numpy timedelta64 ["s", "ms", "us", "ns"] array.
     """
     from xarray.coding.times import (
-        _netcdf_to_numpy_timeunit,
         _check_timedelta_range,
+        _netcdf_to_numpy_timeunit,
         _numbers_to_timedelta,
         ravel,
         reshape,
@@ -3659,13 +3669,15 @@ def download_rgi_cli() -> None:
     _download_rgi_from_args(args)
 
 
-
 def _add_download_auxiliary_data_arguments(parser) -> None:
     """Add shared auxiliary-data download arguments to an argparse parser."""
     parser.add_argument(
         "--base-dir",
         default=".",
-        help="Project base directory used for config discovery (default: current directory).",
+        help=(
+            "Project base directory used for config discovery "
+            "(default: current directory)."
+        ),
     )
     parser.add_argument(
         "--force",

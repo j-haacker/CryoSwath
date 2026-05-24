@@ -16,13 +16,15 @@ viewed on GitHub.
 Available notebooks
 -------------------
 
-1. `tutorial__general_step-by-step.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__general_step-by-step.ipynb>`_
+1. `tutorial__diagnostic_hooks.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__diagnostic_hooks.ipynb>`_
+   Explore diagnostic hooks for introspecting hypsometric interpolation.
+2. `tutorial__general_step-by-step.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__general_step-by-step.ipynb>`_
    End-to-end walkthrough from L1b to gridded trend products.
-2. `tutorial__process_first_waveform.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb>`_
+3. `tutorial__process_first_waveform.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_waveform.ipynb>`_
    Inspect and understand a single waveform.
-3. `tutorial__process_first_swath.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb>`_
+4. `tutorial__process_first_swath.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__process_first_swath.ipynb>`_
    Process and visualize one track as swath data.
-4. `tutorial__poca.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__poca.ipynb>`_
+5. `tutorial__poca.ipynb <https://github.com/j-haacker/cryoswath/blob/main/cryoswath/tutorials/tutorial__poca.ipynb>`_
    Retrieve and inspect POCA solutions.
 
 These notebooks are intended as practical guides and reference examples
