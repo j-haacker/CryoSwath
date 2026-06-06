@@ -4,6 +4,8 @@ This changelog is intentionally lightweight. It records user-visible changes and
 
 ## Unreleased
 
+- Add STAC-backed CryoSat SARIn L1b track discovery with a richer local cache,
+  deterministic baseline/version selection, and legacy local-cache fallback.
 - Report PGC STAC API timeout and connectivity failures with a clear runtime error.
 - Avoid xarray MultiIndex deprecation warnings during hypsometric void filling.
 - Allow `fill_voids` to use existing basin/group IDs without requiring basin shape files.

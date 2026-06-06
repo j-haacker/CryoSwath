@@ -33,8 +33,9 @@ from waveform-level processing to gridded elevation products.
   `name/password` (temporary fallback).
 - Automatic RGI downloads from NSIDC require NASA Earthdata credentials;
   see the prerequisites docs for setup details.
-- L1b file downloads are HTTPS-first. FTP remains a fallback path and is
-  still used for metadata refresh flows (catalog/track updates).
+- L1b file downloads are HTTPS-first. CryoSat SARIn L1b track discovery uses
+  a local cache when possible and can extend it from ESA STAC metadata; FTP
+  remains a fallback path for legacy metadata and data access.
 - Anonymous FTP login is no longer supported.
 - Install `xarray` and `zarr` together to avoid version mismatches.
 

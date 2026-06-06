@@ -31,6 +31,7 @@ __all__ = [
     "interpolate_hypsometrically",
     "load_cs_full_file_names",
     "load_cs_ground_tracks",
+    "load_cs_l1b_track_catalog",
     "load_glacier_outlines",
     "merge_l2_cache",
     "nan_unique",
@@ -93,6 +94,7 @@ from contextlib import contextmanager
 from importlib import resources as importlib_resources
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Union
+from urllib.parse import parse_qs, unquote, urlparse
 
 import geopandas as gpd
 import h5py
@@ -132,6 +134,16 @@ from cryoswath import gis
 
 _PGC_STAC_API_URL = "https://stac.pgc.umn.edu/api/v1/"
 _PGC_STAC_TIMEOUT = (10, 60)
+_CRYOSAT_STAC_PROVIDERS = (
+    ("eocat", "https://eocat.esa.int/eo-catalogue/search"),
+    ("maap", "https://catalog.maap.eo.esa.int/catalogue/search"),
+)
+_CRYOSAT_STAC_TIMEOUT = (10, 60)
+_CRYOSAT_STAC_LIMIT = 500
+_CRYOSAT_STAC_PRODUCT_TYPE = "SIR_SIN_1B"
+_CRYOSAT_STAC_SENSOR_MODE = "SARIN"
+_CRYOSAT_SUPPORTED_BASELINES = ("D", "E")
+_CRYOSAT_L1B_TRACK_CATALOG_NAME = "CryoSat-2_SARIn_L1B_track_catalog.feather"
 
 
 def _add_create_config_arguments(parser) -> None:
@@ -443,6 +455,7 @@ aux_path = _resolved_paths["aux"]
 dem_path = _resolved_paths["dem"]
 rgi_path = str(_resolved_paths["rgi"])
 cs_ground_tracks_path = str(_resolved_paths["cs_ground_tracks"])
+cs_l1b_track_catalog_path = str(aux_path / _CRYOSAT_L1B_TRACK_CATALOG_NAME)
 
 _ZENODO_AUX_CONCEPT_RECORD_API_URL = "https://zenodo.org/api/records/20241526"
 _AUX_DATA_ARCHIVE_KEY = "CryoSwath-aux-data.zip"
@@ -453,6 +466,7 @@ __all__.extend(
     [  # pathes
         "aux_path",
         "cs_ground_tracks_path",
+        "cs_l1b_track_catalog_path",
         "data_path",
         "dem_path",
         "l1b_path",
@@ -2365,6 +2379,427 @@ def interpolate_hypsometrically(
     )
 
 
+def _empty_cs_l1b_track_catalog() -> gpd.GeoDataFrame:
+    """Return an empty STAC-derived CryoSat SARIn L1B track catalog."""
+    return gpd.GeoDataFrame(
+        columns=[
+            "item_id",
+            "filename",
+            "href",
+            "product_type",
+            "stage",
+            "baseline",
+            "version_number",
+            "product_version",
+            "end_datetime",
+            "processing_datetime",
+            "published",
+            "provider",
+            "supported",
+            "geometry",
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).rename_axis("start_datetime")
+
+
+def _as_naive_timestamp(value) -> pd.Timestamp:
+    """Return a timezone-naive pandas timestamp."""
+    timestamp = pd.Timestamp(value)
+    if timestamp.tz is not None:
+        timestamp = timestamp.tz_convert(None)
+    return timestamp
+
+
+def _format_stac_timestamp(value) -> str:
+    """Format a timestamp for ESA STAC query parameters."""
+    return _as_naive_timestamp(value).isoformat(timespec="seconds") + "Z"
+
+
+def _stac_datetime_range(start_datetime, end_datetime) -> str:
+    start = _as_naive_timestamp(start_datetime)
+    end = _as_naive_timestamp(end_datetime)
+    if end <= start:
+        end = start + pd.Timedelta(seconds=1)
+    return f"{_format_stac_timestamp(start)}/{_format_stac_timestamp(end)}"
+
+
+def _current_data_query_end(end_datetime: pd.Timestamp) -> pd.Timestamp:
+    """Do not query STAC beyond the current UTC time."""
+    now = _as_naive_timestamp(pd.Timestamp.utcnow())
+    return min(_as_naive_timestamp(end_datetime), now)
+
+
+def _extract_stac_l1b_filename(item_id: str, href: str | None) -> str:
+    """Return the NetCDF filename advertised by a STAC item."""
+    if href:
+        parsed = urlparse(href)
+        file_query = parse_qs(parsed.query).get("file")
+        if file_query:
+            return PurePosixPath(unquote(file_query[0])).name
+        return PurePosixPath(unquote(parsed.path)).name
+    return f"{item_id}.nc"
+
+
+def _cryosat_stage_from_filename(filename: str) -> str:
+    """Return the CryoSat product stage token from an ESA filename."""
+    if filename.startswith("CS_") and len(filename) >= 7:
+        return filename[3:7]
+    if "_LTA__" in filename:
+        return "LTA_"
+    if "_OFFL_" in filename:
+        return "OFFL"
+    return ""
+
+
+def _cryosat_version_parts(version: str | None) -> tuple[str, int]:
+    """Split an ESA product version such as E001 into baseline and number."""
+    if not version:
+        return "", -1
+    match = re.fullmatch(r"([A-Za-z])(\d+)", str(version))
+    if match is None:
+        return "", -1
+    return match.group(1).upper(), int(match.group(2))
+
+
+def _cryosat_l1b_product_sort_key(name: str) -> tuple[int, int, int, str]:
+    """Return deterministic preference key for CryoSat SARIn L1B names."""
+    name = str(name).removesuffix(".nc")
+    version_match = re.search(r"_([A-Za-z]\d+)$", name)
+    baseline, version_number = _cryosat_version_parts(
+        version_match.group(1) if version_match else None
+    )
+    baseline_rank = (
+        _CRYOSAT_SUPPORTED_BASELINES.index(baseline)
+        if baseline in _CRYOSAT_SUPPORTED_BASELINES
+        else -1
+    )
+    stage_rank = {"OFFL": 0, "LTA_": 1}.get(_cryosat_stage_from_filename(name), -1)
+    return baseline_rank, version_number, stage_rank, name
+
+
+def _preferred_cryosat_l1b_name(*names: str) -> str:
+    """Return the preferred CryoSat SARIn L1B product name."""
+    return max((str(name) for name in names if name), key=_cryosat_l1b_product_sort_key)
+
+
+def _cryosat_item_times(item: dict[str, Any], item_id: str) -> tuple[pd.Timestamp, Any]:
+    properties = item.get("properties", {})
+    start = properties.get("start_datetime") or properties.get("datetime")
+    end = properties.get("end_datetime")
+    if start is None:
+        match = re.search(r"_(\d{8}T\d{6})_(\d{8}T\d{6})_", item_id)
+        if match is None:
+            raise ValueError(
+                f"Could not determine sensing time for STAC item {item_id}."
+            )
+        start, end = match.groups()
+    return _as_naive_timestamp(start), (_as_naive_timestamp(end) if end else pd.NaT)
+
+
+def _cryosat_item_geometry(item: dict[str, Any]):
+    geometry = item.get("geometry") or {}
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if geometry_type == "LineString" and coordinates:
+        return shapely.LineString(coordinates)
+    if geometry_type == "MultiLineString" and coordinates:
+        return shapely.MultiLineString(coordinates)
+    raise ValueError(
+        f"Unsupported STAC geometry type for CryoSat track: {geometry_type}"
+    )
+
+
+def _stac_items_to_l1b_track_catalog(
+    items: list[dict[str, Any]], provider: str
+) -> gpd.GeoDataFrame:
+    """Convert ESA STAC features into a rich CryoSat SARIn L1B catalog."""
+    rows = []
+    for item in items:
+        item_id = item.get("id")
+        if not item_id:
+            continue
+        properties = item.get("properties", {})
+        product_type = properties.get("product:type")
+        if product_type != _CRYOSAT_STAC_PRODUCT_TYPE:
+            continue
+        href = item.get("assets", {}).get("enclosure", {}).get("href")
+        filename = _extract_stac_l1b_filename(item_id, href)
+        start_datetime, end_datetime = _cryosat_item_times(item, item_id)
+        product_version = properties.get("version")
+        baseline, version_number = _cryosat_version_parts(product_version)
+        rows.append(
+            {
+                "start_datetime": start_datetime,
+                "item_id": item_id,
+                "filename": filename,
+                "href": href,
+                "product_type": product_type,
+                "stage": _cryosat_stage_from_filename(filename),
+                "baseline": baseline,
+                "version_number": version_number,
+                "product_version": product_version,
+                "end_datetime": end_datetime,
+                "processing_datetime": pd.to_datetime(
+                    properties.get("processing:datetime")
+                ),
+                "published": pd.to_datetime(
+                    properties.get("published") or properties.get("time:published")
+                ),
+                "provider": provider,
+                "supported": baseline in _CRYOSAT_SUPPORTED_BASELINES,
+                "geometry": _cryosat_item_geometry(item),
+            }
+        )
+    if not rows:
+        return _empty_cs_l1b_track_catalog()
+    catalog = gpd.GeoDataFrame(rows, geometry="geometry", crs=4326)
+    catalog.set_index("start_datetime", inplace=True)
+    return _canonical_l1b_track_catalog(catalog)
+
+
+def _canonical_l1b_track_catalog(catalog: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Return one supported product per track timestamp."""
+    if catalog.empty:
+        return _empty_cs_l1b_track_catalog()
+    catalog = catalog.copy()
+    if catalog.crs is None:
+        catalog = catalog.set_crs(4326)
+    catalog.index = pd.to_datetime(catalog.index)
+    catalog.sort_index(inplace=True)
+    product_mask = catalog["product_type"] == _CRYOSAT_STAC_PRODUCT_TYPE
+    supported_mask = catalog["supported"].astype("boolean").fillna(False)
+    unsupported = catalog[product_mask & ~supported_mask]
+    if not unsupported.empty:
+        baselines = ", ".join(
+            sorted(str(value) for value in unsupported["baseline"].dropna().unique())
+        )
+        warnings.warn(
+            "Excluding "
+            f"{len(unsupported)} STAC CryoSat SIR_SIN_1B product(s) with "
+            f"unsupported baseline(s): {baselines or 'unknown'}.",
+            category=UserWarning,
+            stacklevel=2,
+        )
+    catalog = catalog[product_mask & supported_mask]
+    if catalog.empty:
+        return _empty_cs_l1b_track_catalog()
+
+    sort_frame = catalog.reset_index()
+    baseline_rank = {
+        baseline: rank for rank, baseline in enumerate(_CRYOSAT_SUPPORTED_BASELINES)
+    }
+    sort_frame["_baseline_rank"] = sort_frame["baseline"].map(baseline_rank).fillna(-1)
+    sort_frame["_stage_rank"] = sort_frame["stage"].map({"OFFL": 0, "LTA_": 1})
+    sort_frame["_stage_rank"] = sort_frame["_stage_rank"].fillna(-1)
+    sort_frame["_version_rank"] = pd.to_numeric(
+        sort_frame["version_number"], errors="coerce"
+    ).fillna(-1)
+    for column in ["processing_datetime", "published"]:
+        sort_frame[column] = pd.to_datetime(sort_frame[column], errors="coerce")
+    sort_frame.sort_values(
+        [
+            "start_datetime",
+            "_baseline_rank",
+            "_version_rank",
+            "_stage_rank",
+            "processing_datetime",
+            "published",
+            "item_id",
+        ],
+        inplace=True,
+    )
+    sort_frame.drop_duplicates("start_datetime", keep="last", inplace=True)
+    sort_frame.drop(
+        columns=["_baseline_rank", "_version_rank", "_stage_rank"], inplace=True
+    )
+    canonical = gpd.GeoDataFrame(sort_frame, geometry="geometry", crs=4326)
+    canonical.set_index("start_datetime", inplace=True)
+    canonical.sort_index(inplace=True)
+    return canonical
+
+
+def _read_cs_l1b_track_catalog() -> gpd.GeoDataFrame:
+    """Read the STAC-derived CryoSat SARIn L1B catalog from disk."""
+    path = Path(cs_l1b_track_catalog_path)
+    if not path.is_file():
+        return _empty_cs_l1b_track_catalog()
+    catalog = gpd.read_feather(path)
+    if "start_datetime" in catalog.columns:
+        catalog.set_index("start_datetime", inplace=True)
+    elif "index" in catalog.columns:
+        catalog.set_index("index", inplace=True)
+    else:
+        catalog.index = pd.to_datetime(catalog.index)
+    catalog.index = pd.to_datetime(catalog.index)
+    catalog.index.name = "start_datetime"
+    for column in ["end_datetime", "processing_datetime", "published"]:
+        if column in catalog.columns:
+            catalog[column] = pd.to_datetime(catalog[column], errors="coerce")
+    if "supported" in catalog.columns:
+        catalog["supported"] = catalog["supported"].fillna(False).astype(bool)
+    if catalog.crs is None:
+        catalog = catalog.set_crs(4326)
+    return _canonical_l1b_track_catalog(catalog)
+
+
+def _save_cs_l1b_track_catalog(catalog: gpd.GeoDataFrame) -> None:
+    """Atomically write the STAC-derived CryoSat SARIn L1B catalog."""
+    path = Path(cs_l1b_track_catalog_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    catalog = _canonical_l1b_track_catalog(catalog)
+    output = catalog.reset_index()
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".feather", prefix=f".{path.stem}.", dir=path.parent, delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        output.to_feather(tmp_path)
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
+def _stac_search_features(url: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fetch all STAC features for a search request, following pagination."""
+    features = []
+    next_url = url
+    next_params = params
+    while next_url:
+        response = requests.get(
+            next_url, params=next_params, timeout=_CRYOSAT_STAC_TIMEOUT
+        )
+        response.raise_for_status()
+        payload = response.json()
+        features.extend(payload.get("features", []))
+        next_links = [
+            link.get("href")
+            for link in payload.get("links", [])
+            if link.get("rel") == "next" and link.get("href")
+        ]
+        next_url = next_links[0] if next_links else None
+        next_params = None
+    return features
+
+
+def _query_stac_l1b_track_catalog(
+    start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
+) -> gpd.GeoDataFrame:
+    """Query ESA STAC providers for CryoSat SARIn L1B track metadata."""
+    params = {
+        "collections": "CryoSat.products",
+        "datetime": _stac_datetime_range(start_datetime, end_datetime),
+        "productType": _CRYOSAT_STAC_PRODUCT_TYPE,
+        "sensorMode": _CRYOSAT_STAC_SENSOR_MODE,
+        "limit": str(_CRYOSAT_STAC_LIMIT),
+    }
+    errors = []
+    for provider, url in _CRYOSAT_STAC_PROVIDERS:
+        try:
+            features = _stac_search_features(url, params)
+        except Exception as err:
+            errors.append(f"{provider}: {err}")
+            continue
+        return _stac_items_to_l1b_track_catalog(features, provider)
+    raise RuntimeError("Could not query CryoSat STAC providers. " + "; ".join(errors))
+
+
+def _refresh_cs_l1b_track_catalog(
+    start_datetime: pd.Timestamp,
+    end_datetime: pd.Timestamp,
+    *,
+    replace: bool = False,
+) -> gpd.GeoDataFrame:
+    """Refresh the local STAC-derived CryoSat SARIn L1B catalog."""
+    query_end = _current_data_query_end(end_datetime)
+    if query_end < _as_naive_timestamp(start_datetime):
+        return _read_cs_l1b_track_catalog()
+    new_catalog = _query_stac_l1b_track_catalog(start_datetime, query_end)
+    if replace:
+        merged = new_catalog
+    else:
+        current_catalog = _read_cs_l1b_track_catalog()
+        if current_catalog.empty:
+            merged = new_catalog
+        elif new_catalog.empty:
+            merged = current_catalog
+        else:
+            merged = pd.concat([current_catalog, new_catalog])
+            merged = gpd.GeoDataFrame(merged, geometry="geometry", crs=4326)
+    merged = _canonical_l1b_track_catalog(merged)
+    if not new_catalog.empty or replace:
+        _save_cs_l1b_track_catalog(merged)
+    return merged
+
+
+def load_cs_l1b_track_catalog(
+    update: Literal["no", "regular", "full"] = "no",
+) -> gpd.GeoDataFrame:
+    """Load the STAC-derived CryoSat SARIn L1B track metadata catalog."""
+    if update == "no":
+        return _read_cs_l1b_track_catalog()
+    if update not in {"regular", "full"}:
+        raise ValueError(
+            'Allowed values for `update` are "full", "regular", or "no". '
+            + f'You set it to "{update}".'
+        )
+    current_catalog = _read_cs_l1b_track_catalog()
+    end_datetime = _as_naive_timestamp(pd.Timestamp.utcnow())
+    if update == "full":
+        return _refresh_cs_l1b_track_catalog(
+            pd.Timestamp("2010-07-01"), end_datetime, replace=update == "full"
+        )
+    if current_catalog.empty and Path(cs_ground_tracks_path).is_file():
+        legacy_tracks = gpd.read_feather(cs_ground_tracks_path)
+        if "index" in legacy_tracks.columns:
+            legacy_tracks.set_index("index", inplace=True)
+        legacy_tracks.index = pd.to_datetime(legacy_tracks.index)
+        if not legacy_tracks.empty:
+            start_datetime = legacy_tracks.index.max() + pd.Timedelta(seconds=1)
+            return _refresh_cs_l1b_track_catalog(start_datetime, end_datetime)
+    if current_catalog.empty:
+        return _refresh_cs_l1b_track_catalog(pd.Timestamp("2010-07-01"), end_datetime)
+    start_datetime = current_catalog.index.max() + pd.Timedelta(seconds=1)
+    return _refresh_cs_l1b_track_catalog(start_datetime, end_datetime)
+
+
+def _stac_file_names_series() -> pd.Series:
+    """Return filename stems indexed by track time from the rich STAC cache."""
+    catalog = _read_cs_l1b_track_catalog()
+    if catalog.empty:
+        return pd.Series(dtype="object")
+    return catalog["filename"].str.removesuffix(".nc").rename(None).sort_index()
+
+
+def _combine_ground_track_caches(
+    legacy_tracks: gpd.GeoDataFrame | gpd.GeoSeries,
+    stac_tracks: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Combine legacy and STAC-derived track caches, preferring STAC rows."""
+    if not isinstance(legacy_tracks, gpd.GeoDataFrame):
+        legacy_tracks = gpd.GeoDataFrame(geometry=legacy_tracks, crs=4326)
+    if legacy_tracks.empty and stac_tracks.empty:
+        return _empty_cs_l1b_track_catalog()[["geometry"]]
+    if legacy_tracks.crs is None:
+        legacy_tracks = legacy_tracks.set_crs(4326)
+    if stac_tracks.crs is None and not stac_tracks.empty:
+        stac_tracks = stac_tracks.set_crs(4326)
+    if stac_tracks.empty:
+        combined = legacy_tracks.copy()
+    elif legacy_tracks.empty:
+        combined = stac_tracks.copy()
+    else:
+        legacy_tracks = legacy_tracks[~legacy_tracks.index.isin(stac_tracks.index)]
+        combined = pd.concat([legacy_tracks, stac_tracks], sort=False)
+        combined = gpd.GeoDataFrame(combined, geometry="geometry", crs=4326)
+    combined.index = pd.to_datetime(combined.index)
+    combined.sort_index(inplace=True)
+    return combined
+
+
 def load_cs_full_file_names(
     update: Literal["no", "quick", "regular", "full"] = "no",
 ) -> pd.Series:
@@ -2390,6 +2825,10 @@ def load_cs_full_file_names(
         file_names = pd.read_pickle(file_names_path).sort_index()
     else:
         file_names = pd.Series(dtype="object")
+    stac_file_names = _stac_file_names_series()
+    if not stac_file_names.empty:
+        file_names = pd.concat([file_names, stac_file_names]).sort_index()
+        file_names = file_names[~file_names.index.duplicated(keep="last")]
     if update == "no":
         return file_names
     if update != "full" and file_names.empty:
@@ -2454,16 +2893,14 @@ def load_cs_full_file_names(
                     )
                     for remote_file in remote_files:
                         remote_idx = pd.to_datetime(remote_file[19:34])
-                        if (
-                            update == "regular"
-                            and remote_idx in file_names.index
-                            and (
-                                file_names.loc[remote_idx][3:7] == "LTA_"
-                                or remote_file[3:7] == "OFFL"
+                        remote_name = remote_file[:-3]
+                        if update == "regular" and remote_idx in file_names.index:
+                            remote_name = _preferred_cryosat_l1b_name(
+                                file_names.loc[remote_idx], remote_name
                             )
-                        ):
-                            continue
-                        file_names.loc[remote_idx] = remote_file[:-3]
+                            if remote_name == file_names.loc[remote_idx]:
+                                continue
+                        file_names.loc[remote_idx] = remote_name
             except Exception:
                 if month is None:
                     location = f"/SIR_SIN_L1/{year}"
@@ -2471,6 +2908,10 @@ def load_cs_full_file_names(
                     location = f"/SIR_SIN_L1/{year}/{month}"
                 warnings.warn(f"Error occurred in remote directory {location}.")
 
+    stac_file_names = _stac_file_names_series()
+    if not stac_file_names.empty:
+        file_names = pd.concat([file_names, stac_file_names]).sort_index()
+        file_names = file_names[~file_names.index.duplicated(keep="last")]
     file_names.to_pickle(file_names_path)
     print("updated track name list")
     return file_names
@@ -2484,6 +2925,7 @@ def load_cs_ground_tracks(
     buffer_period_by: relativedelta = None,
     buffer_region_by: float = None,
     update: Literal["no", "regular", "full"] = "no",
+    source: Literal["auto", "local", "stac"] = "auto",
     n_threads: int = 8,
 ) -> gpd.GeoDataFrame:
     """Read the GeoDataFrame of CryoSat-2 tracks from disk.
@@ -2513,6 +2955,11 @@ def load_cs_ground_tracks(
             update frequently with `update="regular"`. If you believe tracks are
             missing for some reason, choose `update="full"` (be aware this takes
             a while). Defaults to "no".
+        source (str, optional): Track discovery source. "auto" uses local
+            caches when they cover the requested period and queries ESA STAC
+            for missing tail coverage. "local" never contacts STAC. "stac"
+            forces a STAC query and updates the local STAC cache. Defaults to
+            "auto".
         n_threads (int, optional): Number of parallel ftp connections. If you
             choose too many, ESA will refuse the connection. Defaults to 8.
 
@@ -2528,6 +2975,11 @@ def load_cs_ground_tracks(
     start_datetime, end_datetime = pd.to_datetime([start_datetime, end_datetime])
     if advance_end:
         end_datetime = end_datetime + pd.DateOffset(months=1)
+    if source not in {"auto", "local", "stac"}:
+        raise ValueError(
+            'Allowed values for `source` are "auto", "local", or "stac". '
+            + f'You set it to "{source}".'
+        )
     if os.path.isfile(cs_ground_tracks_path):
         cs_tracks = gpd.read_feather(cs_ground_tracks_path)
         if "index" in cs_tracks.columns:
@@ -2536,18 +2988,62 @@ def load_cs_ground_tracks(
         cs_tracks.sort_index(inplace=True)
     else:
         cs_tracks = gpd.GeoSeries()
-        update = "full"
-    if update == "full":
-        last_idx = pd.Timestamp("2010-07-01")
-    # ! should be consistent with load names -> rather call it "quick"?
-    elif update == "regular":
-        last_idx = pd.to_datetime(cs_tracks.index[-1])
-    elif update != "no":
+        if source == "local":
+            update = "full"
+    if update not in {"no", "regular", "full"}:
         raise ValueError(
             'Allowed values for `update` are "full". "regular". or "no". '
             + f'You set it to "{update}".'
         )
-    if update != "no":
+
+    stac_tracks = _read_cs_l1b_track_catalog()
+    if source in {"auto", "stac"}:
+        local_tracks = _combine_ground_track_caches(cs_tracks, stac_tracks)
+        query_end = _current_data_query_end(end_datetime)
+        local_latest = local_tracks.index.max() if not local_tracks.empty else None
+        refresh_start = None
+        replace_stac_cache = False
+        if source == "stac":
+            refresh_start = start_datetime
+            replace_stac_cache = update == "full"
+        elif update == "full":
+            refresh_start = pd.Timestamp("2010-07-01")
+            replace_stac_cache = True
+        elif update == "regular":
+            refresh_start = (
+                start_datetime
+                if local_latest is None
+                else local_latest + pd.Timedelta(seconds=1)
+            )
+        elif local_latest is None or local_latest < query_end:
+            refresh_start = (
+                start_datetime
+                if local_latest is None
+                else max(start_datetime, local_latest + pd.Timedelta(seconds=1))
+            )
+        if refresh_start is not None and refresh_start <= query_end:
+            try:
+                stac_tracks = _refresh_cs_l1b_track_catalog(
+                    refresh_start, query_end, replace=replace_stac_cache
+                )
+                update = "no"
+            except Exception as err:
+                if source == "stac":
+                    raise
+                warnings.warn(
+                    f"Could not refresh CryoSat tracks via STAC: {err}. "
+                    "Using local track caches.",
+                    category=UserWarning,
+                    stacklevel=2,
+                )
+
+    if source == "local" and update == "regular" and len(cs_tracks) == 0:
+        update = "full"
+    if source == "local" and update == "full":
+        last_idx = pd.Timestamp("2010-07-01")
+    elif source == "local" and update == "regular":
+        last_idx = pd.to_datetime(cs_tracks.index[-1])
+    if source == "local" and update != "no":
         # the next two function have only a local purpose.
         def save_current_track_list(new_track_series: gpd.GeoSeries):
             """saves the tracklist; backing up the old if older than 5 days."""
@@ -2676,7 +3172,8 @@ def load_cs_ground_tracks(
             last_idx = last_idx + pd.DateOffset(months=1)
             print("switching to", last_idx.strftime("%Y/%m"))
 
-    # the local collection has been updated. now, return the tracks
+    # the local collections have been updated. now, return the tracks
+    cs_tracks = _combine_ground_track_caches(cs_tracks, _read_cs_l1b_track_catalog())
     if buffer_period_by is not None:
         start_datetime = start_datetime - buffer_period_by
         end_datetime = end_datetime + buffer_period_by
@@ -3939,8 +4436,9 @@ def update_email(email: str = None):
 
 def update_track_database() -> None:
     """Refresh cached ground-track and filename lookup tables."""
-    load_cs_ground_tracks(update="regular")
-    load_cs_full_file_names(update="regular")
+    load_cs_ground_tracks(update="regular", source="auto")
+    file_names = load_cs_full_file_names(update="no")
+    file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
 
 
 def update_track_database_cli() -> None:
