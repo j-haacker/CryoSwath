@@ -682,7 +682,7 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             blacklist=["swath_or_poca"],
             whitelist=["crs", "max_elev_diff"],
         )
-        # print("debug 1", idx, flush=True)
+        processed = False
         try:
             tmp = l1b.from_id(cs_time_to_id(idx), **l1b_kwargs)
             # print("debug 2", idx, flush=True)
@@ -699,6 +699,7 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             swath_poca_tuple = l1b.to_l2(tmp, swath_or_poca="both", **to_l2_kwargs)
             # print("debug 4", idx, flush=True)
             tmp.close()
+            processed = True
         except Exception as err:
             if isinstance(err, KeyboardInterrupt):
                 raise
@@ -716,27 +717,36 @@ def process_track(idx, reprocess, l2_paths, save_or_return, current_subdir, kwar
             # attempted the next time again. I consider this safer and the
             # performance loss is on the order of seconds. however, there might be
             # better options
-            try:
-                swath_poca_tuple[0].to_feather(
-                    os.path.join(
-                        l2_swath_path,
-                        current_subdir,
-                        cs_full_file_names.loc[idx] + ".feather",
+            swath_path = Path(
+                l2_swath_path,
+                current_subdir,
+                cs_full_file_names.loc[idx] + ".feather",
+            )
+            poca_path = Path(
+                l2_poca_path,
+                current_subdir,
+                cs_full_file_names.loc[idx] + ".feather",
+            )
+            swath_path.parent.mkdir(parents=True, exist_ok=True)
+            poca_path.parent.mkdir(parents=True, exist_ok=True)
+
+            wrote_any = False
+            if processed and not swath_poca_tuple[0].empty:
+                swath_poca_tuple[0].to_feather(swath_path)
+                wrote_any = True
+            if processed and not swath_poca_tuple[1].empty:
+                swath_poca_tuple[1].to_feather(poca_path)
+                wrote_any = True
+
+            if not wrote_any:
+                if swath_poca_tuple[0].empty and swath_poca_tuple[1].empty:
+                    warnings.warn(
+                        f"No L2 output for {cs_time_to_id(idx)}; skipping empty cache files."
                     )
-                )
-                swath_poca_tuple[1].to_feather(
-                    os.path.join(
-                        l2_poca_path,
-                        current_subdir,
-                        cs_full_file_names.loc[idx] + ".feather",
-                    )
-                )
-            except ValueError:
-                if swath_poca_tuple[0].empty:
-                    which = "Neither POCA nor swath"
-                else:
-                    which = "No POCA"
-                warnings.warn(f"{which} points for {cs_time_to_id(idx)}.")
+                elif swath_poca_tuple[0].empty:
+                    warnings.warn(f"No swath points for {cs_time_to_id(idx)}.")
+                elif swath_poca_tuple[1].empty:
+                    warnings.warn(f"No POCA points for {cs_time_to_id(idx)}.")
     if save_or_return != "save":
         return swath_poca_tuple
     else:  # not sure that its necessary
