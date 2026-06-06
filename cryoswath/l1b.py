@@ -64,6 +64,8 @@ from cryoswath.l2 import from_processed_l1b as l2_from_processed_l1b
 from cryoswath.misc import (
     Ku_band_freq,
     WGS84_ellpsoid,
+    _cryosat_l1b_product_sort_key,
+    _preferred_cryosat_l1b_name,
     _resolve_esa_ftp_credentials,
     antenna_baseline,
     cs_time_to_id,
@@ -74,6 +76,7 @@ from cryoswath.misc import (
     l1b_path,
     load_cs_full_file_names,
     load_cs_ground_tracks,
+    load_cs_l1b_track_catalog,
     load_glacier_outlines,
     monkeypatch,
     nan_unique,
@@ -1273,7 +1276,7 @@ def _validate_netcdf_payload(path: str | Path) -> None:
 
 
 def _l1b_product_name_candidates(remote_file: str) -> list[str]:
-    """Return preferred remote filenames: LTA first, then OFFL."""
+    """Return preferred remote filename candidates."""
     lta_candidate = remote_file.replace("OFFL", "LTA_")
     offl_candidate = remote_file.replace("LTA_", "OFFL")
     candidates = []
@@ -1282,20 +1285,22 @@ def _l1b_product_name_candidates(remote_file: str) -> list[str]:
             candidates.append(candidate)
     if remote_file not in candidates:
         candidates.append(remote_file)
-    return candidates
+    return sorted(
+        candidates,
+        key=_cryosat_l1b_product_sort_key,
+        reverse=True,
+    )
 
 
 def _select_lta_then_offl_for_track(track_id: str, remote_files: list[str]) -> str:
-    """Select LTA product for ``track_id`` if available, otherwise OFFL."""
+    """Select the preferred available product for ``track_id``."""
     matching_files = [
         name
         for name in remote_files
         if name.endswith(".nc") and len(name) >= 34 and name[19:34] == track_id
     ]
-    for preferred_token in ("LTA_", "OFFL"):
-        preferred = sorted(name for name in matching_files if preferred_token in name)
-        if preferred:
-            return preferred[0]
+    if matching_files:
+        return _preferred_cryosat_l1b_name(*matching_files)
     raise FileNotFoundError(f"No LTA_ or OFFL product found for track id {track_id}.")
 
 
@@ -1379,10 +1384,21 @@ def _download_named_file_https(
     remote_file: str,
     local_path: str | Path,
     session: requests.Session,
+    href: str | None = None,
 ) -> str:
     """Download one known remote filename via HTTPS."""
     local_path = Path(local_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
+    if href is not None:
+        _status(f"Downloading {remote_file} via https.")
+        downloaded = _download_https_url_atomic(
+            session=session,
+            url=href,
+            local_path=local_path,
+            timeout=120,
+        )
+        _validate_netcdf_payload(downloaded)
+        return downloaded
     candidate_names = _l1b_product_name_candidates(remote_file)
     last_err = None
     for candidate in candidate_names:
@@ -1430,6 +1446,40 @@ def _download_remote_file_via_ftp_atomic(
         if temp_path is not None and temp_path.exists():
             temp_path.unlink()
         raise
+
+
+def _load_cs_l1b_track_catalog_for(
+    track_idx: pd.DatetimeIndex,
+) -> gpd.GeoDataFrame | None:
+    """Load and refresh the rich STAC catalog for requested tracks."""
+    track_idx = pd.DatetimeIndex(track_idx).sort_values()
+    try:
+        catalog = load_cs_l1b_track_catalog(update="no")
+    except Exception as err:
+        warnings.warn(
+            f"Could not load local STAC L1B catalog: {err}. "
+            "Falling back to legacy filename lookup.",
+            category=UserWarning,
+        )
+        return None
+    if track_idx.empty:
+        return catalog
+    missing = track_idx.difference(catalog.index) if not catalog.empty else track_idx
+    if len(missing) > 0:
+        try:
+            load_cs_ground_tracks(
+                start_datetime=missing.min(),
+                end_datetime=missing.max() + pd.Timedelta(seconds=1),
+                source="stac",
+            )
+            catalog = load_cs_l1b_track_catalog(update="no")
+        except Exception as err:
+            warnings.warn(
+                "Could not refresh STAC L1B catalog for missing tracks: "
+                f"{err}. Falling back to legacy filename lookup.",
+                category=UserWarning,
+            )
+    return catalog
 
 
 def _load_cs_full_file_names_for(track_idx: pd.DatetimeIndex) -> pd.Series | None:
@@ -1557,8 +1607,9 @@ def download_files(
             + ", ".join(str(x) for x in year_month_str_list)
         )
         return
+    track_catalog = _load_cs_l1b_track_catalog_for(track_idx)
     file_names = _load_cs_full_file_names_for(track_idx)
-    if file_names is None:
+    if file_names is None and (track_catalog is None or track_catalog.empty):
         _download_files_via_ftp(track_idx, stop_event=stop_event)
         _status(
             "Finished downloading tracks for months: "
@@ -1603,10 +1654,20 @@ def download_files(
                 track_id_str = track_id.strftime("%Y%m%dT%H%M%S")
                 if track_id_str in existing_track_ids:
                     continue
-                if track_id not in file_names.index:
+                catalog_row = None
+                if track_catalog is not None and track_id in track_catalog.index:
+                    catalog_row = track_catalog.loc[track_id]
+                    if isinstance(catalog_row, pd.DataFrame):
+                        catalog_row = catalog_row.iloc[-1]
+                if catalog_row is not None:
+                    remote_file = catalog_row["filename"]
+                    href = catalog_row.get("href")
+                elif file_names is not None and track_id in file_names.index:
+                    remote_file = file_names.loc[track_id] + ".nc"
+                    href = None
+                else:
                     fallback_tracks.append(track_id)
                     continue
-                remote_file = file_names.loc[track_id] + ".nc"
                 local_path = Path(l1b_path, year_month_str, remote_file)
                 try:
                     downloaded = Path(
@@ -1614,6 +1675,7 @@ def download_files(
                             remote_file=remote_file,
                             local_path=local_path,
                             session=https_session,
+                            href=href,
                         )
                     )
                     currently_present_files.append(downloaded.name[19:])
@@ -1650,9 +1712,23 @@ def download_single_file(track_id: str) -> str:
             category=UserWarning,
         )
         return _download_single_file_via_ftp(track_id)
-    file_names = _load_cs_full_file_names_for(pd.DatetimeIndex([track_id_timestamp]))
-    if file_names is not None and track_id_timestamp in file_names.index:
+    requested_idx = pd.DatetimeIndex([track_id_timestamp])
+    track_catalog = _load_cs_l1b_track_catalog_for(requested_idx)
+    catalog_row = None
+    if track_catalog is not None and track_id_timestamp in track_catalog.index:
+        catalog_row = track_catalog.loc[track_id_timestamp]
+        if isinstance(catalog_row, pd.DataFrame):
+            catalog_row = catalog_row.iloc[-1]
+    file_names = _load_cs_full_file_names_for(requested_idx)
+    if catalog_row is not None:
+        filename = catalog_row["filename"]
+        href = catalog_row.get("href")
+    elif file_names is not None and track_id_timestamp in file_names.index:
         filename = file_names.loc[track_id_timestamp] + ".nc"
+        href = None
+    else:
+        filename = None
+    if filename is not None:
         local_path = Path(l1b_path, track_id_timestamp.strftime("%Y/%m"), filename)
         https_session = None
         try:
@@ -1661,6 +1737,7 @@ def download_single_file(track_id: str) -> str:
                 remote_file=filename,
                 local_path=local_path,
                 session=https_session,
+                href=href,
             )
         except Exception as err:
             warnings.warn(
