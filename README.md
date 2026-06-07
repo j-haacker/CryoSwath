@@ -108,6 +108,7 @@ pixi install --locked -e test
 If you change dependency manifests (`pyproject.toml` and/or `pixi.toml`):
 
 ```sh
+bash tools/sync_dependency_definitions.sh
 pixi lock
 pixi run -e test test-unit
 pixi run -e docs docs-build

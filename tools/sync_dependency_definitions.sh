@@ -6,8 +6,8 @@ usage() {
 Usage: sync_dependency_definitions.sh [--check]
 
 Synchronize dependency definitions in this order:
-1. pixi.toml runtime dependencies from pyproject.toml
-2. environment.yml from the Pixi default environment
+1. pixi.toml runtime dependencies and requirements.txt from pyproject.toml
+2. environment.yml and docs/environment.yml from Pixi environments
 
 Use --check to verify both are already synchronized.
 EOF

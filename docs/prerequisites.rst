@@ -185,8 +185,9 @@ Python package dependencies are defined in ``pyproject.toml``.
 - Supported Python version: ``>=3.12``
 - Supported xarray window: ``>=2025.3,<2025.12``
 
-The root ``requirements.txt`` is kept for compatibility but is not the
-primary dependency source.
+The root ``requirements.txt`` is generated from ``pyproject.toml`` by
+``tools/sync_dependency_definitions.sh``. It is kept for compatibility but is
+not the primary dependency source.
 
 Dependency strategy
 -------------------
@@ -213,6 +214,7 @@ If you change dependency manifests (``pyproject.toml`` and/or ``pixi.toml``):
 
 .. code-block:: sh
 
+   bash tools/sync_dependency_definitions.sh
    pixi lock
    pixi run -e test test-unit
    pixi run -e docs docs-build

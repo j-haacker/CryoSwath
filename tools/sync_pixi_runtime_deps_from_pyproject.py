@@ -15,13 +15,18 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 from packaging.requirements import Requirement
 
-
 NAME_NORMALIZER = re.compile(r"[-_.]+")
 DEPENDENCIES_BLOCK_PATTERNS = (
     re.compile(
         r"(?ms)^(?P<header>\[feature\.runtime\.dependencies\]\n)(?P<body>.*?)(?=^\[)"
     ),
     re.compile(r"(?ms)^(?P<header>\[dependencies\]\n)(?P<body>.*?)(?=^\[)"),
+)
+REQUIREMENTS_RUNTIME_HEADER = (
+    "## CryoSwath dependencies #############################################"
+)
+REQUIREMENTS_OPTIONAL_HEADER = (
+    "## CryoSwath optional #################################################"
 )
 
 
@@ -57,7 +62,9 @@ def load_toml(path: Path) -> dict:
     return tomllib.loads(path.read_text())
 
 
-def load_pyproject_runtime_dependencies(pyproject_path: Path) -> list[RuntimeDependency]:
+def load_pyproject_runtime_dependencies(
+    pyproject_path: Path,
+) -> list[RuntimeDependency]:
     data = load_toml(pyproject_path)
     deps: list[RuntimeDependency] = []
     seen: set[str] = set()
@@ -124,7 +131,8 @@ def choose_conda_name(
             f"{dependency.source!r}. Update conda-pypi-map.json or pixi.toml."
         )
     raise ValueError(
-        f"Ambiguous conda package mapping for {dependency.source!r}: {', '.join(candidates)}"
+        "Ambiguous conda package mapping for "
+        f"{dependency.source!r}: {', '.join(candidates)}"
     )
 
 
@@ -140,7 +148,9 @@ def desired_pixi_dependencies(
     for dep in pyproject_deps:
         conda_name = choose_conda_name(dep, current_pixi_deps, pypi_to_conda)
         if conda_name in used_names:
-            raise ValueError(f"Duplicate conda dependency target selected: {conda_name}")
+            raise ValueError(
+                f"Duplicate conda dependency target selected: {conda_name}"
+            )
         used_names.add(conda_name)
         desired.append((conda_name, dep.spec or "*"))
 
@@ -164,6 +174,43 @@ def replace_dependencies_block(pixi_text: str, new_block: str) -> str:
         "Could not locate runtime dependency block in pixi.toml. Expected either "
         "[feature.runtime.dependencies] or top-level [dependencies]."
     )
+
+
+def build_requirements_text(
+    requirements_text: str, entries: list[tuple[str, str]]
+) -> str:
+    runtime_start = requirements_text.find(REQUIREMENTS_RUNTIME_HEADER)
+    if runtime_start == -1:
+        raise ValueError(
+            "Could not locate runtime dependency block in requirements.txt. "
+            f"Expected header: {REQUIREMENTS_RUNTIME_HEADER}"
+        )
+
+    optional_start = requirements_text.find(REQUIREMENTS_OPTIONAL_HEADER, runtime_start)
+    if optional_start == -1:
+        optional_block = ""
+    else:
+        optional_block = requirements_text[optional_start:].lstrip("\n")
+
+    prefix = requirements_text[:runtime_start]
+    requirement_lines = []
+    for name, spec in entries:
+        if name == "python":
+            continue
+        requirement_lines.append(f"{name}{'' if spec == '*' else spec}")
+
+    new_text = (
+        prefix
+        + REQUIREMENTS_RUNTIME_HEADER
+        + "\n"
+        + "\n".join(requirement_lines)
+        + "\n"
+    )
+    if optional_block:
+        new_text += "\n" + optional_block
+    if not new_text.endswith("\n"):
+        new_text += "\n"
+    return new_text
 
 
 def compare_runtime_dependencies(
@@ -190,7 +237,8 @@ def compare_runtime_dependencies(
             display_pyproject = pyproject_spec or "*"
             display_pixi = pixi_spec or "*"
             issues.append(
-                f"Constraint mismatch for {name}: pyproject={display_pyproject}, pixi={display_pixi}"
+                f"Constraint mismatch for {name}: pyproject={display_pyproject}, "
+                f"pixi={display_pixi}"
             )
 
     return issues
@@ -199,8 +247,9 @@ def compare_runtime_dependencies(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Synchronize Pixi default runtime dependencies from pyproject.toml. "
-            "pyproject.toml is treated as the source of truth for package runtime metadata."
+            "Synchronize Pixi and requirements runtime dependencies from "
+            "pyproject.toml. pyproject.toml is treated as the source of truth "
+            "for package runtime metadata."
         )
     )
     parser.add_argument(
@@ -213,6 +262,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     pyproject_path = repo_root / "pyproject.toml"
     pixi_path = repo_root / "pixi.toml"
+    requirements_path = repo_root / "requirements.txt"
     conda_pypi_map_path = repo_root / "conda-pypi-map.json"
 
     try:
@@ -225,17 +275,28 @@ def main() -> int:
         desired_entries = desired_pixi_dependencies(
             pyproject_deps, python_spec, current_pixi_deps, pypi_to_conda
         )
+        requirements_text = requirements_path.read_text()
+        desired_requirements_text = build_requirements_text(
+            requirements_text, desired_entries
+        )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     issues = compare_runtime_dependencies(pyproject_deps, current_pixi_deps)
+    if requirements_text != desired_requirements_text:
+        issues.append("requirements.txt is out of sync with pyproject.toml")
 
     if args.check:
         if not issues:
-            print("pixi.toml runtime dependencies match pyproject.toml.")
+            print(
+                "pixi.toml and requirements.txt runtime dependencies match "
+                "pyproject.toml."
+            )
             return 0
-        print("pixi.toml runtime dependencies drift from pyproject.toml:", file=sys.stderr)
+        print(
+            "Runtime dependency definitions drift from pyproject.toml:", file=sys.stderr
+        )
         for issue in issues:
             print(f"- {issue}", file=sys.stderr)
         print(
@@ -245,14 +306,27 @@ def main() -> int:
         return 1
 
     pixi_text = pixi_path.read_text()
-    new_pixi_text = replace_dependencies_block(pixi_text, build_dependency_block(desired_entries))
+    new_pixi_text = replace_dependencies_block(
+        pixi_text, build_dependency_block(desired_entries)
+    )
 
-    if pixi_text == new_pixi_text:
-        print("pixi.toml runtime dependencies already match pyproject.toml.")
-        return 0
+    changed = False
 
-    pixi_path.write_text(new_pixi_text)
-    print("Synchronized pixi.toml runtime dependencies from pyproject.toml.")
+    if pixi_text != new_pixi_text:
+        pixi_path.write_text(new_pixi_text)
+        print("Synchronized pixi.toml runtime dependencies from pyproject.toml.")
+        changed = True
+
+    if requirements_text != desired_requirements_text:
+        requirements_path.write_text(desired_requirements_text)
+        print("Synchronized requirements.txt runtime dependencies from pyproject.toml.")
+        changed = True
+
+    if not changed:
+        print(
+            "pixi.toml and requirements.txt runtime dependencies already match "
+            "pyproject.toml."
+        )
     return 0
 
 
