@@ -33,7 +33,7 @@ stackstac = "*"
 statsmodels = "*"
 pytables = "*"
 tqdm = "*"
-xarray = ">=2026.3"
+xarray = ">=2025.3"
 zarr = "*"
 
 [feature.runtime.pypi-dependencies]

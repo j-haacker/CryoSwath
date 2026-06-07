@@ -32,4 +32,4 @@ repos:
         entry: bash tools/sync_dependency_definitions.sh
         language: system
         pass_filenames: false
-        files: ^(pyproject\.toml|pixi\.toml|environment\.yml|conda-pypi-map\.json)$
+        files: ^(pyproject\.toml|pixi\.toml|requirements\.txt|environment\.yml|docs/environment\.yml|conda-pypi-map\.json)$

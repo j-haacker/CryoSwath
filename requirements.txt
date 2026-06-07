@@ -7,28 +7,34 @@
 # images.
 
 ## CryoSwath dependencies #############################################
+bottleneck
 dask
-defusedxml # will be optional in future. used for additional security
-geopandas>=1.0.1 # implies among others: shapely
+defusedxml
+earthaccess>=0.18
+geopandas>=1.0.1
+h5netcdf
 h5py
 keyring
 matplotlib
 numpy
 packaging
-pandas
+pandas>=2,<3
 pyarrow
 pyogrio
 pyproj
-pytables
+pystac-client
 python-dateutil
 rasterio
 rioxarray
 scikit-learn
 scipy
 shapely
+stackstac
 statsmodels
+pytables
 tqdm
-xarray>=2025.3,<2025.12
+xarray>=2025.3
+zarr
 
 ## CryoSwath optional #################################################
 # bottleneck # for numpy: speeds up NaN-skipping and rolling window aggregations by a large factor

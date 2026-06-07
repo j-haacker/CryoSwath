@@ -7740,7 +7740,7 @@ packages:
   - statsmodels
   - tables
   - tqdm
-  - xarray>=2026.3
+  - xarray>2025.3
   - zarr
   - flit ; extra == 'dev'
   - pip-tools ; extra == 'dev'
