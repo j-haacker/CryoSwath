@@ -17,21 +17,24 @@ __all__ = [
     # "relative_change",
 ]
 
-from datetime import datetime
-import geopandas as gpd
-from importlib.metadata import version as _version
-import numpy as np
 import os
-import pandas as pd
+from datetime import datetime
+from importlib.metadata import version as _version
 from pathlib import Path
+from typing import Literal
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
 import rasterio.warp
 import rioxarray as rioxr
-from statsmodels.tsa.seasonal import seasonal_decompose
 import tqdm
-from typing import Literal
 import xarray as xr
+from statsmodels.tsa.seasonal import seasonal_decompose
 
+from cryoswath import misc
 from cryoswath.misc import (
+    _norm_isf_25,
     discard_frontal_retreat_zone,
     effective_sample_size,
     fill_missing_coords,
@@ -42,9 +45,7 @@ from cryoswath.misc import (
     l4_path,
     load_glacier_outlines,
     nanoseconds_per_year,
-    _norm_isf_25,
 )
-from cryoswath import misc
 
 # notes for future development of `differential_change` and
 # `relative_change`:
@@ -363,7 +364,8 @@ def append_basin_group(
                 lat = basin_lat_group[0].mid
                 lon = basin_lon_group[0].mid
                 group_id = int(
-                    f"{np.sign(lat) * term_type:.0f}{np.abs(lat):02.0f}{lon % 360:03.0f}"
+                    f"{np.sign(lat) * term_type:.0f}"
+                    f"{np.abs(lat):02.0f}{lon % 360:03.0f}"
                 )
                 mask = xr.where(
                     mask.isnull(), ds.group_id.loc[dict(x=mask.x, y=mask.y)], group_id
@@ -468,15 +470,12 @@ def fill_voids(
                 )
             ):
                 pbar.set_description(f"... current basin id: {label:.0f}")
-                if (
-                    discard_deglaciated
-                    and (
-                        (
-                            "time" in group
-                            and (~group[main_var].isnull()).any("time").sum() > 100
-                        )
-                        or (~group[main_var].isnull()).sum() > 100
+                if discard_deglaciated and (
+                    (
+                        "time" in group
+                        and (~group[main_var].isnull()).any("time").sum() > 100
                     )
+                    or (~group[main_var].isnull()).sum() > 100
                 ):
                     group = discard_frontal_retreat_zone(
                         group, "basin_id", main_var, elev
@@ -784,7 +783,7 @@ def difference_to_reference_dem(
     basin_shapes: gpd.GeoDataFrame = None,
 ) -> xr.Dataset:
     """Fill L3 gaps and return elevation differences relative to DEM."""
-    if (np.abs(l3_data._median) < 150).any():
+    if (np.abs(l3_data._median) > 150).any():
         raise Exception("_median deviates more than 150 m from reference")
     for _var in ["_median", "_iqr", "_count"]:
         l3_data[_var] = l3_data[_var].astype("f4")
@@ -892,8 +891,15 @@ def elevation_trend_raster_from_l3(
             errors="ignore",
         )
         # # debugging output:
-        # fit_res.curvefit_coefficients.sel(param="trend").rio.write_crs(ds.rio.crs).rio.to_raster("../figures/source_data/new_outl_still_present_surface_elevation_trend__rgi-o2region_"
-        #                 + f"{o1:02d}-{o2:02d}__m_yr-1.tif")
+        # (
+        #     fit_res.curvefit_coefficients.sel(param="trend")
+        #     .rio.write_crs(ds.rio.crs)
+        #     .rio.to_raster(
+        #         "../figures/source_data"
+        #         "/new_outl_still_present_surface_elevation_trend__rgi-o2region_"
+        #         + f"{o1:02d}-{o2:02d}__m_yr-1.tif"
+        #     )
+        # )
         model_vals = xr.apply_ufunc(
             trend_with_seasons,
             ds.time.astype("int"),
@@ -1318,7 +1324,12 @@ def timeseries_from_gridded(
     results.sort_index(axis=1, inplace=True)
 
     # debugging
-    # print(_unc.rename("uncertainties").to_dataframe()["uncertainties"].unstack(0).to_string())
+    # print(
+    #     _unc.rename("uncertainties")
+    #     .to_dataframe()["uncertainties"]
+    #     .unstack(0)
+    #     .to_string()
+    # )
     print(results.to_string())
     import matplotlib.pyplot as plt
 
@@ -1331,8 +1342,8 @@ def timeseries_from_gridded(
     plt.plot(results.index, results.elevation, c="k")
     plt.ylabel("Surface elevation difference, m")
     if "o2region" not in ds.attrs:
-        from pickle import dumps
         from hashlib import md5
+        from pickle import dumps
 
         ds.attrs["o2region"] = md5(dumps(ds), usedforsecurity=False).hexdigest()[:7]
     plt.title(ds.attrs["o2region"])
