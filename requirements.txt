@@ -9,25 +9,25 @@
 ## cryoswath dependencies #############################################
 dask
 defusedxml # will be optional in future. used for additional security
-geopandas>=1.0.1 # implies among others: shapely
-h5py
-matplotlib
-numpy
-packaging
-pandas
-pyarrow
+geopandas>=1.0.1,<2 # implies among others: shapely
+h5py>=3,<4
+matplotlib>=3,<4
+numpy>=2,<3
+packaging<25
+pandas>=2,<3
+pyarrow<20
 pyogrio
-pyproj
-pytables
-python-dateutil
-rasterio
+pyproj>=3,<4
+pytables>=3,<4
+python-dateutil>=2,<3
+rasterio>=1,<2
 rioxarray
-scikit-learn
-scipy
-shapely
+scikit-learn>=1,<2
+scipy>=1,<2
+shapely>=2,<3
 statsmodels
-tqdm
-xarray
+tqdm<5
+xarray<2025
 
 ## cryoswath optional #################################################
 # bottleneck # for numpy: speeds up NaN-skipping and rolling window aggregations by a large factor

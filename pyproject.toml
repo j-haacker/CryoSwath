@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "cryoswath"
-version = "0.2.2.post3"
+version = "0.2.2.post4"
 authors = [
   { name="Jan Haacker", email="j.m.haacker@tudelft.nl" },
 ]
@@ -18,31 +18,31 @@ classifiers = [
 ]
 keywords = ["glacier", "altimetry", "swath", "cryosat"]
 dependencies = [
-    "Bottleneck",
+    "Bottleneck>=1,<2",
     "dask",
     "defusedxml",
-    "geopandas>=1.0.1",
-    "gitpython",
-    "h5netcdf",
-    "h5py",
-    "matplotlib",
-    "numpy",
-    "packaging",
-    "pandas",
-    "pyarrow",
+    "geopandas>=1.0.1,<2",
+    "gitpython>=3,<4",
+    "h5netcdf>=1,<2",
+    "h5py>=3,<4",
+    "matplotlib>=3,<4",
+    "numpy>=2,<3",
+    "packaging>=24,<25",
+    "pandas>=2,<3",
+    "pyarrow>=19,<20",
     "pyogrio",
-    "pyproj",
-    "tables",
-    "python-dateutil",
-    "rasterio",
+    "pyproj>=3,<4",
+    "tables>=3,<4",
+    "python-dateutil>=2,<3",
+    "rasterio>=1,<2",
     "rioxarray",
-    "scikit-learn",
-    "scipy",
-    "shapely",
+    "scikit-learn>=1,<2",
+    "scipy>=1,<2",
+    "shapely>=2,<3",
     "statsmodels",
-    "tqdm",
+    "tqdm>=4,<5",
     "xarray<2025",
-    "zarr"
+    "zarr>=2,<3",
 ]
 
 [project.license]
