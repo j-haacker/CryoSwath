@@ -267,11 +267,93 @@ def test_download_single_file_fails_fast_on_pds_failure(monkeypatch, tmp_path):
         l1b.download_single_file(track_id)
 
 
-def test_download_wrapper_returns_failure_when_worker_fails(monkeypatch):
-    def failing_download_files(track_idx, stop_event=None):
+def test_download_wrapper_returns_0_without_credentials_for_cached_tracks(
+    monkeypatch, tmp_path, capsys
+):
+    track = pd.Timestamp("2020-09-01 00:00:00")
+    local_dir = tmp_path / "2020" / "09"
+    local_dir.mkdir(parents=True)
+    (local_dir / "CS_OFFL_SIR_SIN_1B_20200901T000000_TEST.nc").touch()
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(
+        l1b,
+        "_resolve_esa_ftp_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("credentials should not be read")),
+    )
+    monkeypatch.setattr(
+        l1b,
+        "request_workers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("workers should not be created")
+        ),
+    )
+
+    assert l1b.download_wrapper(track_idx=pd.DatetimeIndex([track])) == 0
+    assert "already present" in capsys.readouterr().out
+
+
+def test_download_wrapper_returns_failure_when_credentials_are_unavailable(
+    monkeypatch, tmp_path
+):
+    track = pd.Timestamp("2020-09-01 00:00:00")
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(
+        l1b,
+        "_resolve_esa_ftp_credentials",
+        lambda: (_ for _ in ()).throw(RuntimeError("no credentials")),
+    )
+    monkeypatch.setattr(
+        l1b,
+        "request_workers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("workers should not be created")
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="PDS HTTPS credentials"):
+        result = l1b.download_wrapper(track_idx=pd.DatetimeIndex([track]))
+
+    assert result == 1
+    assert not (tmp_path / "2020" / "09").exists()
+
+
+def test_download_wrapper_resolves_once_and_dispatches_only_missing_tracks(
+    monkeypatch, tmp_path
+):
+    track_idx = pd.DatetimeIndex(["2020-09-01 00:00:00", "2020-09-02 00:00:00"])
+    local_dir = tmp_path / "2020" / "09"
+    local_dir.mkdir(parents=True)
+    (local_dir / "CS_OFFL_SIR_SIN_1B_20200901T000000_TEST.nc").touch()
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    credential_calls = []
+    dispatched = []
+
+    def resolve_credentials():
+        credential_calls.append(None)
+        return "esa-user", "esa-password", "env"
+
+    def record_worker(track_idx, stop_event, https_auth):
+        dispatched.append((pd.DatetimeIndex(track_idx), https_auth))
+
+    monkeypatch.setattr(l1b, "_resolve_esa_ftp_credentials", resolve_credentials)
+    monkeypatch.setattr(l1b, "_download_files_with_auth", record_worker)
+
+    assert l1b.download_wrapper(track_idx=track_idx, n_threads=1) == 0
+    assert credential_calls == [None]
+    assert dispatched == [
+        (pd.DatetimeIndex([track_idx[1]]), ("esa-user", "esa-password"))
+    ]
+
+
+def test_download_wrapper_returns_failure_when_worker_fails(monkeypatch, tmp_path):
+    def failing_download_files(track_idx, stop_event, https_auth):
         raise RuntimeError("remote unavailable")
 
-    monkeypatch.setattr(l1b, "download_files", failing_download_files)
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(
+        l1b, "_resolve_esa_ftp_credentials", lambda: ("esa-user", "esa-password", "env")
+    )
+    monkeypatch.setattr(l1b, "_download_files_with_auth", failing_download_files)
 
     with pytest.warns(UserWarning):
         result = l1b.download_wrapper(
@@ -354,9 +436,13 @@ def test_download_files_reuses_one_https_session_for_batch(monkeypatch, tmp_path
         }
     )
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
-    monkeypatch.setattr(
-        l1b, "_resolve_esa_ftp_credentials", lambda: ("esa-user", "esa-password", "env")
-    )
+    credential_calls = []
+
+    def resolve_credentials():
+        credential_calls.append(None)
+        return "esa-user", "esa-password", "env"
+
+    monkeypatch.setattr(l1b, "_resolve_esa_ftp_credentials", resolve_credentials)
     monkeypatch.setattr(
         l1b, "_load_cs_full_file_names_for", lambda idx: remote_base_names
     )
@@ -377,6 +463,7 @@ def test_download_files_reuses_one_https_session_for_batch(monkeypatch, tmp_path
     ]
     assert all(call[1] is session for call in session_calls)
     assert session.closed
+    assert credential_calls == [None]
 
 
 def test_download_named_file_https_rejects_html_payload(monkeypatch, tmp_path):

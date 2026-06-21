@@ -1117,6 +1117,33 @@ def build_flag_mask(cs_l1b_flag: xr.DataArray, flag_val_list: list) -> xr.DataAr
     )
 
 
+def _existing_local_l1b_track_ids(year_month_str: str) -> set[str]:
+    """Return track IDs encoded in local L1b filenames for one month."""
+    try:
+        return {
+            filename[19:34]
+            for filename in os.listdir(os.path.join(l1b_path, year_month_str))
+        }
+    except FileNotFoundError:
+        return set()
+
+
+def _missing_local_l1b_tracks(track_idx: pd.DatetimeIndex | str) -> pd.DatetimeIndex:
+    """Return tracks absent under the downloader's current filename-ID rule."""
+    track_idx = pd.DatetimeIndex(track_idx).sort_values()
+    year_month = track_idx.strftime(f"%Y{os.path.sep}%m")
+    missing_tracks = []
+    for year_month_str in year_month.unique():
+        month_tracks = track_idx[year_month == year_month_str]
+        existing_track_ids = _existing_local_l1b_track_ids(year_month_str)
+        missing_tracks.extend(
+            track
+            for track in month_tracks
+            if track.strftime("%Y%m%dT%H%M%S") not in existing_track_ids
+        )
+    return pd.DatetimeIndex(missing_tracks)
+
+
 # ! name is not intuitive
 def download_wrapper(
     region_of_interest: str | shapely.Polygon = None,
@@ -1159,20 +1186,30 @@ def download_wrapper(
         ).index
     else:
         track_idx = track_idx.sort_values()
-        start_datetime, end_datetime = track_idx[[0, -1]]
     if stop_event is None:
         stop_event = Event()
-    task_queue = request_workers(download_files, n_threads)
-    months = pd.date_range(
-        pd.offsets.MonthBegin().rollback(start_datetime.normalize()),
-        end_datetime,
-        freq="MS",
-    )
-    for month in months:
-        # print(month)
-        # print(track_idx.normalize()+pd.DateOffset(day=1))
-        idx_selection = track_idx[track_idx.normalize() + pd.DateOffset(day=1) == month]
-        task_queue.put((idx_selection, stop_event))
+    missing_track_idx = _missing_local_l1b_tracks(track_idx)
+    if missing_track_idx.empty:
+        _status("All selected L1b files are already present.")
+        return 0
+    try:
+        user, password, _ = _resolve_esa_ftp_credentials()
+        https_auth = (user, password)
+    except RuntimeError as err:
+        warnings.warn(
+            "Could not configure PDS HTTPS credentials: "
+            f"{err}. No download workers were started.",
+            category=UserWarning,
+            stacklevel=2,
+        )
+        _status("PDS HTTPS credentials unavailable; no download workers started.")
+        return 1
+
+    task_queue = request_workers(_download_files_with_auth, n_threads)
+    months = missing_track_idx.to_period("M")
+    for month in months.unique():
+        idx_selection = missing_track_idx[months == month]
+        task_queue.put((idx_selection, stop_event, https_auth))
     for _ in range(n_threads):
         task_queue.put(None)
     # wait for threads to finish
@@ -1545,20 +1582,15 @@ def _download_single_file_via_ftp(track_id: str) -> str:
     raise RuntimeError(f"FTP retries exhausted for track id {track_id}.")
 
 
-def download_files(
+def _download_files_with_auth(
     track_idx: pd.DatetimeIndex | str,
-    stop_event: Event = None,
-    # baseline: str = "latest",
-):
-    """Download all missing monthly L1b files for ``track_idx``."""
+    stop_event: Event | None,
+    https_auth: tuple[str, str],
+) -> None:
+    """Download a batch of missing L1b files with resolved PDS credentials."""
     track_idx = pd.DatetimeIndex(track_idx).sort_values()
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
     https_session = None
-    try:
-        user, password, _ = _resolve_esa_ftp_credentials()
-        https_auth = (user, password)
-    except RuntimeError as err:
-        raise RuntimeError(f"Could not configure PDS HTTPS credentials: {err}") from err
     track_catalog = _load_cs_l1b_track_catalog_for(track_idx)
     file_names = _load_cs_full_file_names_for(track_idx)
     if file_names is None and (track_catalog is None or track_catalog.empty):
@@ -1578,16 +1610,7 @@ def download_files(
             _status(f"Scanning {year_month_str} for missing files.")
             if stop_event is not None and stop_event.is_set():
                 return
-            try:
-                currently_present_files = [
-                    x[19:] for x in os.listdir(os.path.join(l1b_path, year_month_str))
-                ]
-            except FileNotFoundError:
-                os.makedirs(os.path.join(l1b_path, year_month_str))
-                currently_present_files = []
-            existing_track_ids = {
-                file_name[:15] for file_name in currently_present_files
-            }
+            existing_track_ids = _existing_local_l1b_track_ids(year_month_str)
             month_tracks = track_idx[
                 track_idx.strftime(f"%Y{os.path.sep}%m") == year_month_str
             ]
@@ -1613,15 +1636,12 @@ def download_files(
                     continue
                 local_path = Path(l1b_path, year_month_str, remote_file)
                 try:
-                    downloaded = Path(
-                        _download_named_file_https(
-                            remote_file=remote_file,
-                            local_path=local_path,
-                            session=https_session,
-                            href=href,
-                        )
+                    _download_named_file_https(
+                        remote_file=remote_file,
+                        local_path=local_path,
+                        session=https_session,
+                        href=href,
                     )
-                    currently_present_files.append(downloaded.name[19:])
                     existing_track_ids.add(track_id_str)
                 except Exception as err:
                     failures.append((track_id_str, f"{remote_file}: {err}"))
@@ -1634,6 +1654,19 @@ def download_files(
     finally:
         if https_session is not None:
             https_session.close()
+
+
+def download_files(
+    track_idx: pd.DatetimeIndex | str,
+    stop_event: Event = None,
+    # baseline: str = "latest",
+):
+    """Download all missing monthly L1b files for ``track_idx``."""
+    try:
+        user, password, _ = _resolve_esa_ftp_credentials()
+    except RuntimeError as err:
+        raise RuntimeError(f"Could not configure PDS HTTPS credentials: {err}") from err
+    return _download_files_with_auth(track_idx, stop_event, (user, password))
 
 
 def download_single_file(track_id: str) -> str:
