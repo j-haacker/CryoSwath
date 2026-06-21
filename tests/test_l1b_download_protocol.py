@@ -72,39 +72,12 @@ def no_implicit_stac_catalog_refresh(monkeypatch):
     )
 
 
-def test_normalize_l1b_identifier():
-    assert (
-        l1b._normalize_l1b_identifier(
-            "https://example.com/files/CS_OFFL_SIR_SIN_1B_20200101T000000_TEST.nc"
-        )
-        == "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST"
-    )
+def test_pds_l1b_download_url_uses_selected_filename():
+    filename = "CS_OFFL_SIR_SIN_1B_20220917T082319_20220917T082404_E001.nc"
 
-
-def test_resolve_l1b_enclosure_href_exact_lookup(monkeypatch):
-    expected = "https://science-pds.cryosat.esa.int/?do=download&file=test.nc"
-
-    def fake_get(url, params, timeout):
-        assert url == l1b._EOCAT_STAC_SEARCH_URL
-        assert params == {
-            "collections": "CryoSat.products",
-            "ids": "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST",
-        }
-        return DummyResponse(
-            json_data={
-                "features": [
-                    {
-                        "id": "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST",
-                        "assets": {"enclosure": {"href": expected}},
-                    }
-                ]
-            }
-        )
-
-    monkeypatch.setattr(l1b.requests, "get", fake_get)
-    assert (
-        l1b._resolve_l1b_enclosure_href("CS_OFFL_SIR_SIN_1B_20200101T000000_TEST.nc")
-        == expected
+    assert l1b._pds_l1b_download_url(filename) == (
+        "https://science-pds.cryosat.esa.int/?do=download&file="
+        "Cry0Sat2_data%2FSIR_SIN_L1%2F2022%2F09%2F" + filename
     )
 
 
@@ -264,7 +237,7 @@ def test_download_single_file_uses_stac_catalog_href(monkeypatch, tmp_path):
     assert session.closed
 
 
-def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tmp_path):
+def test_download_single_file_fails_fast_on_pds_failure(monkeypatch, tmp_path):
     track_id = "20200101T000000"
     track_time = pd.to_datetime(track_id)
     remote_base_name = "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST"
@@ -284,9 +257,14 @@ def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tm
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("https failure")),
     )
     monkeypatch.setattr(
-        l1b, "_download_single_file_via_ftp", lambda track_id: "ftp-path"
+        l1b,
+        "_download_single_file_via_ftp",
+        lambda track_id: (_ for _ in ()).throw(
+            AssertionError("FTP fallback must not be used")
+        ),
     )
-    assert l1b.download_single_file(track_id) == "ftp-path"
+    with pytest.raises(RuntimeError, match="enhancement #76"):
+        l1b.download_single_file(track_id)
 
 
 def test_download_wrapper_returns_failure_when_worker_fails(monkeypatch):
@@ -304,12 +282,9 @@ def test_download_wrapper_returns_failure_when_worker_fails(monkeypatch):
     assert result == 1
 
 
-def test_download_files_uses_https_and_falls_back_for_unresolved_tracks(
-    monkeypatch, tmp_path
-):
+def test_download_files_fails_fast_for_unresolved_tracks(monkeypatch, tmp_path):
     track_idx = pd.DatetimeIndex(["2020-01-01 00:00:00", "2020-01-02 00:00:00"])
     resolved_track = track_idx[0]
-    unresolved_track = track_idx[1]
     remote_base_name = "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST"
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(
@@ -321,32 +296,32 @@ def test_download_files_uses_https_and_falls_back_for_unresolved_tracks(
         lambda idx: pd.Series({resolved_track: remote_base_name}),
     )
     https_calls = []
-    ftp_calls = []
     session = DummySession()
 
     def fake_https(remote_file, local_path, session, href=None):
         https_calls.append((remote_file, Path(local_path), session))
         return str(local_path)
 
-    def fake_ftp(track_idx, stop_event=None):
-        ftp_calls.append(pd.DatetimeIndex(track_idx))
-
     monkeypatch.setattr(l1b, "_create_esa_https_session", lambda auth: session)
     monkeypatch.setattr(l1b, "_download_named_file_https", fake_https)
-    monkeypatch.setattr(l1b, "_download_files_via_ftp", fake_ftp)
-    l1b.download_files(track_idx)
+    monkeypatch.setattr(
+        l1b,
+        "_download_files_via_ftp",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("FTP fallback must not be used")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="20200102T000000"):
+        l1b.download_files(track_idx)
     assert len(https_calls) == 1
     assert https_calls[0][0] == remote_base_name + ".nc"
     assert https_calls[0][2] is session
-    assert len(ftp_calls) == 1
-    assert unresolved_track in ftp_calls[0]
-    assert resolved_track not in ftp_calls[0]
+    assert session.closed
     assert session.closed
 
 
-def test_download_files_uses_ftp_when_https_auth_is_unavailable(monkeypatch):
+def test_download_files_fails_fast_when_pds_auth_is_unavailable(monkeypatch):
     track_idx = pd.DatetimeIndex(["2020-01-01 00:00:00", "2020-01-02 00:00:00"])
-    ftp_calls = []
     monkeypatch.setattr(
         l1b,
         "_resolve_esa_ftp_credentials",
@@ -362,13 +337,12 @@ def test_download_files_uses_ftp_when_https_auth_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         l1b,
         "_download_files_via_ftp",
-        lambda track_idx, stop_event=None: ftp_calls.append(
-            pd.DatetimeIndex(track_idx)
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("FTP fallback must not be used")
         ),
     )
-    l1b.download_files(track_idx)
-    assert len(ftp_calls) == 1
-    assert ftp_calls[0].equals(track_idx)
+    with pytest.raises(RuntimeError, match="PDS HTTPS credentials"):
+        l1b.download_files(track_idx)
 
 
 def test_download_files_reuses_one_https_session_for_batch(monkeypatch, tmp_path):
@@ -395,14 +369,6 @@ def test_download_files_reuses_one_https_session_for_batch(monkeypatch, tmp_path
 
     monkeypatch.setattr(l1b, "_create_esa_https_session", lambda auth: session)
     monkeypatch.setattr(l1b, "_download_named_file_https", fake_https)
-    monkeypatch.setattr(
-        l1b,
-        "_download_files_via_ftp",
-        lambda track_idx, stop_event=None: (_ for _ in ()).throw(
-            AssertionError("FTP fallback should not be used")
-        ),
-    )
-
     l1b.download_files(track_idx)
 
     assert [call[0] for call in session_calls] == [
@@ -428,12 +394,6 @@ def test_download_named_file_https_rejects_html_payload(monkeypatch, tmp_path):
             ),
         ]
     )
-    monkeypatch.setattr(
-        l1b,
-        "_resolve_l1b_enclosure_href",
-        lambda value, timeout=120: "https://science-pds.cryosat.esa.int/test.nc",
-    )
-
     with pytest.raises(RuntimeError, match="HTML/XML"):
         l1b._download_named_file_https(
             remote_file=remote_file,
@@ -454,17 +414,12 @@ def test_download_named_file_https_accepts_netcdf4_magic(monkeypatch, tmp_path):
             )
         ]
     )
-    monkeypatch.setattr(
-        l1b,
-        "_resolve_l1b_enclosure_href",
-        lambda value, timeout=120: "https://science-pds.cryosat.esa.int/test.nc",
-    )
     result = l1b._download_named_file_https(
         remote_file=remote_file,
         local_path=local_path,
         session=session,
     )
-    assert Path(result).name == "CS_LTA__SIR_SIN_1B_20200101T000000_TEST.nc"
+    assert Path(result).name == remote_file
 
 
 def test_l1b_product_name_candidates_prefer_lta_then_offl():
@@ -495,9 +450,7 @@ def test_select_lta_then_offl_for_track_raises_when_missing():
         )
 
 
-def test_download_named_file_https_falls_back_to_offl_when_lta_missing(
-    monkeypatch, tmp_path
-):
+def test_download_named_file_https_uses_pds_when_catalog_has_maap_href(tmp_path):
     remote_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST.nc"
     local_path = tmp_path / remote_file
     session = DummySession(
@@ -508,25 +461,14 @@ def test_download_named_file_https_falls_back_to_offl_when_lta_missing(
             )
         ]
     )
-    calls = []
-
-    def fake_resolve(value, timeout=120):
-        calls.append(value)
-        if value.startswith("CS_LTA__"):
-            raise FileNotFoundError("missing LTA")
-        return "https://science-pds.cryosat.esa.int/test.nc"
-
-    monkeypatch.setattr(l1b, "_resolve_l1b_enclosure_href", fake_resolve)
     result = l1b._download_named_file_https(
         remote_file=remote_file,
         local_path=local_path,
         session=session,
+        href="https://catalog.maap.eo.esa.int/data/cryosat/example.nc",
     )
     assert result == str(local_path)
-    assert calls == [
-        "CS_LTA__SIR_SIN_1B_20200101T000000_TEST.nc",
-        "CS_OFFL_SIR_SIN_1B_20200101T000000_TEST.nc",
-    ]
+    assert session.get_calls[0][0] == l1b._pds_l1b_download_url(remote_file)
 
 
 def test_download_remote_file_via_ftp_atomic_success(tmp_path):

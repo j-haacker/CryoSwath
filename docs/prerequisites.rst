@@ -138,9 +138,11 @@ now, but are deprecated and should be replaced.
 Download protocol defaults
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-L1b data downloads are HTTPS-first by default. FTP remains available as an
-automatic fallback for download failures and is still used for metadata
-refresh flows that compare local catalogs with upstream.
+L1b workflows use MAAP STAC metadata (``CryoSatIceL110``) to discover missing
+CryoSat SARIn products. The selected filename is downloaded through
+authenticated PDS HTTPS. Automatic FTP fallback is disabled for normal
+download workflows so failures identify the affected product instead of
+waiting on legacy FTP data connections.
 
 Data dependencies
 -----------------
@@ -168,17 +170,19 @@ auxiliary-data snapshot from Zenodo DOI ``10.5281/zenodo.20241526`` and
 extracts it into ``data/auxiliary`` by default. The snapshot contains the
 CryoSat-2 ground-track database, filename catalog, and static RGI metadata.
 Newer installations may also contain the richer
-``CryoSat-2_SARIn_L1B_track_catalog.feather`` cache, which stores ESA STAC
-item IDs, product filenames, download URLs, product versions, processing dates,
-and track geometries for supported ``SIR_SIN_1B`` products.
+``CryoSat-2_SARIn_L1B_track_catalog.feather`` cache, which stores MAAP STAC
+item IDs, product filenames, MAAP enclosure URLs, product versions, processing
+dates, and track geometries for supported ``SIR_SIN_1B`` products. MAAP
+enclosure URLs are retained as catalog provenance; current downloads use the
+selected filename with PDS HTTPS.
 
 By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
 caches when their latest timestamp covers the requested period. If the request
 extends beyond local coverage and a network connection is available, CryoSwath
-queries ESA STAC metadata, caches the supported products, and then returns the
+queries MAAP STAC metadata, caches the supported products, and then returns the
 combined local result. Pass ``source="local"`` to force offline/local-only
-behavior, or ``source="stac"`` to force a STAC metadata query for the requested
-period.
+behavior, or ``source="stac"`` to force a MAAP STAC metadata query for the
+requested period.
 
 The STAC-backed selector currently accepts validated CryoSat Baseline D/E
 ``SIR_SIN_1B`` products. If a newer unsupported baseline is seen, CryoSwath

@@ -90,7 +90,6 @@ from cryoswath.misc import (
 
 # requires implicitly rasterio(?), flox(?), dask(?)
 
-_EOCAT_STAC_SEARCH_URL = "https://eocat.esa.int/eo-catalogue/search"
 _ESA_HTTPS_LOGIN_URL = "https://science-pds.cryosat.esa.int/?do=login"
 _ESA_LOGIN_FAILURE_MARKERS = ("authFailure=true", "login.fail.message")
 
@@ -1223,36 +1222,23 @@ def _https_l1b_base_url(track_id: pd.Timestamp) -> str:
     )
 
 
-def _normalize_l1b_identifier(value: str) -> str:
-    """Return EO-CAT/STAC item id from a filename, URL, or bare stem."""
-    name = str(value).rsplit("/", 1)[-1]
-    if name.endswith(".nc"):
-        name = name[:-3]
-    return name
+def _pds_l1b_download_url(remote_file: str) -> str:
+    """Build the authenticated PDS HTTPS URL for a selected L1b filename."""
+    filename = Path(remote_file).name
+    if len(filename) < 34:
+        raise ValueError(f"Could not extract a CryoSat timestamp from {remote_file!r}.")
+    timestamp = pd.to_datetime(filename[19:34])
+    return _https_l1b_base_url(timestamp) + filename
 
 
-def _resolve_l1b_enclosure_href(
-    identifier_or_filename: str,
-    timeout: int | float = 120,
-) -> str:
-    """Resolve one CryoSat L1b file stem to its EO-CAT enclosure URL."""
-    identifier = _normalize_l1b_identifier(identifier_or_filename)
-    response = requests.get(
-        _EOCAT_STAC_SEARCH_URL,
-        params={"collections": "CryoSat.products", "ids": identifier},
-        timeout=timeout,
+def _pds_download_error(failures: list[tuple[str, str]]) -> RuntimeError:
+    """Return a concise error for PDS failures without automatic FTP fallback."""
+    details = "; ".join(f"{track_id}: {reason}" for track_id, reason in failures)
+    return RuntimeError(
+        "CryoSat L1b download via PDS HTTPS failed; automatic FTP fallback is "
+        f"disabled. Failed product(s): {details}. For future MAAP data delivery, "
+        f"see enhancement #76."
     )
-    response.raise_for_status()
-    features = response.json().get("features", [])
-    matching_items = [item for item in features if item.get("id") == identifier]
-    if len(matching_items) != 1:
-        raise FileNotFoundError(
-            f"EO-CAT STAC lookup returned {len(matching_items)} items for {identifier}."
-        )
-    href = matching_items[0].get("assets", {}).get("enclosure", {}).get("href")
-    if not href:
-        raise FileNotFoundError(f"EO-CAT item {identifier} has no enclosure asset.")
-    return href
 
 
 def _validate_netcdf_payload(path: str | Path) -> None:
@@ -1386,39 +1372,24 @@ def _download_named_file_https(
     session: requests.Session,
     href: str | None = None,
 ) -> str:
-    """Download one known remote filename via HTTPS."""
+    """Download one selected L1b filename from authenticated PDS HTTPS."""
     local_path = Path(local_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    if href is not None:
-        _status(f"Downloading {remote_file} via https.")
+    _ = href  # MAAP enclosure URLs remain catalog provenance, not delivery URLs.
+    _status(f"Downloading {remote_file} via PDS https.")
+    try:
         downloaded = _download_https_url_atomic(
             session=session,
-            url=href,
+            url=_pds_l1b_download_url(remote_file),
             local_path=local_path,
             timeout=120,
         )
         _validate_netcdf_payload(downloaded)
         return downloaded
-    candidate_names = _l1b_product_name_candidates(remote_file)
-    last_err = None
-    for candidate in candidate_names:
-        candidate_local_path = local_path.parent / candidate
-        try:
-            url = _resolve_l1b_enclosure_href(candidate)
-            _status(f"Downloading {candidate} via https.")
-            downloaded = _download_https_url_atomic(
-                session=session,
-                url=url,
-                local_path=candidate_local_path,
-                timeout=120,
-            )
-            _validate_netcdf_payload(downloaded)
-            return downloaded
-        except Exception as err:
-            last_err = err
-            if candidate_local_path.is_file():
-                candidate_local_path.unlink()
-    raise last_err
+    except Exception:
+        if local_path.is_file():
+            local_path.unlink()
+        raise
 
 
 def _download_remote_file_via_ftp_atomic(
@@ -1483,25 +1454,15 @@ def _load_cs_l1b_track_catalog_for(
 
 
 def _load_cs_full_file_names_for(track_idx: pd.DatetimeIndex) -> pd.Series | None:
-    """Load and refresh file-name catalog once for missing track IDs."""
+    """Load the local legacy file-name catalog without refreshing it over FTP."""
     try:
-        file_names = load_cs_full_file_names(update="no")
+        return load_cs_full_file_names(update="no")
     except Exception as err:
         warnings.warn(
-            f"Could not load local file-name catalog: {err}. Falling back to FTP.",
+            f"Could not load local legacy file-name catalog: {err}.",
             category=UserWarning,
         )
         return None
-    if not track_idx.isin(file_names.index).all():
-        try:
-            file_names = load_cs_full_file_names(update="regular")
-        except Exception as err:
-            warnings.warn(
-                "Could not refresh file-name catalog via FTP update: "
-                f"{err}. Falling back to FTP for unresolved tracks.",
-                category=UserWarning,
-            )
-    return file_names
 
 
 def _download_files_via_ftp(
@@ -1597,39 +1558,21 @@ def download_files(
         user, password, _ = _resolve_esa_ftp_credentials()
         https_auth = (user, password)
     except RuntimeError as err:
-        warnings.warn(
-            f"Could not configure HTTPS credentials ({err}). Using FTP download.",
-            category=UserWarning,
-        )
-        _download_files_via_ftp(track_idx, stop_event=stop_event)
-        _status(
-            "Finished downloading tracks for months: "
-            + ", ".join(str(x) for x in year_month_str_list)
-        )
-        return
+        raise RuntimeError(f"Could not configure PDS HTTPS credentials: {err}") from err
     track_catalog = _load_cs_l1b_track_catalog_for(track_idx)
     file_names = _load_cs_full_file_names_for(track_idx)
     if file_names is None and (track_catalog is None or track_catalog.empty):
-        _download_files_via_ftp(track_idx, stop_event=stop_event)
-        _status(
-            "Finished downloading tracks for months: "
-            + ", ".join(str(x) for x in year_month_str_list)
+        raise _pds_download_error(
+            [
+                (track.strftime("%Y%m%dT%H%M%S"), "no MAAP or local filename entry")
+                for track in track_idx
+            ]
         )
-        return
     try:
         https_session = _create_esa_https_session(https_auth)
     except Exception as err:
-        warnings.warn(
-            f"Could not initialize HTTPS session ({err}). Using FTP download.",
-            category=UserWarning,
-        )
-        _download_files_via_ftp(track_idx, stop_event=stop_event)
-        _status(
-            "Finished downloading tracks for months: "
-            + ", ".join(str(x) for x in year_month_str_list)
-        )
-        return
-    fallback_tracks = []
+        raise RuntimeError(f"Could not initialize PDS HTTPS session: {err}") from err
+    failures = []
     try:
         for year_month_str in year_month_str_list:
             _status(f"Scanning {year_month_str} for missing files.")
@@ -1666,7 +1609,7 @@ def download_files(
                     remote_file = file_names.loc[track_id] + ".nc"
                     href = None
                 else:
-                    fallback_tracks.append(track_id)
+                    failures.append((track_id_str, "no MAAP or local filename entry"))
                     continue
                 local_path = Path(l1b_path, year_month_str, remote_file)
                 try:
@@ -1681,15 +1624,9 @@ def download_files(
                     currently_present_files.append(downloaded.name[19:])
                     existing_track_ids.add(track_id_str)
                 except Exception as err:
-                    warnings.warn(
-                        "HTTPS download failed for "
-                        f"{remote_file}: {err}. Falling back to FTP.",
-                        category=UserWarning,
-                    )
-                    fallback_tracks.append(track_id)
-        if fallback_tracks:
-            fallback_tracks = pd.DatetimeIndex(fallback_tracks).unique().sort_values()
-            _download_files_via_ftp(fallback_tracks, stop_event=stop_event)
+                    failures.append((track_id_str, f"{remote_file}: {err}"))
+        if failures:
+            raise _pds_download_error(failures)
         _status(
             "Finished downloading tracks for months: "
             + ", ".join(str(x) for x in year_month_str_list)
@@ -1707,11 +1644,7 @@ def download_single_file(track_id: str) -> str:
         user, password, _ = _resolve_esa_ftp_credentials()
         https_auth = (user, password)
     except RuntimeError as err:
-        warnings.warn(
-            f"Could not configure HTTPS credentials ({err}). Using FTP download.",
-            category=UserWarning,
-        )
-        return _download_single_file_via_ftp(track_id)
+        raise RuntimeError(f"Could not configure PDS HTTPS credentials: {err}") from err
     requested_idx = pd.DatetimeIndex([track_id_timestamp])
     track_catalog = _load_cs_l1b_track_catalog_for(requested_idx)
     catalog_row = None
@@ -1740,19 +1673,11 @@ def download_single_file(track_id: str) -> str:
                 href=href,
             )
         except Exception as err:
-            warnings.warn(
-                f"HTTPS download failed for {filename}: {err}. Falling back to FTP.",
-                category=UserWarning,
-            )
+            raise _pds_download_error([(track_id, f"{filename}: {err}")]) from err
         finally:
             if https_session is not None:
                 https_session.close()
-    else:
-        warnings.warn(
-            f"No file-name catalog entry found for {track_id}. Falling back to FTP.",
-            category=UserWarning,
-        )
-    return _download_single_file_via_ftp(track_id)
+    raise _pds_download_error([(track_id, "no MAAP or local filename entry")])
 
 
 def drop_waveform(cs_l1b_ds, time_20_ku_mask):
