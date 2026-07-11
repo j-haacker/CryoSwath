@@ -106,7 +106,7 @@ def test_stac_catalog_warns_and_excludes_unsupported_baselines():
     assert catalog.empty
 
 
-def test_stac_query_uses_provider_fallback_and_pagination(monkeypatch):
+def test_stac_query_uses_maap_pagination(monkeypatch):
     calls = []
     first_item = _item("CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_E001")
     second_item = _item(
@@ -116,9 +116,9 @@ def test_stac_query_uses_provider_fallback_and_pagination(monkeypatch):
 
     def fake_get(url, params=None, timeout=None):
         calls.append((url, params, timeout))
-        if "eocat" in url:
-            raise RuntimeError("eocat down")
         if params is not None:
+            assert "maap" in url
+            assert params["collections"] == "CryoSatIceL110"
             assert params["productType"] == "SIR_SIN_1B"
             assert params["sensorMode"] == "SARIN"
             return DummyResponse(
@@ -137,7 +137,39 @@ def test_stac_query_uses_provider_fallback_and_pagination(monkeypatch):
 
     assert len(catalog) == 2
     assert list(catalog["provider"].unique()) == ["maap"]
-    assert len(calls) == 3
+    assert len(calls) == 2
+
+
+def test_stac_query_prefers_maap_and_uses_its_collection(monkeypatch):
+    calls = []
+    item = _item(
+        "CS_OFFL_SIR_SIN_1B_20220917T082319_20220917T082404_E001",
+        start="2022-09-17T08:23:19Z",
+        end="2022-09-17T08:24:05Z",
+        href=(
+            "https://catalog.maap.eo.esa.int/data/cryosat-pdgs-01/CRYOSAT/"
+            "SIR_SIN_1B/E001/2022/09/17/example.nc"
+        ),
+    )
+    item["assets"] = {"enclosure_nc": item["assets"].pop("enclosure")}
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append((url, params, timeout))
+        if "maap" not in url:
+            return DummyResponse({"features": []})
+        assert params["collections"] == "CryoSatIceL110"
+        return DummyResponse({"features": [item], "links": []})
+
+    monkeypatch.setattr(misc.requests, "get", fake_get)
+
+    catalog = misc._query_stac_l1b_track_catalog(
+        pd.Timestamp("2022-09-17T08:23:19"),
+        pd.Timestamp("2022-09-17T08:24:05"),
+    )
+
+    assert list(catalog["provider"].unique()) == ["maap"]
+    assert catalog.iloc[0]["href"].endswith("example.nc")
+    assert len(calls) == 1
 
 
 def test_load_cs_full_file_names_overlays_stac_catalog(monkeypatch, tmp_path):

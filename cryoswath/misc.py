@@ -135,8 +135,11 @@ from cryoswath import gis
 _PGC_STAC_API_URL = "https://stac.pgc.umn.edu/api/v1/"
 _PGC_STAC_TIMEOUT = (10, 60)
 _CRYOSAT_STAC_PROVIDERS = (
-    ("eocat", "https://eocat.esa.int/eo-catalogue/search"),
-    ("maap", "https://catalog.maap.eo.esa.int/catalogue/search"),
+    (
+        "maap",
+        "https://catalog.maap.eo.esa.int/catalogue/search",
+        "CryoSatIceL110",
+    ),
 )
 _CRYOSAT_STAC_TIMEOUT = (10, 60)
 _CRYOSAT_STAC_LIMIT = 500
@@ -2441,6 +2444,16 @@ def _extract_stac_l1b_filename(item_id: str, href: str | None) -> str:
     return f"{item_id}.nc"
 
 
+def _stac_l1b_enclosure_href(item: dict[str, Any]) -> str | None:
+    """Return a NetCDF enclosure URL from an ESA CryoSat STAC item."""
+    assets = item.get("assets", {})
+    for key in ("enclosure_nc", "enclosure"):
+        href = assets.get(key, {}).get("href")
+        if href:
+            return href
+    return None
+
+
 def _cryosat_stage_from_filename(filename: str) -> str:
     """Return the CryoSat product stage token from an ESA filename."""
     if filename.startswith("CS_") and len(filename) >= 7:
@@ -2523,7 +2536,7 @@ def _stac_items_to_l1b_track_catalog(
         product_type = properties.get("product:type")
         if product_type != _CRYOSAT_STAC_PRODUCT_TYPE:
             continue
-        href = item.get("assets", {}).get("enclosure", {}).get("href")
+        href = _stac_l1b_enclosure_href(item)
         filename = _extract_stac_l1b_filename(item_id, href)
         start_datetime, end_datetime = _cryosat_item_times(item, item_id)
         product_version = properties.get("version")
@@ -2690,21 +2703,26 @@ def _query_stac_l1b_track_catalog(
 ) -> gpd.GeoDataFrame:
     """Query ESA STAC providers for CryoSat SARIn L1B track metadata."""
     params = {
-        "collections": "CryoSat.products",
         "datetime": _stac_datetime_range(start_datetime, end_datetime),
         "productType": _CRYOSAT_STAC_PRODUCT_TYPE,
         "sensorMode": _CRYOSAT_STAC_SENSOR_MODE,
         "limit": str(_CRYOSAT_STAC_LIMIT),
     }
     errors = []
-    for provider, url in _CRYOSAT_STAC_PROVIDERS:
+    for provider, url, collection in _CRYOSAT_STAC_PROVIDERS:
         try:
-            features = _stac_search_features(url, params)
+            features = _stac_search_features(url, {"collections": collection, **params})
         except Exception as err:
             errors.append(f"{provider}: {err}")
             continue
-        return _stac_items_to_l1b_track_catalog(features, provider)
-    raise RuntimeError("Could not query CryoSat STAC providers. " + "; ".join(errors))
+        catalog = _stac_items_to_l1b_track_catalog(features, provider)
+        if not catalog.empty:
+            return catalog
+    if errors:
+        raise RuntimeError(
+            "Could not query CryoSat STAC metadata. " + "; ".join(errors)
+        )
+    return _empty_cs_l1b_track_catalog()
 
 
 def _refresh_cs_l1b_track_catalog(

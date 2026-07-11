@@ -4,6 +4,8 @@ This changelog is intentionally lightweight. It records user-visible changes and
 
 ## Unreleased
 
+- Use MAAP CryoSat STAC metadata with authenticated PDS HTTPS delivery for L1b
+  downloads, and fail fast rather than automatically falling back to FTP.
 - Add STAC-backed CryoSat SARIn L1b track discovery with a richer local cache,
   deterministic baseline/version selection, and legacy local-cache fallback.
 - Report PGC STAC API timeout and connectivity failures with a clear runtime error.
