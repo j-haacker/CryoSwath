@@ -42,11 +42,11 @@ from waveform-level processing to gridded elevation products.
 
 ## Dependency policy
 
-- Flexible package bounds (for pip/uv users): `xarray>=2025.3,<2025.12`.
+- Flexible package bounds (for pip/uv users): `xarray>=2025.3` and `zarr<3`.
 - Stable environment (recommended for reproducible runs): use the
   checked-in lock/environment files (`pixi.lock`, `environment.yml`).
 - Compatibility window in this repository was last audited on
-  **February 14, 2026**.
+  **July 11, 2026**.
 
 ## Installation
 

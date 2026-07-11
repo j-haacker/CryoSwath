@@ -42,8 +42,8 @@ dependencies:
 - statsmodels *
 - pytables *
 - tqdm *
-- xarray >=2026.3
-- zarr *
+- xarray >=2025.3
+- zarr <3
 - pip
 - pip:
   - -e .

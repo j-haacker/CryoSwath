@@ -33,8 +33,8 @@ stackstac = "*"
 statsmodels = "*"
 pytables = "*"
 tqdm = "*"
-xarray = ">=2026.3"
-zarr = "*"
+xarray = ">=2025.3"
+zarr = "<3"
 
 [feature.runtime.pypi-dependencies]
 # Keep local source editable, but resolve the runtime stack via Conda below.

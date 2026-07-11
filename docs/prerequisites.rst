@@ -241,7 +241,7 @@ Python package dependencies are defined in ``pyproject.toml``.
 - Runtime dependencies: ``[project.dependencies]``
 - Optional docs/dev extras: ``[project.optional-dependencies]``
 - Supported Python version: ``>=3.12``
-- Supported xarray window: ``>=2025.3,<2025.12``
+- Supported compatibility pair: ``xarray>=2025.3`` with ``zarr<3``
 
 The root ``requirements.txt`` is kept for compatibility but is not the
 primary dependency source.
