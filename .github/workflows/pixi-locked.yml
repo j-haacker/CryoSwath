@@ -21,7 +21,7 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
           cache: true
-          pixi-version: "0.72.0"
+          pixi-version: "v0.72.0"
       - name: Check dependency definitions are synchronized
         run: bash tools/sync_dependency_definitions.sh --check
 
@@ -34,7 +34,7 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
           cache: true
-          pixi-version: "0.72.0"
+          pixi-version: "v0.72.0"
           environments: test
       - name: Install locked test environment
         run: pixi install --locked -e test
@@ -52,7 +52,7 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
           cache: true
-          pixi-version: "0.72.0"
+          pixi-version: "v0.72.0"
           environments: docs
       - name: Install locked docs environment
         run: pixi install --locked -e docs
