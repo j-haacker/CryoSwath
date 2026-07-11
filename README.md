@@ -12,11 +12,11 @@ from waveform-level processing to gridded elevation products.
 
 ## What CryoSwath provides
 
-- discovery of CryoSat-2 tracks over a region of interest
+- Discovery of CryoSat-2 tracks over a region of interest
 - L1b download and preprocessing
-- swath and POCA elevation retrieval
-- aggregation to regular spatial/temporal grids
-- gap filling and trend estimation workflows
+- Swath and POCA elevation retrieval
+- Aggregation to regular spatial/temporal grids
+- Gap filling and trend estimation workflows
 
 ## Important notes
 
@@ -39,14 +39,6 @@ from waveform-level processing to gridded elevation products.
   to FTP.
 - Anonymous FTP login is no longer supported.
 - Install `xarray` and `zarr` together to avoid version mismatches.
-
-## Dependency policy
-
-- Flexible package bounds (for pip/uv users): `xarray>=2025.3` and `zarr<3`.
-- Stable environment (recommended for reproducible runs): use the
-  checked-in lock/environment files (`pixi.lock`, `environment.yml`).
-- Compatibility window in this repository was last audited on
-  **July 11, 2026**.
 
 ## Installation
 
@@ -193,12 +185,12 @@ If you use CryoSwath, please cite:
 ```bibtex
 @software{cryoswath,
   author       = {Haacker, Jan},
-  title        = {CryoSwath 0.2.6},
-  month        = feb,
+  title        = {CryoSwath 0.2.7},
+  month        = jul,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.2.6},
-  doi          = {10.5281/zenodo.20257262}
+  version      = {0.2.7},
+  doi          = {10.5281/zenodo.14825358} % replace concept DOI on release
 }
 ```
 
