@@ -2,7 +2,7 @@
 name = "cryoswath"
 description = "CryoSwath environment using pixi"
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
 conda-pypi-map = { conda-forge = "conda-pypi-map.json", bioconda = "conda-pypi-map.json" }
 
 [dependencies]
@@ -33,7 +33,7 @@ stackstac = "*"
 statsmodels = "*"
 pytables = "*"
 tqdm = "*"
-xarray = ">=2026.3"
+xarray = ">=2026.4"
 zarr = "*"
 
 [feature.runtime.pypi-dependencies]

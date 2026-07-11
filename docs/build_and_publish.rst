@@ -62,3 +62,46 @@ Package publishing is handled by ``.github/workflows/pypi-publish.yml``.
   version (``v0.2.5`` -> ``0.2.5``).
 - If the version check passes, the workflow publishes to PyPI via GitHub
   trusted publishing.
+
+Release checklist
+-----------------
+
+1. Merge the intended release changes into ``main`` and create a release branch
+   from the updated branch.
+2. Move the ``Unreleased`` changelog entries under a dated release heading and
+   set the same version in ``pyproject.toml``.
+3. Run the dependency compatibility jobs and the release-style checks from
+   committed ``HEAD``::
+
+      pixi run -e test test-fresh-committed
+
+4. Build and inspect the distributions locally::
+
+      python -m build
+      python -m twine check dist/*
+
+5. Merge the release preparation after required CI passes, then create a GitHub
+   release tagged ``v<version>`` from that exact commit. Publishing the release
+   triggers the PyPI workflow; creating only a tag does not.
+6. Confirm the new version and both wheel and source distribution on PyPI.
+
+Conda-forge preflight and publishing
+------------------------------------
+
+Before publishing upstream or pushing a feedstock update, build the final source
+distribution and prepare the version update in a personal fork of
+``conda-forge/cryoswath-feedstock``. Temporarily point the local recipe at the
+local source archive, rerender when required, and run the feedstock's CI image::
+
+   python build-locally.py
+
+Require the package build, recipe tests, output validation, and an installation
+from ``build_artifacts`` to pass. Do not push the feedstock branch or open its
+pull request until this local build succeeds.
+
+After PyPI publishes, replace the temporary source with the final PyPI source
+archive URL and checksum. If the published archive differs from the tested local
+archive, rerun ``build-locally.py`` before pushing. The feedstock recipe must
+reset its build number to ``0`` and reflect the release's Python, xarray, and
+runtime dependency requirements. Once the feedstock pull request passes and is
+merged, conda-forge builds and uploads the package automatically.

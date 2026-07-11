@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PROJECT = REPO_ROOT / "tests" / "reports" / "artifacts" / "project"
 TUTORIAL_PROJECT = REPO_ROOT / "tests" / "tutorials" / "artifacts" / "project"
 TEST_DEM_ENV_VAR = "CRYOSWATH_TEST_DEM_DIR"
+TEST_DATA_ENV_VAR = "CRYOSWATH_TEST_DATA_DIR"
 
 AUXILIARY_SENTINELS = (
     Path("data/auxiliary/CryoSat-2_SARIn_file_names.pkl"),
@@ -94,9 +95,24 @@ def _normalize_dem_path(dem_path: str | Path | None) -> Path | None:
     return path
 
 
+def _normalize_data_path(data_path: str | Path | None) -> Path | None:
+    if data_path is None:
+        return None
+
+    path = Path(data_path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Data path does not exist: {path}")
+    if not path.is_dir():
+        raise NotADirectoryError(
+            f"Data path should be a directory containing CryoSwath data, not {path}"
+        )
+    return path
+
+
 def _write_project_config(
     project_dir: Path,
     *,
+    data_path: str | Path | None = None,
     dem_path: str | Path | None = None,
 ) -> Path:
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +122,10 @@ def _write_project_config(
         config.read(config_path)
     if "path" not in config:
         config["path"] = {}
-    config["path"]["data"] = "data"
+    resolved_data_path = _normalize_data_path(data_path)
+    config["path"]["data"] = (
+        "data" if resolved_data_path is None else str(resolved_data_path)
+    )
     resolved_dem_path = _normalize_dem_path(dem_path)
     if resolved_dem_path is None:
         config["path"].pop("dem", None)
@@ -114,15 +133,19 @@ def _write_project_config(
         config["path"]["dem"] = str(resolved_dem_path)
     with config_path.open("w") as file_obj:
         config.write(file_obj)
-    (project_dir / "data").mkdir(parents=True, exist_ok=True)
+    if resolved_data_path is None:
+        (project_dir / "data").mkdir(parents=True, exist_ok=True)
     return config_path
 
 
-def _missing_auxiliary_files(project_dir: Path) -> list[Path]:
+def _missing_auxiliary_files(
+    project_dir: Path, data_path: Path | None = None
+) -> list[Path]:
+    root = project_dir if data_path is None else data_path.parent
     return [
-        project_dir / relative_path
+        root / relative_path
         for relative_path in AUXILIARY_SENTINELS
-        if not (project_dir / relative_path).is_file()
+        if not (root / relative_path).is_file()
     ]
 
 
@@ -136,8 +159,9 @@ def _ensure_auxiliary_data(
     *,
     timeout: int | float,
     skip_download: bool = False,
+    data_path: Path | None = None,
 ) -> None:
-    missing = _missing_auxiliary_files(project_dir)
+    missing = _missing_auxiliary_files(project_dir, data_path)
     if not missing:
         return
     if skip_download:
@@ -149,7 +173,7 @@ def _ensure_auxiliary_data(
     with _using_cryoswath_config(config_path):
         misc.download_auxiliary_data(base_dir=project_dir, timeout=timeout)
 
-    missing_after_download = _missing_auxiliary_files(project_dir)
+    missing_after_download = _missing_auxiliary_files(project_dir, data_path)
     if missing_after_download:
         raise RuntimeError(
             "Auxiliary-data setup finished but required notebook file(s) are "
@@ -157,18 +181,30 @@ def _ensure_auxiliary_data(
         )
 
 
-def _tutorial_support_source(repo_root: Path, filename: str) -> Path | None:
-    candidates = (
+def _tutorial_support_source(
+    repo_root: Path, filename: str, data_path: Path | None = None
+) -> Path | None:
+    candidates = [
         repo_root / "data" / "tutorials" / filename,
         repo_root / "tests" / "tutorials" / "resources" / filename,
-    )
+    ]
+    if data_path is not None:
+        candidates.extend(
+            [
+                data_path / "tutorials" / filename,
+                data_path / "auxiliary" / "DEM" / filename,
+                data_path / "auxiliary" / "RGI" / filename,
+            ]
+        )
     for candidate in candidates:
         if candidate.is_file():
             return candidate
     return None
 
 
-def _copy_tutorial_support_files(project_dir: Path, repo_root: Path) -> list[Path]:
+def _copy_tutorial_support_files(
+    project_dir: Path, repo_root: Path, data_path: Path | None = None
+) -> list[Path]:
     copied: list[Path] = []
     missing_sources: list[str] = []
     for filename, relative_destinations in TUTORIAL_SUPPORT_FILES.items():
@@ -178,7 +214,7 @@ def _copy_tutorial_support_files(project_dir: Path, repo_root: Path) -> list[Pat
         if all(destination.is_file() for destination in destinations):
             continue
 
-        source = _tutorial_support_source(repo_root, filename)
+        source = _tutorial_support_source(repo_root, filename, data_path)
         if source is None:
             missing_sources.append(filename)
             continue
@@ -203,15 +239,20 @@ def prepare_report_project(
     *,
     timeout: int | float = 120,
     skip_aux_download: bool = False,
+    data_path: str | Path | None = None,
     dem_path: str | Path | None = None,
 ) -> PreparedNotebookProject:
     project_path = Path(project_dir).expanduser().resolve()
-    config_path = _write_project_config(project_path, dem_path=dem_path)
+    resolved_data_path = _normalize_data_path(data_path)
+    config_path = _write_project_config(
+        project_path, data_path=resolved_data_path, dem_path=dem_path
+    )
     _ensure_auxiliary_data(
         project_path,
         config_path,
         timeout=timeout,
         skip_download=skip_aux_download,
+        data_path=resolved_data_path,
     )
     return PreparedNotebookProject(project_path, config_path)
 
@@ -222,18 +263,23 @@ def prepare_tutorial_project(
     repo_root: str | Path = REPO_ROOT,
     timeout: int | float = 120,
     skip_aux_download: bool = False,
+    data_path: str | Path | None = None,
     dem_path: str | Path | None = None,
 ) -> PreparedNotebookProject:
     project_path = Path(project_dir).expanduser().resolve()
     repo_path = Path(repo_root).expanduser().resolve()
-    config_path = _write_project_config(project_path, dem_path=dem_path)
+    resolved_data_path = _normalize_data_path(data_path)
+    config_path = _write_project_config(
+        project_path, data_path=resolved_data_path, dem_path=dem_path
+    )
     _ensure_auxiliary_data(
         project_path,
         config_path,
         timeout=timeout,
         skip_download=skip_aux_download,
+        data_path=resolved_data_path,
     )
-    _copy_tutorial_support_files(project_path, repo_path)
+    _copy_tutorial_support_files(project_path, repo_path, resolved_data_path)
     tutorial_dir = Path(misc.copy_tutorials(base_dir=project_path, force=True))
     return PreparedNotebookProject(project_path, config_path, tutorial_dir)
 
@@ -272,6 +318,18 @@ def _build_parser() -> ArgumentParser:
         action="store_true",
         help="Fail if auxiliary data is missing instead of downloading it.",
     )
+    data_path_default = os.environ.get(TEST_DATA_ENV_VAR) or None
+    parser.add_argument(
+        "--data-dir",
+        "--data-path",
+        dest="data_path",
+        default=data_path_default,
+        type=Path,
+        help=(
+            "Directory containing cached CryoSwath data for notebook tests. "
+            f"Can also be set with {TEST_DATA_ENV_VAR}."
+        ),
+    )
     dem_path_default = os.environ.get(TEST_DEM_ENV_VAR) or None
     parser.add_argument(
         "--dem-dir",
@@ -297,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.report_project,
                 timeout=args.timeout,
                 skip_aux_download=args.skip_aux_download,
+                data_path=args.data_path,
                 dem_path=args.dem_path,
             )
         )
@@ -306,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.tutorial_project,
                 timeout=args.timeout,
                 skip_aux_download=args.skip_aux_download,
+                data_path=args.data_path,
                 dem_path=args.dem_path,
             )
         )

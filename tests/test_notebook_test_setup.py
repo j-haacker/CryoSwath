@@ -113,6 +113,27 @@ def test_main_uses_test_dem_env(monkeypatch, tmp_path):
     assert config["path"]["dem"] == str(dem_dir.resolve())
 
 
+def test_main_uses_external_test_data_without_downloading(monkeypatch, tmp_path):
+    report_project = tmp_path / "reports"
+    data_dir = tmp_path / "data"
+    _write_auxiliary_sentinels(tmp_path)
+    (data_dir / "L1b").mkdir(parents=True)
+    monkeypatch.setenv(notebook_setup.TEST_DATA_ENV_VAR, str(data_dir))
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "download_auxiliary_data",
+        lambda *args, **kwargs: pytest.fail("download should not be called"),
+    )
+
+    assert (
+        notebook_setup.main(["reports", "--report-project", str(report_project)]) == 0
+    )
+
+    config = ConfigParser()
+    config.read(report_project / "cryoswath.cfg")
+    assert config["path"]["data"] == str(data_dir.resolve())
+
+
 def test_prepare_report_project_reuses_existing_auxiliary(monkeypatch, tmp_path):
     _write_auxiliary_sentinels(tmp_path / "reports")
     monkeypatch.setattr(
@@ -177,6 +198,41 @@ def test_prepare_tutorial_project_copies_resources_and_support_files(
     assert (
         tmp_path / "tutorial-project" / "data" / "tutorials" / "barnes_ice_cap.feather"
     ).is_file()
+
+
+def test_prepare_tutorial_project_uses_external_data_support(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_auxiliary_sentinels(tmp_path)
+    for filename in notebook_setup.TUTORIAL_SUPPORT_FILES:
+        source = data_dir / "tutorials" / filename
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(filename)
+
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "download_auxiliary_data",
+        lambda *args, **kwargs: pytest.fail("download should not be called"),
+    )
+
+    def fake_copy_tutorials(destination=None, *, base_dir=".", force=False):
+        tutorial_dir = Path(base_dir) / "tutorials"
+        tutorial_dir.mkdir(parents=True)
+        return str(tutorial_dir)
+
+    monkeypatch.setattr(notebook_setup.misc, "copy_tutorials", fake_copy_tutorials)
+
+    project = notebook_setup.prepare_tutorial_project(
+        tmp_path / "tutorial-project",
+        repo_root=repo_root,
+        data_path=data_dir,
+    )
+
+    for destinations in notebook_setup.TUTORIAL_SUPPORT_FILES.values():
+        assert all(
+            (project.project_dir / destination).is_file()
+            for destination in destinations
+        )
 
 
 def test_prepare_tutorial_project_fails_early_for_missing_support_files(

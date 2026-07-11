@@ -9,9 +9,12 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   compatibility:
-    name: "${{ matrix.name }} (py${{ matrix.python }}, xr=${{ matrix.xarray }})"
+    name: "${{ matrix.name }} (py${{ matrix.python }}, ${{ matrix.xarray_spec }})"
     continue-on-error: ${{ matrix.experimental }}
     runs-on: ubuntu-latest
     strategy:
@@ -20,15 +23,15 @@ jobs:
         include:
           - name: min-supported
             python: "3.12"
-            xarray: "2025.3.*"
+            xarray_spec: "xarray==2026.4.*"
             experimental: false
-          - name: max-supported
+          - name: latest-supported
             python: "3.13"
-            xarray: "2026.4.*"
+            xarray_spec: "xarray"
             experimental: false
           - name: py314-observe
             python: "3.14"
-            xarray: "2026.4.*"
+            xarray_spec: "xarray"
             experimental: true
 
     steps:
@@ -42,8 +45,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "xarray==${{ matrix.xarray }}"
-          python -m pip install --editable .
+          python -m pip install --upgrade pytest "${{ matrix.xarray_spec }}" --editable .
           python -m pip check
 
       - name: Smoke test imports
@@ -59,37 +61,5 @@ jobs:
           print("l1b module:", l1b.__name__)
           PY
 
-  latest-canary:
-    name: latest-canary (non-blocking)
-    continue-on-error: true
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install baseline project
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --editable .
-
-      - name: Upgrade xarray beyond pinned range (canary)
-        run: |
-          python -m pip install --upgrade xarray
-
-      - name: Canary smoke test
-        run: |
-          python - <<'PY'
-          import platform
-          import xarray as xr
-          import cryoswath
-          from cryoswath import l1b
-          print("python:", platform.python_version())
-          print("xarray:", xr.__version__)
-          print("cryoswath:", cryoswath.__version__)
-          print("l1b module:", l1b.__name__)
-          PY
+      - name: Run unit tests
+        run: python -m pytest -q tests/test_*
