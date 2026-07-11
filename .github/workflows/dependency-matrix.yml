@@ -20,7 +20,7 @@ jobs:
         include:
           - name: min-supported
             python: "3.12"
-            xarray_spec: "xarray==2026.3.*"
+            xarray_spec: "xarray==2026.4.*"
             experimental: false
           - name: latest-supported
             python: "3.13"
