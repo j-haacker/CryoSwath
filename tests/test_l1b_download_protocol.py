@@ -63,6 +63,15 @@ class DummySession:
         self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def no_implicit_stac_catalog_refresh(monkeypatch):
+    monkeypatch.setattr(
+        l1b,
+        "_load_cs_l1b_track_catalog_for",
+        lambda idx: pd.DataFrame(),
+    )
+
+
 def test_normalize_l1b_identifier():
     assert (
         l1b._normalize_l1b_identifier(
@@ -187,7 +196,7 @@ def test_download_single_file_prefers_https(monkeypatch, tmp_path):
     calls = []
     session = DummySession()
 
-    def fake_https(remote_file, local_path, session):
+    def fake_https(remote_file, local_path, session, href=None):
         calls.append((remote_file, Path(local_path), session))
         return str(local_path)
 
@@ -208,6 +217,53 @@ def test_download_single_file_prefers_https(monkeypatch, tmp_path):
     assert session.closed
 
 
+def test_download_single_file_uses_stac_catalog_href(monkeypatch, tmp_path):
+    track_id = "20200101T000000"
+    track_time = pd.to_datetime(track_id)
+    remote_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_E001.nc"
+    href = "https://science-pds.cryosat.esa.int/?do=download&file=test.nc"
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(
+        l1b, "_resolve_esa_ftp_credentials", lambda: ("esa-user", "esa-password", "env")
+    )
+    monkeypatch.setattr(
+        l1b,
+        "_load_cs_l1b_track_catalog_for",
+        lambda idx: pd.DataFrame(
+            {"filename": [remote_file], "href": [href]}, index=[track_time]
+        ),
+    )
+    monkeypatch.setattr(
+        l1b,
+        "_load_cs_full_file_names_for",
+        lambda idx: pd.Series(dtype="object"),
+    )
+    session = DummySession()
+    calls = []
+
+    def fake_https(remote_file, local_path, session, href=None):
+        calls.append((remote_file, Path(local_path), session, href))
+        return str(local_path)
+
+    monkeypatch.setattr(l1b, "_create_esa_https_session", lambda auth: session)
+    monkeypatch.setattr(l1b, "_download_named_file_https", fake_https)
+    monkeypatch.setattr(
+        l1b,
+        "_download_single_file_via_ftp",
+        lambda track_id: (_ for _ in ()).throw(
+            AssertionError("FTP fallback should not be used")
+        ),
+    )
+
+    result = l1b.download_single_file(track_id)
+
+    assert result.endswith(remote_file)
+    assert calls == [
+        (remote_file, tmp_path / "2020" / "01" / remote_file, session, href)
+    ]
+    assert session.closed
+
+
 def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tmp_path):
     track_id = "20200101T000000"
     track_time = pd.to_datetime(track_id)
@@ -221,9 +277,7 @@ def test_download_single_file_falls_back_to_ftp_on_https_failure(monkeypatch, tm
         "_load_cs_full_file_names_for",
         lambda idx: pd.Series({track_time: remote_base_name}),
     )
-    monkeypatch.setattr(
-        l1b, "_create_esa_https_session", lambda auth: DummySession()
-    )
+    monkeypatch.setattr(l1b, "_create_esa_https_session", lambda auth: DummySession())
     monkeypatch.setattr(
         l1b,
         "_download_named_file_https",
@@ -270,7 +324,7 @@ def test_download_files_uses_https_and_falls_back_for_unresolved_tracks(
     ftp_calls = []
     session = DummySession()
 
-    def fake_https(remote_file, local_path, session):
+    def fake_https(remote_file, local_path, session, href=None):
         https_calls.append((remote_file, Path(local_path), session))
         return str(local_path)
 
@@ -329,11 +383,13 @@ def test_download_files_reuses_one_https_session_for_batch(monkeypatch, tmp_path
     monkeypatch.setattr(
         l1b, "_resolve_esa_ftp_credentials", lambda: ("esa-user", "esa-password", "env")
     )
-    monkeypatch.setattr(l1b, "_load_cs_full_file_names_for", lambda idx: remote_base_names)
+    monkeypatch.setattr(
+        l1b, "_load_cs_full_file_names_for", lambda idx: remote_base_names
+    )
     session = DummySession()
     session_calls = []
 
-    def fake_https(remote_file, local_path, session):
+    def fake_https(remote_file, local_path, session, href=None):
         session_calls.append((remote_file, session))
         return str(local_path)
 
@@ -369,7 +425,7 @@ def test_download_named_file_https_rejects_html_payload(monkeypatch, tmp_path):
             DummyResponse(
                 content=b"<!DOCTYPE html><html>login page</html>",
                 headers={"content-type": "text/html"},
-            )
+            ),
         ]
     )
     monkeypatch.setattr(
@@ -505,7 +561,9 @@ def test_download_remote_file_via_ftp_atomic_cleans_temp_on_failure(tmp_path):
 
 def test_live_download_single_file_prefers_https_when_enabled(monkeypatch, tmp_path):
     if os.environ.get("CRYOSWATH_RUN_LIVE_ESA") != "1":
-        pytest.skip("Set CRYOSWATH_RUN_LIVE_ESA=1 to run the live ESA HTTPS smoke test.")
+        pytest.skip(
+            "Set CRYOSWATH_RUN_LIVE_ESA=1 to run the live ESA HTTPS smoke test."
+        )
 
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(

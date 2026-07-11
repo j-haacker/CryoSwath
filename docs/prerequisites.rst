@@ -167,8 +167,30 @@ The command ``cryoswath download-aux-data`` downloads the latest CryoSwath
 auxiliary-data snapshot from Zenodo DOI ``10.5281/zenodo.20241526`` and
 extracts it into ``data/auxiliary`` by default. The snapshot contains the
 CryoSat-2 ground-track database, filename catalog, and static RGI metadata.
+Newer installations may also contain the richer
+``CryoSat-2_SARIn_L1B_track_catalog.feather`` cache, which stores ESA STAC
+item IDs, product filenames, download URLs, product versions, processing dates,
+and track geometries for supported ``SIR_SIN_1B`` products.
+
+By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
+caches when their latest timestamp covers the requested period. If the request
+extends beyond local coverage and a network connection is available, CryoSwath
+queries ESA STAC metadata, caches the supported products, and then returns the
+combined local result. Pass ``source="local"`` to force offline/local-only
+behavior, or ``source="stac"`` to force a STAC metadata query for the requested
+period.
+
+The STAC-backed selector currently accepts validated CryoSat Baseline D/E
+``SIR_SIN_1B`` products. If a newer unsupported baseline is seen, CryoSwath
+warns and excludes those products rather than feeding unvalidated files into
+the processing chain. Existing local NetCDF files are not replaced
+automatically; newer-product replacement is intentionally left as an explicit
+future workflow.
+
 Run ``cryoswath update-tracks`` periodically to extend or refresh the local
-track database after installing the baseline.
+track metadata after installing the baseline. This refreshes STAC-backed
+metadata where possible and leaves the legacy filename catalog available for
+older workflows.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^
