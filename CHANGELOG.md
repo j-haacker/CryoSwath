@@ -2,8 +2,6 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
-## Unreleased
-
 ## 0.2.7 - 2026-07-11
 
 - Use MAAP CryoSat STAC metadata with authenticated PDS HTTPS delivery for L1b
@@ -12,9 +10,6 @@ This changelog is intentionally lightweight. It records user-visible changes and
   once per batch, and dispatch only missing tracks to download workers.
 - Add STAC-backed CryoSat SARIn L1b track discovery with a richer local cache,
   deterministic baseline/version selection, and legacy local-cache fallback.
-- Restore the supported compatibility range to xarray 2025.3 and newer with
-  Zarr 2, align dependency metadata, and test both the minimum and newest xarray
-  releases in CI.
 - Report PGC STAC API timeout and connectivity failures with a clear runtime error.
 - Avoid xarray MultiIndex deprecation warnings during hypsometric void filling.
 - Allow `fill_voids` to use existing basin/group IDs without requiring basin shape files.

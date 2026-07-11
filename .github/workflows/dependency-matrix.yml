@@ -20,7 +20,7 @@ jobs:
         include:
           - name: min-supported
             python: "3.12"
-            xarray_spec: "xarray==2025.3.*"
+            xarray_spec: "xarray==2026.3.*"
             experimental: false
           - name: latest-supported
             python: "3.13"
@@ -42,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --upgrade pytest "${{ matrix.xarray_spec }}" "zarr<3" --editable .
+          python -m pip install --upgrade pytest "${{ matrix.xarray_spec }}" --editable .
           python -m pip check
 
       - name: Smoke test imports

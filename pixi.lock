@@ -8105,8 +8105,8 @@ packages:
   - statsmodels
   - tables
   - tqdm
-  - xarray>=2025.3
-  - zarr<3
+  - xarray>=2026.3
+  - zarr
   - flit ; extra == 'dev'
   - pip-tools ; extra == 'dev'
   - pre-commit ; extra == 'dev'
@@ -8116,7 +8116,7 @@ packages:
   - ipykernel ; extra == 'lab'
   - snippets @ git+https://github.com/j-haacker/snipgit@main ; extra == 'lab'
   - ipykernel ; extra == 'notebooks'
-  - xarray[accel] ; extra == 'production'
+  - xarray[accel]>=2025.3,<2025.12 ; extra == 'production'
   - dask[distributed] ; extra == 'production'
   - xzarrguard>=0.1.2 ; python_full_version >= '3.12' and extra == 'zarrguard'
   - cryoswath[dev,docs,lab,notebooks,production,zarrguard] ; extra == 'all'

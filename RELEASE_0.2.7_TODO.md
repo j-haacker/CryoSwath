@@ -69,6 +69,14 @@ worktree at `/home/haacker/downscale_test` was left intact.
     `CRYOSWATH_TEST_DEM_DIR`.
   - Rerun tutorial notebooks after amending external support-file discovery into
     committed HEAD.
+  - Diagnostic hooks, first waveform, first swath, and POCA tutorial notebooks
+    passed.
+  - The general step-by-step notebook was stopped at cell 46/67 after about ten
+    minutes because it expanded into a broad historical re-download. Local data
+    was configured correctly, but one-second track/product timestamp variants
+    bypassed the cache and used working netrc credentials. Resolve the cache-ID
+    reconciliation or narrow this tutorial before treating `test-all` as a
+    practical release gate.
 - [ ] Review the final diff and commit the release preparation on
   `release/0.2.7`.
 
