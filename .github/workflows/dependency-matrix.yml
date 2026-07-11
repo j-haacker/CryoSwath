@@ -9,6 +9,9 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   compatibility:
     name: "${{ matrix.name }} (py${{ matrix.python }}, ${{ matrix.xarray_spec }})"
