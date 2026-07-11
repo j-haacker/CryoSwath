@@ -4,8 +4,10 @@ __all__ = [
     "cache_l2_data",
     "build_dataset",
     "extend_dataset",
+    "merge_finalized_dataset_extension",
 ]
 
+from collections.abc import Mapping
 import dask.array
 import datetime
 from dateutil.relativedelta import relativedelta
@@ -23,7 +25,7 @@ from pathlib import Path
 import tempfile
 import xarray as xr
 
-from cryoswath import l1b, l2
+from cryoswath import l1b, l2, provenance
 from cryoswath.misc import (
     l3_path,
     dataframe_to_rioxr,
@@ -290,6 +292,377 @@ def _dataset_values_match(
         elif not np.array_equal(a, b):
             return False
     return True
+
+
+_FINALIZED_NETCDF_ENCODING_KEYS = frozenset(
+    {
+        "_FillValue",
+        "chunksizes",
+        "complevel",
+        "compression",
+        "compression_opts",
+        "contiguous",
+        "dtype",
+        "fletcher32",
+        "shuffle",
+        "zlib",
+    }
+)
+_FINALIZED_TIME_ENCODING_KEYS = frozenset({"calendar", "units"})
+
+
+def _array_values_match(
+    left,
+    right,
+    *,
+    rtol: float = 0.0,
+    atol: float = 0.0,
+) -> bool:
+    """Compare array-like values, treating NaNs as equal for numeric arrays."""
+    left_values = np.asarray(left)
+    right_values = np.asarray(right)
+    if left_values.shape != right_values.shape:
+        return False
+    if np.issubdtype(left_values.dtype, np.number) or np.issubdtype(
+        right_values.dtype, np.number
+    ):
+        return bool(
+            np.allclose(
+                left_values,
+                right_values,
+                rtol=rtol,
+                atol=atol,
+                equal_nan=True,
+            )
+        )
+    return bool(np.array_equal(left_values, right_values))
+
+
+def _attribute_values_match(left, right) -> bool:
+    """Compare metadata values without tripping over numpy arrays."""
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        if set(left) != set(right):
+            return False
+        return all(_attribute_values_match(left[key], right[key]) for key in left)
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        return _array_values_match(left, right)
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+            return False
+        if len(left) != len(right):
+            return False
+        return all(_attribute_values_match(a, b) for a, b in zip(left, right))
+    try:
+        if pd.isna(left) and pd.isna(right):
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        return bool(left == right)
+    except (TypeError, ValueError):
+        return False
+
+
+def _require_attrs_match(
+    left: Mapping,
+    right: Mapping,
+    *,
+    context: str,
+    ignore: set[str] | None = None,
+) -> None:
+    """Raise if two xarray attribute mappings differ."""
+    ignore = set() if ignore is None else ignore
+    left_keys = set(left) - ignore
+    right_keys = set(right) - ignore
+    if left_keys != right_keys:
+        missing = sorted(right_keys - left_keys)
+        extra = sorted(left_keys - right_keys)
+        raise ValueError(
+            f"{context} attributes differ; missing from base: {missing}, "
+            f"missing from extension: {extra}."
+        )
+    mismatched = [
+        key
+        for key in sorted(left_keys)
+        if not _attribute_values_match(left[key], right[key])
+    ]
+    if mismatched:
+        raise ValueError(f"{context} attributes differ for {mismatched}.")
+
+
+def _require_variable_schema_match(
+    left: xr.DataArray,
+    right: xr.DataArray,
+    *,
+    context: str,
+) -> None:
+    """Require matching dimensions, dtype, and variable attributes."""
+    if left.dims != right.dims:
+        raise ValueError(
+            f"{context} dimensions differ: {left.dims!r} != {right.dims!r}."
+        )
+    if left.dtype != right.dtype:
+        raise ValueError(f"{context} dtype differs: {left.dtype!r} != {right.dtype!r}.")
+    _require_attrs_match(left.attrs, right.attrs, context=context)
+
+
+def _time_dependent_data_vars(ds: xr.Dataset) -> list[str]:
+    """Return finalized-product data variables with a time dimension."""
+    return [name for name, data in ds.data_vars.items() if "time" in data.dims]
+
+
+def _static_data_vars(ds: xr.Dataset) -> list[str]:
+    """Return finalized-product data variables without a time dimension."""
+    return [name for name, data in ds.data_vars.items() if "time" not in data.dims]
+
+
+def _open_finalized_l3_dataset(dataset_or_path: xr.Dataset | str | Path) -> xr.Dataset:
+    """Open a finalized L3 NetCDF product or pass through an in-memory dataset."""
+    if isinstance(dataset_or_path, xr.Dataset):
+        return dataset_or_path
+    return xr.open_dataset(dataset_or_path, decode_coords="all")
+
+
+def _require_monotonic_unique_time(ds: xr.Dataset, *, context: str) -> pd.DatetimeIndex:
+    """Return a validated monotonic, unique time index."""
+    if "time" not in ds.coords or ds.sizes.get("time", 0) == 0:
+        raise ValueError(f"{context} must have a non-empty time coordinate.")
+    time_index = pd.DatetimeIndex(ds.time.values)
+    if not time_index.is_monotonic_increasing:
+        raise ValueError(f"{context} time coordinate must be monotonic increasing.")
+    if not time_index.is_unique:
+        raise ValueError(f"{context} time coordinate must not contain duplicates.")
+    return time_index
+
+
+def _require_finalized_schema_match(base: xr.Dataset, extension: xr.Dataset) -> None:
+    """Validate finalized-product schema and static content."""
+    if set(base.data_vars) != set(extension.data_vars):
+        raise ValueError("Finalized datasets must have the same data variables.")
+    if set(base.coords) != set(extension.coords):
+        raise ValueError("Finalized datasets must have the same coordinates.")
+    if set(base.dims) != set(extension.dims):
+        raise ValueError("Finalized datasets must have the same dimensions.")
+    for dim, size in base.sizes.items():
+        if dim != "time" and size != extension.sizes[dim]:
+            raise ValueError(
+                f"Finalized datasets differ along non-time dimension {dim!r}: "
+                f"{size} != {extension.sizes[dim]}."
+            )
+
+    _require_attrs_match(
+        base.attrs,
+        extension.attrs,
+        context="global",
+        ignore={"history"},
+    )
+
+    for name in sorted(base.coords):
+        _require_variable_schema_match(
+            base.coords[name],
+            extension.coords[name],
+            context=f"coordinate {name!r}",
+        )
+        if "time" not in base.coords[name].dims and not _array_values_match(
+            base.coords[name].values,
+            extension.coords[name].values,
+        ):
+            raise ValueError(f"Non-time coordinate {name!r} differs.")
+
+    for name in sorted(base.data_vars):
+        _require_variable_schema_match(
+            base[name],
+            extension[name],
+            context=f"data variable {name!r}",
+        )
+
+    for name in _static_data_vars(base):
+        if not _array_values_match(base[name].values, extension[name].values):
+            raise ValueError(f"Static data variable {name!r} differs.")
+
+
+def _finalized_overlap_times(
+    base_times: pd.DatetimeIndex,
+    extension_times: pd.DatetimeIndex,
+    *,
+    overlap_time_steps: int,
+) -> pd.DatetimeIndex:
+    """Return validated contiguous tail/head overlap times."""
+    if overlap_time_steps < 1:
+        raise ValueError("overlap_time_steps must be at least 1.")
+    overlap_times = base_times.intersection(extension_times).sort_values()
+    if len(overlap_times) == 0:
+        raise ValueError("The extension does not overlap the base dataset.")
+    if len(overlap_times) < overlap_time_steps:
+        raise ValueError(
+            "The extension does not cover the requested overlap_time_steps."
+        )
+
+    base_tail = base_times[base_times >= extension_times[0]]
+    extension_head = extension_times[extension_times <= base_times[-1]]
+    if not overlap_times.equals(base_tail) or not overlap_times.equals(extension_head):
+        raise ValueError(
+            "The overlap must be the contiguous tail of the base dataset and "
+            "the contiguous head of the extension dataset."
+        )
+    return overlap_times
+
+
+def _require_finalized_overlap_match(
+    base: xr.Dataset,
+    extension: xr.Dataset,
+    *,
+    overlap_times: pd.DatetimeIndex,
+    overlap_rtol: float,
+    overlap_atol: float,
+) -> None:
+    """Compare all overlapping months for every time-dependent variable."""
+    mismatched = []
+    for name in _time_dependent_data_vars(base):
+        if not _array_values_match(
+            base[name].sel(time=overlap_times).values,
+            extension[name].sel(time=overlap_times).values,
+            rtol=overlap_rtol,
+            atol=overlap_atol,
+        ):
+            mismatched.append(name)
+    if mismatched:
+        raise RuntimeError(
+            "Finalized extension overlap differs for time-dependent variables: "
+            + ", ".join(sorted(mismatched))
+            + "."
+        )
+
+
+def _copy_variable_encodings(target: xr.Dataset, template: xr.Dataset) -> xr.Dataset:
+    """Carry decoded xarray encoding metadata such as scalar coord links."""
+    for name in target.variables:
+        if name in template.variables:
+            target[name].encoding = dict(template[name].encoding)
+    return target
+
+
+def _finalized_netcdf_encoding_from(base: xr.Dataset) -> dict[str, dict[str, object]]:
+    """Build a h5netcdf-safe encoding from a finalized base product."""
+    encoding: dict[str, dict[str, object]] = {}
+    for name, variable in base.variables.items():
+        allowed_keys = set(_FINALIZED_NETCDF_ENCODING_KEYS)
+        if np.issubdtype(variable.dtype, np.datetime64) or name == "time":
+            allowed_keys.update(_FINALIZED_TIME_ENCODING_KEYS)
+        variable_encoding = {}
+        for key in allowed_keys:
+            if key in variable.encoding and variable.encoding[key] is not None:
+                variable_encoding[key] = variable.encoding[key]
+        if name in base.coords and "_FillValue" not in variable_encoding:
+            variable_encoding["_FillValue"] = None
+        if variable_encoding:
+            encoding[name] = variable_encoding
+    return encoding
+
+
+def merge_finalized_dataset_extension(
+    base: xr.Dataset | str | Path,
+    extension: xr.Dataset | str | Path,
+    *,
+    output_path: str | Path | None = None,
+    overlap_time_steps: int = 12,
+    overlap_policy: str = "abort",
+    overlap_rtol: float = 0.0,
+    overlap_atol: float = 0.0,
+) -> xr.Dataset:
+    """Merge a finalized CF-style L3 NetCDF product with a finalized extension.
+
+    The merge is intentionally stricter than :func:`extend_dataset`: it expects
+    finalized products with matching schema, static variables, spatial grid, and
+    non-time coordinates. In ``overlap_policy="abort"`` mode every overlapping
+    month is compared for every time-dependent variable before the extension
+    suffix is appended.
+    """
+    if overlap_policy != "abort":
+        raise ValueError(
+            "Only overlap_policy='abort' is supported for finalized products."
+        )
+
+    base_ds = _open_finalized_l3_dataset(base)
+    extension_ds = _open_finalized_l3_dataset(extension)
+    base_times = _require_monotonic_unique_time(base_ds, context="base")
+    extension_times = _require_monotonic_unique_time(
+        extension_ds,
+        context="extension",
+    )
+    _require_finalized_schema_match(base_ds, extension_ds)
+    overlap_times = _finalized_overlap_times(
+        base_times,
+        extension_times,
+        overlap_time_steps=overlap_time_steps,
+    )
+    _require_finalized_overlap_match(
+        base_ds,
+        extension_ds,
+        overlap_times=overlap_times,
+        overlap_rtol=overlap_rtol,
+        overlap_atol=overlap_atol,
+    )
+
+    prefix = base_ds.sel(time=base_times[base_times < overlap_times[0]])
+    base_overlap = base_ds.sel(time=overlap_times)
+    suffix = extension_ds.sel(time=extension_times[extension_times > overlap_times[-1]])
+    pieces = [piece for piece in (prefix, base_overlap, suffix) if piece.sizes["time"]]
+    merged = xr.concat(
+        pieces,
+        dim="time",
+        data_vars="minimal",
+        coords="minimal",
+        compat="override",
+        combine_attrs="override",
+    )
+
+    base_path = Path(base) if not isinstance(base, xr.Dataset) else None
+    extension_path = Path(extension) if not isinstance(extension, xr.Dataset) else None
+    inputs = []
+    if base_path is not None:
+        inputs.append({"path": base_path, "role": "base-finalized-l3"})
+    if extension_path is not None:
+        inputs.append({"path": extension_path, "role": "extension-finalized-l3"})
+    step = provenance.build_provenance_step(
+        "merge finalized L3 dataset extension",
+        "cryoswath.l3.merge_finalized_dataset_extension",
+        base=str(base_path) if base_path is not None else "<xarray.Dataset>",
+        extension=(
+            str(extension_path) if extension_path is not None else "<xarray.Dataset>"
+        ),
+        output_path=str(output_path) if output_path is not None else None,
+        overlap_time_steps=overlap_time_steps,
+        overlap_policy=overlap_policy,
+        overlap_rtol=overlap_rtol,
+        overlap_atol=overlap_atol,
+        inputs=inputs,
+        metadata={
+            "overlap_start": overlap_times[0].isoformat(),
+            "overlap_end": overlap_times[-1].isoformat(),
+            "overlap_count": int(len(overlap_times)),
+        },
+    )
+    merged_attrs = dict(base_ds.attrs)
+    merged_attrs["history"] = provenance.append_history(
+        base_ds.attrs.get("history"),
+        step,
+    )
+    merged = merged.assign_attrs(merged_attrs)
+    merged = _copy_variable_encodings(merged, base_ds)
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        merged.to_netcdf(
+            output_path,
+            engine="h5netcdf",
+            encoding=_finalized_netcdf_encoding_from(base_ds),
+        )
+
+    return merged
 
 
 def _merge_l3_extension_segments(
