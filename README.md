@@ -24,19 +24,13 @@ from waveform-level processing to gridded elevation products.
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
 - Supported Python version: **>=3.12**.
-- Downloading CryoSat resources
-  requires an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
-- ESA credentials are resolved in this order:
-  `EOIAM_USER`/`EOIAM_PASSWORD`, then
-  keyring (preferred for interactive setup), then
-  `~/.netrc` (plaintext fallback), then legacy `config.ini [user]`
-  `name/password` (temporary fallback).
+- Downloading CryoSat SARIn L1B resources requires a personal ESA MAAP offline
+  token associated with an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
 - Automatic RGI downloads from NSIDC require NASA Earthdata credentials;
   see the prerequisites docs for setup details.
-- CryoSat SARIn L1b track discovery uses a local cache when possible and
-  refreshes missing metadata from ESA MAAP. Selected products are downloaded
-  through authenticated PDS HTTPS; normal download workflows do not fall back
-  to FTP.
+- CryoSat SARIn L1b track discovery uses ESA MAAP without authentication.
+  Downloads use the selected MAAP asset URL with a personal MAAP offline token;
+  normal download workflows do not fall back to PDS HTTPS or FTP.
 - Anonymous FTP login is no longer supported.
 - Install `xarray` and `zarr` together to avoid version mismatches.
 
@@ -143,11 +137,12 @@ You can also set `CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path
 variables; environment variables override config files. Set `CRYOSWATH_CONFIG`
 to select a config file explicitly. Legacy `config.ini` files are still read.
 
-To avoid storing secrets in config files, use keyring (preferred) or
-environment variables for ESA credentials. You can configure keyring
-credentials interactively with: `cryoswath update-keyring`.
-If you need a fallback, you can write `~/.netrc` (this stores the password in
-plaintext) using `cryoswath update-netrc`.
+CryoSat downloads require a personal ESA MAAP offline token associated with an
+ESA EO Sign-In account. Store it in keyring with `cryoswath update-maap-token`,
+or set `ESA_MAAP_OFFLINE_TOKEN` for automation. The token is different from an
+ESA username/password and should not be stored in `cryoswath.cfg` or `.netrc`.
+Generate a 90-day token through the
+[ESA MAAP portal](https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php).
 
 ## Tutorials and documentation
 

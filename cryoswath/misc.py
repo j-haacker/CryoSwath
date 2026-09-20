@@ -48,6 +48,7 @@ __all__ = [
     "init_project_cli",
     "update_keyring",
     "update_keyring_cli",
+    "update_maap_token",
     "update_netrc",
     "update_netrc_cli",
     "update_track_database",
@@ -518,6 +519,10 @@ _ESA_KEYRING_DEFAULT_USER_KEYS = (
 )
 _ESA_ENV_USER = "EOIAM_USER"
 _ESA_ENV_PASSWORD = "EOIAM_PASSWORD"
+_ESA_MAAP_IAM_HOST = "iam.maap.eo.esa.int"
+_ESA_MAAP_OFFLINE_TOKEN_ENV = "ESA_MAAP_OFFLINE_TOKEN"
+_ESA_MAAP_KEYRING_SERVICE = _ESA_MAAP_IAM_HOST
+_ESA_MAAP_KEYRING_USER = "offline-token"
 _RGI_DOWNLOAD_BASE_URL = (
     "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files"
 )
@@ -1674,6 +1679,32 @@ def _resolve_esa_ftp_credentials() -> tuple[str, str, str]:
         f"{_ESA_ENV_PASSWORD}, keyring via cryoswath update-keyring, or "
         "~/.netrc (plaintext fallback), or use legacy config.ini [user] "
         "name/password. Anonymous login is no longer supported."
+    )
+
+
+def _resolve_esa_maap_offline_token() -> tuple[str, str]:
+    """Resolve a personal ESA MAAP offline token from environment or keyring."""
+    token = os.environ.get(_ESA_MAAP_OFFLINE_TOKEN_ENV)
+    if token:
+        return token, f"environment variable {_ESA_MAAP_OFFLINE_TOKEN_ENV}"
+    if keyring is not None:
+        try:
+            token = keyring.get_password(
+                _ESA_MAAP_KEYRING_SERVICE, _ESA_MAAP_KEYRING_USER
+            )
+        except KeyringError as err:
+            warnings.warn(
+                f"Could not read ESA MAAP token from keyring: {err}",
+                category=UserWarning,
+                stacklevel=2,
+            )
+        else:
+            if token:
+                return token, f"keyring service {_ESA_MAAP_KEYRING_SERVICE}"
+    raise RuntimeError(
+        "No ESA MAAP offline token found. Set "
+        f"{_ESA_MAAP_OFFLINE_TOKEN_ENV} for automation or store one with "
+        "`cryoswath update-maap-token`."
     )
 
 
@@ -4083,6 +4114,34 @@ def update_keyring(
     return user
 
 
+def update_maap_token(token: str = None) -> str:
+    """Store and verify a personal ESA MAAP offline token in keyring."""
+    if keyring is None:
+        raise RuntimeError(
+            "The keyring package is not installed. Set "
+            f"{_ESA_MAAP_OFFLINE_TOKEN_ENV} for automation instead."
+        )
+    token = token or os.environ.get(_ESA_MAAP_OFFLINE_TOKEN_ENV)
+    if token is None:
+        token = getpass.getpass("Enter ESA MAAP offline token: ")
+    token = token.strip()
+    if not token:
+        raise ValueError("An ESA MAAP offline token is required.")
+    try:
+        keyring.set_password(_ESA_MAAP_KEYRING_SERVICE, _ESA_MAAP_KEYRING_USER, token)
+        verified = keyring.get_password(
+            _ESA_MAAP_KEYRING_SERVICE, _ESA_MAAP_KEYRING_USER
+        )
+    except KeyringError as err:
+        raise RuntimeError(f"Could not store ESA MAAP token in keyring: {err}") from err
+    if verified != token:
+        raise RuntimeError(
+            "Could not verify ESA MAAP token after writing. "
+            "Your keyring backend may be locked or unsupported."
+        )
+    return token
+
+
 def update_keyring_cli() -> None:
     """Compatibility CLI wrapper around :func:`update_keyring`."""
     from argparse import ArgumentParser
@@ -4336,6 +4395,12 @@ def _update_keyring_from_args(args) -> None:
     print(f"Stored credentials for {user} in keyring service {args.service}.")
 
 
+def _update_maap_token_from_args(args) -> None:
+    """Store an ESA MAAP offline token from environment or a hidden prompt."""
+    update_maap_token()
+    print("Stored ESA MAAP offline token in keyring.")
+
+
 def _add_update_netrc_arguments(parser) -> None:
     """Add shared netrc arguments to an argparse parser."""
     parser.add_argument("--user", default=None, help="ESA username.")
@@ -4413,6 +4478,12 @@ def cryoswath_cli(argv: list[str] | None = None) -> None:
     )
     _add_update_keyring_arguments(keyring_parser)
     keyring_parser.set_defaults(func=_update_keyring_from_args)
+
+    maap_token_parser = subparsers.add_parser(
+        "update-maap-token",
+        help="Store a personal ESA MAAP offline token in keyring.",
+    )
+    maap_token_parser.set_defaults(func=_update_maap_token_from_args)
 
     netrc_parser = subparsers.add_parser(
         "update-netrc",

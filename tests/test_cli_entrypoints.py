@@ -60,12 +60,11 @@ def test_cryoswath_help_exits_before_work(monkeypatch, capsys):
         "download-rgi",
         "update-tracks",
         "update-keyring",
+        "update-maap-token",
         "update-netrc",
     ],
 )
-def test_cryoswath_subcommand_help_exits_before_work(
-    subcommand, monkeypatch, capsys
-):
+def test_cryoswath_subcommand_help_exits_before_work(subcommand, monkeypatch, capsys):
     monkeypatch.setattr(misc, "create_config", _fail_if_called)
     monkeypatch.setattr(misc, "download_auxiliary_data", _fail_if_called)
     monkeypatch.setattr(misc, "copy_tutorials", _fail_if_called)
@@ -298,6 +297,17 @@ def test_cryoswath_update_keyring_dispatches_after_parsing(monkeypatch, capsys):
         "username_key": "default",
     }
     assert "Stored credentials for esa-user" in capsys.readouterr().out
+
+
+def test_cryoswath_update_maap_token_dispatches_after_parsing(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(misc, "update_maap_token", lambda: calls.append(None))
+    monkeypatch.setattr(sys, "argv", ["cryoswath", "update-maap-token"])
+
+    misc.cryoswath_cli()
+
+    assert calls == [None]
+    assert "Stored ESA MAAP offline token" in capsys.readouterr().out
 
 
 def test_cryoswath_update_netrc_dispatches_after_parsing(monkeypatch, capsys):

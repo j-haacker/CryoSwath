@@ -91,58 +91,50 @@ Access requirements
 -------------------
 
 .. warning::
-   Downloading CryoSat resources via CryoSwath requires an
-   `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
+   Downloading CryoSat resources via CryoSwath requires a personal ESA MAAP
+   offline token associated with an `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
 
-Set up your ESA credentials before running download workflows.
+MAAP catalog discovery is anonymous, but downloading a selected asset requires
+an offline token. Generate a 90-day token through the
+`ESA MAAP portal <https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php>`_.
 
-Anonymous FTP login is no longer supported.
+MAAP token setup
+^^^^^^^^^^^^^^^^
 
-Credential resolution order
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+CryoSwath resolves the MAAP offline token in this order:
 
-CryoSwath resolves ESA credentials in this order:
-
-1. ``EOIAM_USER`` and ``EOIAM_PASSWORD``.
+1. ``ESA_MAAP_OFFLINE_TOKEN``.
 2. Keyring (preferred for interactive setup).
-3. ``~/.netrc`` entry for ``science-pds.cryosat.esa.int`` with
-   explicit ``login`` and ``password`` (plaintext fallback).
-4. Legacy ``config.ini`` values in ``[user]`` using ``name`` and
-   ``password`` (temporary fallback).
 
 Preferred interactive setup (keyring):
 
 .. code-block:: sh
 
-   cryoswath update-keyring
+   cryoswath update-maap-token
 
 Automation setup (environment variables):
 
 .. code-block:: sh
 
-   export EOIAM_USER="your-esa-user"
-   export EOIAM_PASSWORD="your-esa-password"
+   export ESA_MAAP_OFFLINE_TOKEN="your-personal-offline-token"
 
-Plaintext fallback setup (``~/.netrc``):
+This token is distinct from an ESA username/password. Do not store it in
+``cryoswath.cfg``, legacy ``config.ini``, or ``~/.netrc``.
 
-.. code-block:: sh
+Legacy ESA credentials
+^^^^^^^^^^^^^^^^^^^^^^
 
-   cryoswath update-netrc
-
-``~/.netrc`` stores the password in plaintext and should only be used as a
-fallback if keyring is not available.
-
-Legacy ``config.ini [user] name/password`` credentials still work for
-now, but are deprecated and should be replaced.
+The legacy FTP helpers retained for compatibility still use ``EOIAM_USER`` and
+``EOIAM_PASSWORD``, keyring, ``~/.netrc``, or legacy ``config.ini``. Those
+credentials are not used for normal CryoSat L1b MAAP delivery.
 
 Download protocol defaults
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 L1b workflows use MAAP STAC metadata (``CryoSatIceL110``) to discover missing
-CryoSat SARIn products. The selected filename is downloaded through
-authenticated PDS HTTPS. Automatic FTP fallback is disabled for normal
-download workflows so failures identify the affected product instead of
-waiting on legacy FTP data connections.
+CryoSat SARIn products. The selected direct NetCDF asset is downloaded from its
+MAAP ``enclosure_nc`` or ``enclosure`` URL with a short-lived Bearer token.
+PDS HTTPS and FTP are not normal-download fallbacks.
 
 Data dependencies
 -----------------
@@ -172,9 +164,9 @@ CryoSat-2 ground-track database, filename catalog, and static RGI metadata.
 Newer installations may also contain the richer
 ``CryoSat-2_SARIn_L1B_track_catalog.feather`` cache, which stores MAAP STAC
 item IDs, product filenames, MAAP enclosure URLs, product versions, processing
-dates, and track geometries for supported ``SIR_SIN_1B`` products. MAAP
-enclosure URLs are retained as catalog provenance; current downloads use the
-selected filename with PDS HTTPS.
+dates, and track geometries for supported ``SIR_SIN_1B`` products. Downloads
+use the selected MAAP enclosure URL directly; cached entries without an asset
+URL are refreshed before delivery.
 
 By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
 caches when their latest timestamp covers the requested period. If the request

@@ -101,3 +101,60 @@ def test_update_keyring_raises_for_backend_errors(monkeypatch):
     monkeypatch.setattr(misc, "keyring", FailingKeyring())
     with pytest.raises(RuntimeError, match="backend down"):
         misc.update_keyring(user="esa-user", password="esa-password")
+
+
+def test_resolve_maap_token_prefers_environment(monkeypatch):
+    monkeypatch.setenv("ESA_MAAP_OFFLINE_TOKEN", "environment-token")
+
+    class KeyringNotExpected:
+        def get_password(self, service, user):
+            raise AssertionError("keyring should not be used")
+
+    monkeypatch.setattr(misc, "keyring", KeyringNotExpected())
+
+    token, source = misc._resolve_esa_maap_offline_token()
+
+    assert token == "environment-token"
+    assert source == "environment variable ESA_MAAP_OFFLINE_TOKEN"
+
+
+def test_resolve_maap_token_uses_dedicated_keyring_entry(monkeypatch):
+    class FakeKeyring:
+        def get_password(self, service, user):
+            assert service == misc._ESA_MAAP_KEYRING_SERVICE
+            assert user == misc._ESA_MAAP_KEYRING_USER
+            return "keyring-token"
+
+    monkeypatch.delenv("ESA_MAAP_OFFLINE_TOKEN", raising=False)
+    monkeypatch.setattr(misc, "keyring", FakeKeyring())
+
+    assert misc._resolve_esa_maap_offline_token() == (
+        "keyring-token",
+        f"keyring service {misc._ESA_MAAP_KEYRING_SERVICE}",
+    )
+
+
+def test_update_maap_token_stores_and_verifies(monkeypatch):
+    store = {}
+
+    class FakeKeyring:
+        def set_password(self, service, user, password):
+            store[(service, user)] = password
+
+        def get_password(self, service, user):
+            return store.get((service, user))
+
+    monkeypatch.setattr(misc, "keyring", FakeKeyring())
+
+    assert misc.update_maap_token("offline-token") == "offline-token"
+    assert store[(misc._ESA_MAAP_KEYRING_SERVICE, misc._ESA_MAAP_KEYRING_USER)] == (
+        "offline-token"
+    )
+
+
+def test_resolve_maap_token_explains_configuration(monkeypatch):
+    monkeypatch.delenv("ESA_MAAP_OFFLINE_TOKEN", raising=False)
+    monkeypatch.setattr(misc, "keyring", None)
+
+    with pytest.raises(RuntimeError, match="update-maap-token"):
+        misc._resolve_esa_maap_offline_token()
