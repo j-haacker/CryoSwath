@@ -66,7 +66,7 @@ from cryoswath.misc import (
     WGS84_ellpsoid,
     _cryosat_l1b_product_sort_key,
     _preferred_cryosat_l1b_name,
-    _resolve_esa_ftp_credentials,
+    _resolve_esa_maap_offline_token,
     antenna_baseline,
     cs_time_to_id,
     empty_GeoDataFrame,
@@ -92,6 +92,11 @@ from cryoswath.misc import (
 
 _ESA_HTTPS_LOGIN_URL = "https://science-pds.cryosat.esa.int/?do=login"
 _ESA_LOGIN_FAILURE_MARKERS = ("authFailure=true", "login.fail.message")
+_ESA_MAAP_TOKEN_URL = (
+    "https://iam.maap.eo.esa.int/realms/esa-maap/protocol/openid-connect/token"
+)
+_ESA_MAAP_CLIENT_ID = "offline-token"
+_ESA_MAAP_CLIENT_SECRET = "p1eL7uonXs6MDxtGbgKdPVRAmnGxHpVE"
 
 
 def _status(message: str) -> None:
@@ -1193,23 +1198,22 @@ def download_wrapper(
         _status("All selected L1b files are already present.")
         return 0
     try:
-        user, password, _ = _resolve_esa_ftp_credentials()
-        https_auth = (user, password)
+        offline_token, _ = _resolve_esa_maap_offline_token()
     except RuntimeError as err:
         warnings.warn(
-            "Could not configure PDS HTTPS credentials: "
+            "Could not configure ESA MAAP delivery: "
             f"{err}. No download workers were started.",
             category=UserWarning,
             stacklevel=2,
         )
-        _status("PDS HTTPS credentials unavailable; no download workers started.")
+        _status("ESA MAAP token unavailable; no download workers started.")
         return 1
 
-    task_queue = request_workers(_download_files_with_auth, n_threads)
+    task_queue = request_workers(_download_files_with_maap_auth, n_threads)
     months = missing_track_idx.to_period("M")
     for month in months.unique():
         idx_selection = missing_track_idx[months == month]
-        task_queue.put((idx_selection, stop_event, https_auth))
+        task_queue.put((idx_selection, stop_event, offline_token))
     for _ in range(n_threads):
         task_queue.put(None)
     # wait for threads to finish
@@ -1275,6 +1279,14 @@ def _pds_download_error(failures: list[tuple[str, str]]) -> RuntimeError:
         "CryoSat L1b download via PDS HTTPS failed; automatic FTP fallback is "
         f"disabled. Failed product(s): {details}. For future MAAP data delivery, "
         f"see enhancement #76."
+    )
+
+
+def _maap_download_error(failures: list[tuple[str, str]]) -> RuntimeError:
+    """Return a concise error for ESA MAAP L1B delivery failures."""
+    details = "; ".join(f"{track_id}: {reason}" for track_id, reason in failures)
+    return RuntimeError(
+        "CryoSat L1b download via ESA MAAP failed. Failed product(s): " + details
     )
 
 
@@ -1372,6 +1384,37 @@ def _create_esa_https_session(
         raise
 
 
+def _create_maap_session(
+    offline_token: str,
+    timeout: int | float = 120,
+) -> requests.Session:
+    """Create a Bearer-authenticated MAAP session from an offline token."""
+    session = requests.Session()
+    try:
+        response = session.post(
+            _ESA_MAAP_TOKEN_URL,
+            data={
+                "client_id": _ESA_MAAP_CLIENT_ID,
+                "client_secret": _ESA_MAAP_CLIENT_SECRET,
+                "grant_type": "refresh_token",
+                "refresh_token": offline_token,
+                "scope": "offline_access openid",
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        access_token = response.json().get("access_token")
+        if not access_token:
+            raise RuntimeError(
+                "ESA MAAP token exchange did not return an access token."
+            )
+        session.headers["Authorization"] = f"Bearer {access_token}"
+        return session
+    except Exception:
+        session.close()
+        raise
+
+
 def _download_https_url_atomic(
     session: requests.Session,
     url: str,
@@ -1429,6 +1472,32 @@ def _download_named_file_https(
         raise
 
 
+def _download_named_file_maap(
+    remote_file: str,
+    local_path: str | Path,
+    session: requests.Session,
+    href: str | None,
+) -> str:
+    """Download one selected L1B product from its ESA MAAP asset URL."""
+    if not isinstance(href, str) or not href.strip():
+        raise RuntimeError(f"No MAAP data asset URL is available for {remote_file}.")
+    local_path = Path(local_path)
+    _status(f"Downloading {remote_file} via ESA MAAP.")
+    try:
+        downloaded = _download_https_url_atomic(
+            session=session,
+            url=href,
+            local_path=local_path,
+            timeout=120,
+        )
+        _validate_netcdf_payload(downloaded)
+        return downloaded
+    except Exception:
+        if local_path.is_file():
+            local_path.unlink()
+        raise
+
+
 def _download_remote_file_via_ftp_atomic(
     ftp: ftplib.FTP,
     remote_file: str,
@@ -1473,6 +1542,15 @@ def _load_cs_l1b_track_catalog_for(
     if track_idx.empty:
         return catalog
     missing = track_idx.difference(catalog.index) if not catalog.empty else track_idx
+    if not catalog.empty:
+        stale = [
+            track
+            for track in track_idx.intersection(catalog.index)
+            if "href" not in catalog
+            or not isinstance(catalog.loc[track, "href"], str)
+            or not catalog.loc[track, "href"].strip()
+        ]
+        missing = missing.union(pd.DatetimeIndex(stale))
     if len(missing) > 0:
         try:
             load_cs_ground_tracks(
@@ -1483,8 +1561,8 @@ def _load_cs_l1b_track_catalog_for(
             catalog = load_cs_l1b_track_catalog(update="no")
         except Exception as err:
             warnings.warn(
-                "Could not refresh STAC L1B catalog for missing tracks: "
-                f"{err}. Falling back to legacy filename lookup.",
+                "Could not refresh STAC L1B catalog for missing or stale tracks: "
+                f"{err}.",
                 category=UserWarning,
             )
     return catalog
@@ -1582,28 +1660,27 @@ def _download_single_file_via_ftp(track_id: str) -> str:
     raise RuntimeError(f"FTP retries exhausted for track id {track_id}.")
 
 
-def _download_files_with_auth(
+def _download_files_with_maap_auth(
     track_idx: pd.DatetimeIndex | str,
     stop_event: Event | None,
-    https_auth: tuple[str, str],
+    offline_token: str,
 ) -> None:
-    """Download a batch of missing L1b files with resolved PDS credentials."""
+    """Download a batch of missing L1b files with one MAAP session."""
     track_idx = pd.DatetimeIndex(track_idx).sort_values()
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
-    https_session = None
+    maap_session = None
     track_catalog = _load_cs_l1b_track_catalog_for(track_idx)
-    file_names = _load_cs_full_file_names_for(track_idx)
-    if file_names is None and (track_catalog is None or track_catalog.empty):
-        raise _pds_download_error(
+    if track_catalog is None or track_catalog.empty:
+        raise _maap_download_error(
             [
-                (track.strftime("%Y%m%dT%H%M%S"), "no MAAP or local filename entry")
+                (track.strftime("%Y%m%dT%H%M%S"), "no MAAP catalog entry")
                 for track in track_idx
             ]
         )
     try:
-        https_session = _create_esa_https_session(https_auth)
+        maap_session = _create_maap_session(offline_token)
     except Exception as err:
-        raise RuntimeError(f"Could not initialize PDS HTTPS session: {err}") from err
+        raise RuntimeError(f"Could not initialize ESA MAAP session: {err}") from err
     failures = []
     try:
         for year_month_str in year_month_str_list:
@@ -1628,32 +1705,29 @@ def _download_files_with_auth(
                 if catalog_row is not None:
                     remote_file = catalog_row["filename"]
                     href = catalog_row.get("href")
-                elif file_names is not None and track_id in file_names.index:
-                    remote_file = file_names.loc[track_id] + ".nc"
-                    href = None
                 else:
-                    failures.append((track_id_str, "no MAAP or local filename entry"))
+                    failures.append((track_id_str, "no MAAP catalog entry"))
                     continue
                 local_path = Path(l1b_path, year_month_str, remote_file)
                 try:
-                    _download_named_file_https(
+                    _download_named_file_maap(
                         remote_file=remote_file,
                         local_path=local_path,
-                        session=https_session,
+                        session=maap_session,
                         href=href,
                     )
                     existing_track_ids.add(track_id_str)
                 except Exception as err:
                     failures.append((track_id_str, f"{remote_file}: {err}"))
         if failures:
-            raise _pds_download_error(failures)
+            raise _maap_download_error(failures)
         _status(
             "Finished downloading tracks for months: "
             + ", ".join(str(x) for x in year_month_str_list)
         )
     finally:
-        if https_session is not None:
-            https_session.close()
+        if maap_session is not None:
+            maap_session.close()
 
 
 def download_files(
@@ -1663,10 +1737,10 @@ def download_files(
 ):
     """Download all missing monthly L1b files for ``track_idx``."""
     try:
-        user, password, _ = _resolve_esa_ftp_credentials()
+        offline_token, _ = _resolve_esa_maap_offline_token()
     except RuntimeError as err:
-        raise RuntimeError(f"Could not configure PDS HTTPS credentials: {err}") from err
-    return _download_files_with_auth(track_idx, stop_event, (user, password))
+        raise RuntimeError(f"Could not configure ESA MAAP delivery: {err}") from err
+    return _download_files_with_maap_auth(track_idx, stop_event, offline_token)
 
 
 def download_single_file(track_id: str) -> str:
@@ -1674,10 +1748,9 @@ def download_single_file(track_id: str) -> str:
     track_id_timestamp = pd.to_datetime(track_id)
     track_id = track_id_timestamp.strftime("%Y%m%dT%H%M%S")
     try:
-        user, password, _ = _resolve_esa_ftp_credentials()
-        https_auth = (user, password)
+        offline_token, _ = _resolve_esa_maap_offline_token()
     except RuntimeError as err:
-        raise RuntimeError(f"Could not configure PDS HTTPS credentials: {err}") from err
+        raise RuntimeError(f"Could not configure ESA MAAP delivery: {err}") from err
     requested_idx = pd.DatetimeIndex([track_id_timestamp])
     track_catalog = _load_cs_l1b_track_catalog_for(requested_idx)
     catalog_row = None
@@ -1685,32 +1758,28 @@ def download_single_file(track_id: str) -> str:
         catalog_row = track_catalog.loc[track_id_timestamp]
         if isinstance(catalog_row, pd.DataFrame):
             catalog_row = catalog_row.iloc[-1]
-    file_names = _load_cs_full_file_names_for(requested_idx)
     if catalog_row is not None:
         filename = catalog_row["filename"]
         href = catalog_row.get("href")
-    elif file_names is not None and track_id_timestamp in file_names.index:
-        filename = file_names.loc[track_id_timestamp] + ".nc"
-        href = None
     else:
         filename = None
     if filename is not None:
         local_path = Path(l1b_path, track_id_timestamp.strftime("%Y/%m"), filename)
-        https_session = None
+        maap_session = None
         try:
-            https_session = _create_esa_https_session(https_auth)
-            return _download_named_file_https(
+            maap_session = _create_maap_session(offline_token)
+            return _download_named_file_maap(
                 remote_file=filename,
                 local_path=local_path,
-                session=https_session,
+                session=maap_session,
                 href=href,
             )
         except Exception as err:
-            raise _pds_download_error([(track_id, f"{filename}: {err}")]) from err
+            raise _maap_download_error([(track_id, f"{filename}: {err}")]) from err
         finally:
-            if https_session is not None:
-                https_session.close()
-    raise _pds_download_error([(track_id, "no MAAP or local filename entry")])
+            if maap_session is not None:
+                maap_session.close()
+    raise _maap_download_error([(track_id, "no MAAP catalog entry")])
 
 
 def drop_waveform(cs_l1b_ds, time_20_ku_mask):
