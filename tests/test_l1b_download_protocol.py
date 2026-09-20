@@ -215,7 +215,7 @@ def test_download_single_file_requires_maap_catalog_entry(monkeypatch, tmp_path)
 
 def test_download_single_file_uses_stac_catalog_href(monkeypatch, tmp_path):
     track_id = "20200101T000000"
-    track_time = pd.to_datetime(track_id)
+    catalog_time = pd.Timestamp("2019-12-31T23:59:59")
     remote_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_E001.nc"
     href = "https://science-pds.cryosat.esa.int/?do=download&file=test.nc"
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
@@ -226,7 +226,7 @@ def test_download_single_file_uses_stac_catalog_href(monkeypatch, tmp_path):
         l1b,
         "_load_cs_l1b_track_catalog_for",
         lambda idx: pd.DataFrame(
-            {"filename": [remote_file], "href": [href]}, index=[track_time]
+            {"filename": [remote_file], "href": [href]}, index=[catalog_time]
         ),
     )
     monkeypatch.setattr(

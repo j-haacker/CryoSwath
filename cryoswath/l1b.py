@@ -1133,6 +1133,20 @@ def _existing_local_l1b_track_ids(year_month_str: str) -> set[str]:
         return set()
 
 
+def _catalog_row_for_track_id(track_catalog, track_id: str):
+    """Return the MAAP catalog row whose filename encodes ``track_id``."""
+    if track_catalog is None or track_catalog.empty or "filename" not in track_catalog:
+        return None
+    matching_rows = track_catalog[
+        track_catalog["filename"].map(
+            lambda filename: Path(str(filename)).name[19:34] == track_id
+        )
+    ]
+    if matching_rows.empty:
+        return None
+    return matching_rows.iloc[-1]
+
+
 def _missing_local_l1b_tracks(track_idx: pd.DatetimeIndex | str) -> pd.DatetimeIndex:
     """Return tracks absent under the downloader's current filename-ID rule."""
     track_idx = pd.DatetimeIndex(track_idx).sort_values()
@@ -1697,11 +1711,7 @@ def _download_files_with_maap_auth(
                 track_id_str = track_id.strftime("%Y%m%dT%H%M%S")
                 if track_id_str in existing_track_ids:
                     continue
-                catalog_row = None
-                if track_catalog is not None and track_id in track_catalog.index:
-                    catalog_row = track_catalog.loc[track_id]
-                    if isinstance(catalog_row, pd.DataFrame):
-                        catalog_row = catalog_row.iloc[-1]
+                catalog_row = _catalog_row_for_track_id(track_catalog, track_id_str)
                 if catalog_row is not None:
                     remote_file = catalog_row["filename"]
                     href = catalog_row.get("href")
@@ -1753,11 +1763,7 @@ def download_single_file(track_id: str) -> str:
         raise RuntimeError(f"Could not configure ESA MAAP delivery: {err}") from err
     requested_idx = pd.DatetimeIndex([track_id_timestamp])
     track_catalog = _load_cs_l1b_track_catalog_for(requested_idx)
-    catalog_row = None
-    if track_catalog is not None and track_id_timestamp in track_catalog.index:
-        catalog_row = track_catalog.loc[track_id_timestamp]
-        if isinstance(catalog_row, pd.DataFrame):
-            catalog_row = catalog_row.iloc[-1]
+    catalog_row = _catalog_row_for_track_id(track_catalog, track_id)
     if catalog_row is not None:
         filename = catalog_row["filename"]
         href = catalog_row.get("href")
