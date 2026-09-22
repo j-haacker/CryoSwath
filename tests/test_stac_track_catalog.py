@@ -7,9 +7,10 @@ import cryoswath.misc as misc
 
 
 class DummyResponse:
-    def __init__(self, json_data=None, status_code=200):
+    def __init__(self, json_data=None, status_code=200, text=""):
         self._json_data = json_data or {}
         self.status_code = status_code
+        self.text = text
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -68,7 +69,7 @@ def test_stac_catalog_selects_highest_supported_baseline_before_lta():
         ),
     ]
 
-    catalog = misc._stac_items_to_l1b_track_catalog(items, "eocat")
+    catalog = misc._stac_items_to_l1b_track_catalog(items, "maap")
 
     assert len(catalog) == 1
     assert catalog.iloc[0]["filename"] == (
@@ -89,19 +90,19 @@ def test_stac_catalog_prefers_lta_for_same_baseline_and_version():
         ),
     ]
 
-    catalog = misc._stac_items_to_l1b_track_catalog(items, "eocat")
+    catalog = misc._stac_items_to_l1b_track_catalog(items, "maap")
 
     assert catalog.iloc[0]["stage"] == "LTA_"
 
 
 def test_stac_catalog_warns_and_excludes_unsupported_baselines():
     item = _item(
-        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_F001",
-        version="F001",
+        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_G001",
+        version="G001",
     )
 
     with pytest.warns(UserWarning, match="unsupported baseline"):
-        catalog = misc._stac_items_to_l1b_track_catalog([item], "eocat")
+        catalog = misc._stac_items_to_l1b_track_catalog([item], "maap")
 
     assert catalog.empty
 
@@ -187,7 +188,7 @@ def test_load_cs_full_file_names_overlays_stac_catalog(monkeypatch, tmp_path):
                 start="2020-01-01T00:00:00Z",
             )
         ],
-        "eocat",
+        "maap",
     )
     misc._save_cs_l1b_track_catalog(catalog)
 
@@ -240,7 +241,7 @@ def test_load_cs_ground_tracks_auto_refreshes_missing_tail(monkeypatch, tmp_path
                 start="2020-01-02T00:00:00Z",
             )
         ],
-        "eocat",
+        "maap",
     )
     calls = []
 

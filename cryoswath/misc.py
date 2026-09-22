@@ -146,7 +146,7 @@ _CRYOSAT_STAC_TIMEOUT = (10, 60)
 _CRYOSAT_STAC_LIMIT = 500
 _CRYOSAT_STAC_PRODUCT_TYPE = "SIR_SIN_1B"
 _CRYOSAT_STAC_SENSOR_MODE = "SARIN"
-_CRYOSAT_SUPPORTED_BASELINES = ("D", "E")
+_CRYOSAT_SUPPORTED_BASELINES = ("D", "E", "F")
 _CRYOSAT_L1B_TRACK_CATALOG_NAME = "CryoSat-2_SARIn_L1B_track_catalog.feather"
 
 
@@ -1578,6 +1578,7 @@ def ftp_cs2_server(**kwargs):
                 f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
                 "~/.netrc (plaintext fallback)."
             ) from err
+        ftp.prot_p()
         yield ftp
 
 
@@ -2639,6 +2640,9 @@ def _canonical_l1b_track_catalog(catalog: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     sort_frame["_version_rank"] = pd.to_numeric(
         sort_frame["version_number"], errors="coerce"
     ).fillna(-1)
+    sort_frame["_asset_rank"] = sort_frame["href"].map(
+        lambda value: int(isinstance(value, str) and bool(value.strip()))
+    )
     for column in ["processing_datetime", "published"]:
         sort_frame[column] = pd.to_datetime(sort_frame[column], errors="coerce")
     sort_frame.sort_values(
@@ -2649,13 +2653,20 @@ def _canonical_l1b_track_catalog(catalog: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             "_stage_rank",
             "processing_datetime",
             "published",
+            "_asset_rank",
             "item_id",
         ],
         inplace=True,
     )
     sort_frame.drop_duplicates("start_datetime", keep="last", inplace=True)
     sort_frame.drop(
-        columns=["_baseline_rank", "_version_rank", "_stage_rank"], inplace=True
+        columns=[
+            "_baseline_rank",
+            "_version_rank",
+            "_stage_rank",
+            "_asset_rank",
+        ],
+        inplace=True,
     )
     canonical = gpd.GeoDataFrame(sort_frame, geometry="geometry", crs=4326)
     canonical.set_index("start_datetime", inplace=True)
@@ -2684,6 +2695,10 @@ def _read_cs_l1b_track_catalog() -> gpd.GeoDataFrame:
         catalog["supported"] = catalog["supported"].fillna(False).astype(bool)
     if catalog.crs is None:
         catalog = catalog.set_crs(4326)
+    # EO-CAT was retired upstream.  Ignore rows written by the short-lived
+    # fallback so they cannot be selected from an existing cache.
+    if "provider" in catalog.columns:
+        catalog = catalog[catalog["provider"].isna() | catalog["provider"].eq("maap")]
     return _canonical_l1b_track_catalog(catalog)
 
 
@@ -2733,27 +2748,15 @@ def _query_stac_l1b_track_catalog(
     start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
 ) -> gpd.GeoDataFrame:
     """Query ESA STAC providers for CryoSat SARIn L1B track metadata."""
-    params = {
+    maap_params = {
         "datetime": _stac_datetime_range(start_datetime, end_datetime),
         "productType": _CRYOSAT_STAC_PRODUCT_TYPE,
         "sensorMode": _CRYOSAT_STAC_SENSOR_MODE,
         "limit": str(_CRYOSAT_STAC_LIMIT),
     }
-    errors = []
-    for provider, url, collection in _CRYOSAT_STAC_PROVIDERS:
-        try:
-            features = _stac_search_features(url, {"collections": collection, **params})
-        except Exception as err:
-            errors.append(f"{provider}: {err}")
-            continue
-        catalog = _stac_items_to_l1b_track_catalog(features, provider)
-        if not catalog.empty:
-            return catalog
-    if errors:
-        raise RuntimeError(
-            "Could not query CryoSat STAC metadata. " + "; ".join(errors)
-        )
-    return _empty_cs_l1b_track_catalog()
+    provider, url, collection = _CRYOSAT_STAC_PROVIDERS[0]
+    features = _stac_search_features(url, {"collections": collection, **maap_params})
+    return _stac_items_to_l1b_track_catalog(features, provider)
 
 
 def _refresh_cs_l1b_track_catalog(
