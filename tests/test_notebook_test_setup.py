@@ -6,6 +6,15 @@ import pytest
 notebook_setup = pytest.importorskip("tools.prepare_notebook_tests")
 
 
+@pytest.fixture(autouse=True)
+def _mock_report_dem_download(monkeypatch):
+    class Reader:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(notebook_setup.misc, "get_dem_reader", lambda region: Reader())
+
+
 def _write_auxiliary_sentinels(project_dir: Path) -> None:
     for relative_path in notebook_setup.AUXILIARY_SENTINELS:
         target = project_dir / relative_path
@@ -17,6 +26,7 @@ def test_prepare_report_project_creates_config_and_downloads_auxiliary(
     monkeypatch, tmp_path
 ):
     calls = []
+    dem_paths = []
 
     def fake_download_auxiliary_data(base_dir=".", *, force=False, timeout=120):
         calls.append((Path(base_dir), force, timeout))
@@ -29,12 +39,23 @@ def test_prepare_report_project_creates_config_and_downloads_auxiliary(
         fake_download_auxiliary_data,
     )
 
+    class Reader:
+        def close(self):
+            pass
+
+    def fake_get_dem_reader(region):
+        dem_paths.append(notebook_setup.misc.dem_path)
+        return Reader()
+
+    monkeypatch.setattr(notebook_setup.misc, "get_dem_reader", fake_get_dem_reader)
+
     project = notebook_setup.prepare_report_project(tmp_path / "reports", timeout=7)
 
     config = ConfigParser()
     config.read(project.config_path)
     assert config["path"]["data"] == "data"
     assert calls == [(tmp_path / "reports", False, 7)]
+    assert dem_paths == [tmp_path / "reports" / "data" / "auxiliary" / "DEM"]
 
 
 def test_prepare_report_project_writes_external_dem_path(monkeypatch, tmp_path):
@@ -226,6 +247,39 @@ def test_prepare_tutorial_project_uses_external_data_support(monkeypatch, tmp_pa
         tmp_path / "tutorial-project",
         repo_root=repo_root,
         data_path=data_dir,
+    )
+
+    for destinations in notebook_setup.TUTORIAL_SUPPORT_FILES.values():
+        assert all(
+            (project.project_dir / destination).is_file()
+            for destination in destinations
+        )
+
+
+def test_prepare_tutorial_project_reuses_its_auxiliary_support(monkeypatch, tmp_path):
+    project_dir = tmp_path / "tutorial-project"
+    _write_auxiliary_sentinels(project_dir)
+    for filename, destinations in notebook_setup.TUTORIAL_SUPPORT_FILES.items():
+        source = project_dir / destinations[1]
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(filename)
+
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "download_auxiliary_data",
+        lambda *args, **kwargs: pytest.fail("download should not be called"),
+    )
+    monkeypatch.setattr(
+        notebook_setup.misc,
+        "copy_tutorials",
+        lambda destination=None, *, base_dir=".", force=False: str(
+            Path(base_dir) / "tutorials"
+        ),
+    )
+
+    project = notebook_setup.prepare_tutorial_project(
+        project_dir,
+        repo_root=tmp_path / "repo",
     )
 
     for destinations in notebook_setup.TUTORIAL_SUPPORT_FILES.values():
