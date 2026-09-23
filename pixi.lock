@@ -23521,13 +23521,11 @@ packages:
   - ruff ; extra == 'dev'
   - sphinx ; extra == 'docs'
   - pydata-sphinx-theme ; extra == 'docs'
-  - ipykernel ; extra == 'lab'
-  - snippets @ git+https://github.com/j-haacker/snipGit.git@main ; extra == 'lab'
   - ipykernel ; extra == 'notebooks'
   - xarray[accel]>=2025.3,<2025.12 ; extra == 'production'
   - dask[distributed] ; extra == 'production'
   - xzarrguard>=0.1.2 ; python_full_version >= '3.12' and extra == 'zarrguard'
-  - cryoswath[dev,docs,lab,notebooks,production,zarrguard] ; extra == 'all'
+  - cryoswath[dev,docs,notebooks,production,zarrguard] ; extra == 'all'
   requires_python: '>=3.12'
 - pypi: git+https://github.com/j-haacker/snipGit.git?branch=main#2d3616db13953e7452b379d2bda3fee65fb8daa9
   name: snippets
