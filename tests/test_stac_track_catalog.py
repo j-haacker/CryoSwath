@@ -1,3 +1,5 @@
+import io
+
 import geopandas as gpd
 import pandas as pd
 import pytest
@@ -331,6 +333,224 @@ def test_ftp_ground_track_discovery_falls_back_and_keeps_current_duplicate(
     assert tracks.iloc[0].geometry.coords[0][1] == 70
     assert ftp.retrieved == [(current, name)]
 
+
+def test_ftp_ground_track_discovery_reports_noninteractive_progress(
+    monkeypatch, tmp_path, capsys
+):
+    root = "/SIR_SIN_L1/2020/01"
+    names = [
+        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR",
+        "CS_OFFL_SIR_SIN_1B_20200101T001000_20200101T001100_E001.HDR",
+    ]
+    ftp = DummyFtp(
+        {root: names},
+        {(root, name): _hdr_payload(70000000) for name in names},
+    )
+
+    class DummyFtpServer:
+        def __enter__(self):
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    clock = iter([0, 31, 31])
+    monkeypatch.setattr(misc, "ftp_cs2_server", lambda: DummyFtpServer())
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(misc.time, "monotonic", lambda: next(clock))
+
+    misc._ftp_cs_ground_tracks(
+        pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"), gpd.GeoDataFrame()
+    )
+
+    assert capsys.readouterr().out.splitlines() == [
+        "FTP ground-track fallback 2020-01: 0/2 HDR files",
+        "FTP ground-track fallback 2020-01: 1/2 HDR files",
+        "FTP ground-track fallback 2020-01: 2/2 HDR files",
+    ]
+
+
+def test_ftp_ground_track_discovery_uses_tqdm_on_tty(monkeypatch, tmp_path):
+    root = "/SIR_SIN_L1/2020/01"
+    name = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR"
+    ftp = DummyFtp({root: [name]}, {(root, name): _hdr_payload(70000000)})
+
+    class DummyFtpServer:
+        def __enter__(self):
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    class DummyProgress:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.updates = 0
+            self.closed = False
+
+        def update(self):
+            self.updates += 1
+
+        def close(self):
+            self.closed = True
+
+    class TtyOutput(io.StringIO):
+        def isatty(self):
+            return True
+
+    output = TtyOutput()
+    progress = []
+    monkeypatch.setattr(misc, "ftp_cs2_server", lambda: DummyFtpServer())
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(misc.sys, "stdout", output)
+    monkeypatch.setattr(
+        misc.tqdm,
+        "tqdm",
+        lambda **kwargs: progress.append(DummyProgress(**kwargs)) or progress[-1],
+    )
+
+    misc._ftp_cs_ground_tracks(
+        pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"), gpd.GeoDataFrame()
+    )
+
+    assert progress[0].kwargs["total"] == 1
+    assert progress[0].kwargs["file"] is output
+    assert progress[0].updates == 1
+    assert progress[0].closed
+
+
+
+def test_track_update_checkpoint_roundtrip(monkeypatch, tmp_path):
+    tracks = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 70), (1, 71)])],
+        index=pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    misc._save_track_update_checkpoint("2020-01-01", "2020-02-01", tracks)
+
+    start_datetime, end_datetime, loaded_tracks = misc._load_track_update_checkpoint()
+    assert start_datetime == pd.Timestamp("2020-01-01")
+    assert end_datetime == pd.Timestamp("2020-02-01")
+    assert loaded_tracks.index.equals(tracks.index)
+
+
+def test_ftp_ground_track_discovery_checkpoints_before_interrupt(monkeypatch, tmp_path):
+    root = "/SIR_SIN_L1/2020/01"
+    names = [
+        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR",
+        "CS_OFFL_SIR_SIN_1B_20200101T001000_20200101T001100_E001.HDR",
+    ]
+
+    class InterruptedFtp(DummyFtp):
+        def retrbinary(self, command, callback):
+            if self.retrieved:
+                raise KeyboardInterrupt
+            super().retrbinary(command, callback)
+
+    ftp = InterruptedFtp(
+        {root: names},
+        {(root, name): _hdr_payload(70000000) for name in names},
+    )
+
+    class DummyFtpServer:
+        def __enter__(self):
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    checkpoints = []
+    monkeypatch.setattr(misc, "ftp_cs2_server", lambda: DummyFtpServer())
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    with pytest.raises(KeyboardInterrupt):
+        misc._ftp_cs_ground_tracks(
+            pd.Timestamp("2020-01-15"),
+            pd.Timestamp("2020-02-15"),
+            gpd.GeoDataFrame(),
+            checkpoint=lambda start, end, tracks: checkpoints.append(
+                (start, end, tracks.copy())
+            ),
+        )
+
+    start_datetime, end_datetime, tracks = checkpoints[-1]
+    assert start_datetime == pd.Timestamp("2020-01-15")
+    assert end_datetime == pd.Timestamp("2020-02-15")
+    assert tracks.index.equals(pd.DatetimeIndex(["2020-01-01"]))
+
+
+def test_resume_track_database_uses_checkpoint_without_stac(monkeypatch, tmp_path):
+    cached_path = tmp_path / "ground_tracks.feather"
+    cached_tracks = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 60), (1, 61)])],
+        index=pd.DatetimeIndex(["2019-01-01"]),
+        crs=4326,
+    )
+    saved_tracks = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 70), (1, 71)])],
+        index=pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    new_tracks = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 72), (1, 73)])],
+        index=pd.DatetimeIndex(["2020-01-02"]),
+        crs=4326,
+    )
+    cached_tracks.to_feather(cached_path)
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(cached_path))
+    misc._save_track_update_checkpoint("2020-01-01", "2020-02-01", saved_tracks)
+    calls = []
+
+    def fake_ftp(start_datetime, end_datetime, present_tracks, *, checkpoint):
+        calls.append((start_datetime, end_datetime, present_tracks.copy()))
+        checkpoint(start_datetime, end_datetime, new_tracks)
+        return new_tracks
+
+    monkeypatch.setattr(misc, "_ftp_cs_ground_tracks", fake_ftp)
+    monkeypatch.setattr(
+        misc,
+        "load_cs_full_file_names",
+        lambda update: pd.Series(dtype="object"),
+    )
+    monkeypatch.setattr(
+        misc,
+        "_refresh_cs_l1b_track_catalog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume must not query MAAP")
+        ),
+    )
+
+    misc._resume_track_database()
+
+    assert calls[0][0] == pd.Timestamp("2020-01-01")
+    assert calls[0][1] == pd.Timestamp("2020-02-01")
+    assert pd.Timestamp("2020-01-01") in calls[0][2].index
+    assert not misc._track_update_checkpoint_path().exists()
+    persisted = gpd.read_feather(cached_path)
+    assert len(persisted) == 3
+
+
+def test_library_ground_track_discovery_ignores_cli_checkpoint(monkeypatch, tmp_path):
+    cached_path = tmp_path / "ground_tracks.feather"
+    cached_tracks = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 70), (1, 71)])],
+        index=pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    cached_tracks.to_feather(cached_path)
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(cached_path))
+    misc._save_track_update_checkpoint("2020-02-01", "2020-03-01", cached_tracks)
+
+    tracks = misc.load_cs_ground_tracks(
+        start_datetime="2020-01-01", end_datetime="2020-01-02", source="local"
+    )
+
+    assert len(tracks) == 1
+    assert misc._track_update_checkpoint_path().is_file()
 
 def test_ftp_filename_discovery_prefers_highest_version_in_current_root(
     monkeypatch, tmp_path

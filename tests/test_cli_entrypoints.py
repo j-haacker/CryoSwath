@@ -348,14 +348,74 @@ def test_cryoswath_update_netrc_dispatches_after_parsing(monkeypatch, capsys):
     assert "Wrote plaintext credentials" in capsys.readouterr().out
 
 
-def test_update_track_database_cli_dispatches_after_parsing(monkeypatch):
+def test_update_track_database_cli_dispatches_after_parsing(monkeypatch, tmp_path):
     calls = []
 
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
     monkeypatch.setattr(
-        misc, "update_track_database", lambda: calls.append("update-tracks")
+        misc, "_update_track_database_with_checkpoint", lambda: calls.append("update")
     )
     monkeypatch.setattr(sys, "argv", ["cryoswath-update-tracks"])
 
     misc.update_track_database_cli()
 
-    assert calls == ["update-tracks"]
+    assert calls == ["update"]
+
+
+def test_update_track_database_cli_requires_resume_for_checkpoint(
+    monkeypatch, tmp_path, capsys
+):
+    tracks = misc.gpd.GeoDataFrame(
+        geometry=[misc.shapely.LineString([(0, 70), (1, 71)])],
+        index=misc.pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    misc._save_track_update_checkpoint("2020-01-01", "2020-01-02", tracks)
+    monkeypatch.setattr(sys, "argv", ["cryoswath-update-tracks"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        misc.update_track_database_cli()
+
+    assert excinfo.value.code == 2
+    assert "--resume" in capsys.readouterr().err
+
+
+def test_update_track_database_cli_resumes_checkpoint(monkeypatch, tmp_path):
+    tracks = misc.gpd.GeoDataFrame(
+        geometry=[misc.shapely.LineString([(0, 70), (1, 71)])],
+        index=misc.pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    calls = []
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    misc._save_track_update_checkpoint("2020-01-01", "2020-01-02", tracks)
+    monkeypatch.setattr(misc, "_resume_track_database", lambda: calls.append("resume"))
+    monkeypatch.setattr(sys, "argv", ["cryoswath-update-tracks", "--resume"])
+
+    misc.update_track_database_cli()
+
+    assert calls == ["resume"]
+
+
+def test_update_track_database_cli_checkpoints_interrupt(monkeypatch, tmp_path, capsys):
+    tracks = misc.gpd.GeoDataFrame(
+        geometry=[misc.shapely.LineString([(0, 70), (1, 71)])],
+        index=misc.pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    def interrupt():
+        misc._save_track_update_checkpoint("2020-01-01", "2020-01-02", tracks)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(misc, "_update_track_database_with_checkpoint", interrupt)
+    monkeypatch.setattr(sys, "argv", ["cryoswath-update-tracks"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        misc.update_track_database_cli()
+
+    assert excinfo.value.code == 130
+    assert misc._track_update_checkpoint_path().is_file()
+    assert "--resume" in capsys.readouterr().err

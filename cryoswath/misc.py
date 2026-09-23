@@ -106,6 +106,7 @@ import requests
 import scipy.stats
 import shapely
 import stackstac
+import tqdm
 import xarray as xr
 from dateutil.relativedelta import relativedelta
 from defusedxml.ElementTree import fromstring as ET_from_str
@@ -2866,73 +2867,217 @@ def _combine_ground_track_caches(
     return combined
 
 
+_TRACK_UPDATE_CHECKPOINT_NAME = ".CryoSat-2_SARIn_ground_tracks.resume.pkl"
+
+
+def _track_update_checkpoint_path() -> Path:
+    """Return the private checkpoint path used by the update-tracks CLI."""
+    return Path(aux_path) / _TRACK_UPDATE_CHECKPOINT_NAME
+
+
+def _save_track_update_checkpoint(
+    start_datetime: pd.Timestamp,
+    end_datetime: pd.Timestamp,
+    tracks: gpd.GeoDataFrame,
+) -> None:
+    """Atomically persist CLI-only FTP fallback progress."""
+    path = _track_update_checkpoint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".pkl", prefix=f".{path.stem}.", dir=path.parent, delete=False
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+        pd.to_pickle(
+            {
+                "start_datetime": pd.Timestamp(start_datetime),
+                "end_datetime": pd.Timestamp(end_datetime),
+                "tracks": tracks,
+            },
+            temporary_path,
+        )
+        os.replace(temporary_path, path)
+    except BaseException:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+        raise
+
+
+def _load_track_update_checkpoint() -> (
+    tuple[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame] | None
+):
+    """Load the private update-tracks checkpoint, if it exists."""
+    path = _track_update_checkpoint_path()
+    if not path.is_file():
+        return None
+    payload = pd.read_pickle(path)
+    required_keys = {"start_datetime", "end_datetime", "tracks"}
+    if not isinstance(payload, dict) or not required_keys <= payload.keys():
+        raise RuntimeError(
+            f"Invalid update-tracks checkpoint at {path}. Remove it before retrying."
+        )
+    tracks = payload["tracks"]
+    if not isinstance(tracks, gpd.GeoDataFrame):
+        raise RuntimeError(
+            f"Invalid update-tracks checkpoint at {path}. Remove it before retrying."
+        )
+    tracks = tracks.copy()
+    tracks.index = pd.to_datetime(tracks.index)
+    return pd.Timestamp(payload["start_datetime"]), pd.Timestamp(
+        payload["end_datetime"]
+    ), tracks
+
+
+def _clear_track_update_checkpoint() -> None:
+    """Remove the completed update-tracks checkpoint."""
+    path = _track_update_checkpoint_path()
+    if path.is_file():
+        path.unlink()
+
+
 def _ftp_cs_ground_tracks(
     start_datetime: pd.Timestamp,
     end_datetime: pd.Timestamp,
     present_tracks: gpd.GeoDataFrame | gpd.GeoSeries,
+    *,
+    checkpoint: (
+        Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
+    ) = None,
 ) -> gpd.GeoDataFrame:
     """Read missing legacy track geometries from the preferred FTP roots."""
     present_index = pd.DatetimeIndex(present_tracks.index)
     rows = []
     file_names = {}
     seen_file_times = set()
+    last_checkpointed = 0
+    last_checkpoint_time = time.monotonic() if checkpoint is not None else None
+
+    def save_checkpoint() -> None:
+        if checkpoint is None or not rows:
+            return
+        checkpoint(
+            start_datetime,
+            end_datetime,
+            gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index"),
+        )
+
     first_month = pd.Timestamp(start_datetime).replace(day=1)
     last_month = pd.Timestamp(end_datetime).replace(day=1)
-    for month in pd.date_range(first_month, last_month, freq="MS"):
-        seen = set()
-        with ftp_cs2_server() as ftp:
-            for _directory, remote_files in _ftp_l1b_month_listings(
-                ftp, month.strftime("%Y/%m")
-            ):
-                root_file_names = {}
-                for remote_file in remote_files:
-                    if remote_file.endswith(".nc"):
-                        track_time = pd.to_datetime(remote_file[19:34])
-                        if track_time not in seen_file_times:
-                            root_file_names[track_time] = _preferred_cryosat_l1b_name(
-                                root_file_names.get(track_time, ""), remote_file[:-3]
-                            )
-                for track_time, filename in root_file_names.items():
-                    file_names[track_time] = filename
-                    seen_file_times.add(track_time)
-                for remote_file in remote_files:
-                    if not fnmatch.fnmatch(remote_file, "CS_????_SIR_SIN_1B_*.HDR"):
-                        continue
-                    track_time = pd.to_datetime(remote_file[19:34])
-                    if track_time in present_index or track_time in seen:
-                        continue
-                    seen.add(track_time)
-                    cache = binary_chache()
-                    ftp.retrbinary("RETR " + remote_file, cache.add)
-                    root = ET_from_str(cache.cache).find(
-                        "Variable_Header/SPH/Product_Location"
-                    )
-                    coordinates = {
-                        coord: int(root.find(coord).text) / 1e6
-                        for coord in [
-                            "Start_Long",
-                            "Start_Lat",
-                            "Stop_Long",
-                            "Stop_Lat",
-                        ]
-                    }
-                    rows.append(
-                        {
-                            "index": track_time,
-                            "geometry": shapely.LineString(
-                                (
-                                    [
-                                        coordinates["Start_Long"],
-                                        coordinates["Start_Lat"],
-                                    ],
-                                    [
-                                        coordinates["Stop_Long"],
-                                        coordinates["Stop_Lat"],
-                                    ],
+    try:
+        for month in pd.date_range(first_month, last_month, freq="MS"):
+            seen = set()
+            pending_headers = []
+            with ftp_cs2_server() as ftp:
+                for directory, remote_files in _ftp_l1b_month_listings(
+                    ftp, month.strftime("%Y/%m")
+                ):
+                    root_file_names = {}
+                    for remote_file in remote_files:
+                        if remote_file.endswith(".nc"):
+                            track_time = pd.to_datetime(remote_file[19:34])
+                            if track_time not in seen_file_times:
+                                root_file_names[track_time] = (
+                                    _preferred_cryosat_l1b_name(
+                                        root_file_names.get(track_time, ""),
+                                        remote_file[:-3],
+                                    )
                                 )
-                            ),
-                        }
+                    for track_time, filename in root_file_names.items():
+                        file_names[track_time] = filename
+                        seen_file_times.add(track_time)
+                    for remote_file in remote_files:
+                        if not fnmatch.fnmatch(remote_file, "CS_????_SIR_SIN_1B_*.HDR"):
+                            continue
+                        track_time = pd.to_datetime(remote_file[19:34])
+                        if track_time in present_index or track_time in seen:
+                            continue
+                        seen.add(track_time)
+                        pending_headers.append((directory, remote_file, track_time))
+
+                progress_label = f"FTP ground-track fallback {month:%Y-%m}"
+                total_headers = len(pending_headers)
+                progress = None
+                if sys.stdout.isatty():
+                    progress = tqdm.tqdm(
+                        total=total_headers,
+                        desc=progress_label,
+                        unit="HDR",
+                        file=sys.stdout,
                     )
+                else:
+                    print(f"{progress_label}: 0/{total_headers} HDR files", flush=True)
+                    last_reported = 0
+                    last_report_time = time.monotonic()
+                current_directory = None
+                try:
+                    for completed, (directory, remote_file, track_time) in enumerate(
+                        pending_headers, start=1
+                    ):
+                        if directory != current_directory:
+                            ftp.cwd(directory)
+                            current_directory = directory
+                        cache = binary_chache()
+                        ftp.retrbinary("RETR " + remote_file, cache.add)
+                        root = ET_from_str(cache.cache).find(
+                            "Variable_Header/SPH/Product_Location"
+                        )
+                        coordinates = {
+                            coord: int(root.find(coord).text) / 1e6
+                            for coord in [
+                                "Start_Long",
+                                "Start_Lat",
+                                "Stop_Long",
+                                "Stop_Lat",
+                            ]
+                        }
+                        rows.append(
+                            {
+                                "index": track_time,
+                                "geometry": shapely.LineString(
+                                    (
+                                        [
+                                            coordinates["Start_Long"],
+                                            coordinates["Start_Lat"],
+                                        ],
+                                        [
+                                            coordinates["Stop_Long"],
+                                            coordinates["Stop_Lat"],
+                                        ],
+                                    )
+                                ),
+                            }
+                        )
+                        now = time.monotonic()
+                        if checkpoint is not None and (
+                            len(rows) - last_checkpointed >= 100
+                            or now - last_checkpoint_time >= 30
+                        ):
+                            save_checkpoint()
+                            last_checkpointed = len(rows)
+                            last_checkpoint_time = now
+                        if progress is not None:
+                            progress.update()
+                        elif (
+                            completed == total_headers
+                            or completed - last_reported >= 100
+                            or now - last_report_time >= 30
+                        ):
+                            print(
+                                f"{progress_label}: {completed}/{total_headers} "
+                                "HDR files",
+                                flush=True,
+                            )
+                            last_reported = completed
+                            last_report_time = now
+                    if progress is None and total_headers == 0:
+                        print(f"{progress_label}: 0/0 HDR files", flush=True)
+                finally:
+                    if progress is not None:
+                        progress.close()
+    except BaseException:
+        save_checkpoint()
+        raise
     if file_names:
         path = aux_path / "CryoSat-2_SARIn_file_names.pkl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3090,6 +3235,9 @@ def load_cs_ground_tracks(
     update: Literal["no", "regular", "full"] = "no",
     source: Literal["auto", "local", "stac"] = "auto",
     n_threads: int = 8,
+    _ftp_checkpoint: (
+        Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
+    ) = None,
 ) -> gpd.GeoDataFrame:
     """Read the GeoDataFrame of CryoSat-2 tracks from disk.
 
@@ -3204,8 +3352,20 @@ def load_cs_ground_tracks(
     if ftp_fallback_range is not None:
         fallback_start, fallback_end = ftp_fallback_range
         try:
-            ftp_tracks = _ftp_cs_ground_tracks(fallback_start, fallback_end, cs_tracks)
+            if _ftp_checkpoint is None:
+                ftp_tracks = _ftp_cs_ground_tracks(
+                    fallback_start, fallback_end, cs_tracks
+                )
+            else:
+                ftp_tracks = _ftp_cs_ground_tracks(
+                    fallback_start,
+                    fallback_end,
+                    cs_tracks,
+                    checkpoint=_ftp_checkpoint,
+                )
         except Exception as ftp_error:
+            if _ftp_checkpoint is not None:
+                raise
             warnings.warn(
                 "Could not refresh CryoSat tracks via STAC or FTP: "
                 f"{locals().get('stac_error', 'no supported STAC tracks')}; "
@@ -4686,8 +4846,113 @@ def update_track_database() -> None:
     file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
 
 
+def _merge_legacy_ground_tracks(*tracks: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Merge legacy ground-track rows while preserving the first occurrence."""
+    nonempty = [track for track in tracks if not track.empty]
+    if not nonempty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
+    merged = gpd.GeoDataFrame(
+        pd.concat(nonempty), geometry="geometry", crs=nonempty[0].crs or 4326
+    )
+    merged.index = pd.to_datetime(merged.index)
+    return merged[~merged.index.duplicated(keep="first")].sort_index()
+
+
+def _read_legacy_ground_tracks() -> gpd.GeoDataFrame:
+    """Load the legacy ground-track cache without remote discovery."""
+    path = Path(cs_ground_tracks_path)
+    if not path.is_file():
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
+    tracks = gpd.read_feather(path)
+    if "index" in tracks.columns:
+        tracks.set_index("index", inplace=True)
+    tracks.index = pd.to_datetime(tracks.index)
+    return tracks.sort_index()
+
+
+def _resume_track_database() -> None:
+    """Complete the exact FTP range recorded by the private CLI checkpoint."""
+    checkpoint = _load_track_update_checkpoint()
+    if checkpoint is None:
+        raise RuntimeError("No interrupted update-tracks checkpoint is available.")
+    start_datetime, end_datetime, saved_tracks = checkpoint
+    cached_tracks = _read_legacy_ground_tracks()
+    present_tracks = _merge_legacy_ground_tracks(cached_tracks, saved_tracks)
+    recovered_tracks = saved_tracks
+
+    def save_progress(
+        _start_datetime: pd.Timestamp,
+        _end_datetime: pd.Timestamp,
+        new_tracks: gpd.GeoDataFrame,
+    ) -> None:
+        nonlocal recovered_tracks
+        recovered_tracks = _merge_legacy_ground_tracks(saved_tracks, new_tracks)
+        _save_track_update_checkpoint(start_datetime, end_datetime, recovered_tracks)
+
+    new_tracks = _ftp_cs_ground_tracks(
+        start_datetime,
+        end_datetime,
+        present_tracks,
+        checkpoint=save_progress,
+    )
+    _save_cs_ground_tracks(
+        _merge_legacy_ground_tracks(cached_tracks, recovered_tracks, new_tracks)
+    )
+    _clear_track_update_checkpoint()
+    file_names = load_cs_full_file_names(update="no")
+    file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+
+
+def _update_track_database_with_checkpoint() -> None:
+    """Refresh tracks while retaining private CLI-only FTP progress."""
+    checkpoint_tracks = gpd.GeoDataFrame(
+        columns=["geometry"], geometry="geometry", crs=4326
+    )
+
+    def save_progress(
+        start_datetime: pd.Timestamp,
+        end_datetime: pd.Timestamp,
+        new_tracks: gpd.GeoDataFrame,
+    ) -> None:
+        nonlocal checkpoint_tracks
+        checkpoint_tracks = _merge_legacy_ground_tracks(checkpoint_tracks, new_tracks)
+        _save_track_update_checkpoint(
+            start_datetime, end_datetime, checkpoint_tracks
+        )
+
+    load_cs_ground_tracks(
+        update="regular", source="auto", _ftp_checkpoint=save_progress
+    )
+    _clear_track_update_checkpoint()
+    file_names = load_cs_full_file_names(update="no")
+    file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+
+
+def _update_track_database_from_args(args) -> None:
+    """Run the resumable CLI-only update path from parsed arguments."""
+    checkpoint_path = _track_update_checkpoint_path()
+    if checkpoint_path.is_file() and not args.resume:
+        raise RuntimeError(
+            "An interrupted update exists; run cryoswath-update-tracks --resume."
+        )
+    if args.resume and not checkpoint_path.is_file():
+        raise RuntimeError("No interrupted update-tracks checkpoint is available.")
+    try:
+        if args.resume:
+            _resume_track_database()
+        else:
+            _update_track_database_with_checkpoint()
+    except KeyboardInterrupt:
+        if checkpoint_path.is_file():
+            print(
+                "Update interrupted. Resume with: cryoswath-update-tracks --resume",
+                file=sys.stderr,
+            )
+        raise SystemExit(130) from None
+
+
 def update_track_database_cli() -> None:
-    """CLI wrapper around :func:`update_track_database`."""
+    """CLI wrapper around resumable track-database updates."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -4695,8 +4960,14 @@ def update_track_database_cli() -> None:
         description="Updates the track database. Run this once in a while and always "
         "if you wish to include the latest tracks.",
     )
-    parser.parse_args()
-    update_track_database()
+    parser.add_argument(
+        "--resume", action="store_true", help="Resume the interrupted FTP fallback."
+    )
+    args = parser.parse_args()
+    try:
+        _update_track_database_from_args(args)
+    except RuntimeError as err:
+        parser.error(str(err))
 
 
 # CREDIT: mgab https://stackoverflow.com/a/22376126
