@@ -750,3 +750,98 @@ def test_live_download_single_file_uses_maap_when_enabled(monkeypatch, tmp_path)
     assert header.startswith(b"\x89HDF\r\n\x1a\n") or header.startswith(
         (b"CDF\x01", b"CDF\x02", b"CDF\x05")
     )
+
+
+def test_download_single_file_via_ftp_uses_baseline_e_when_current_lacks_track(
+    monkeypatch, tmp_path
+):
+    track_id = "20200101T000000"
+    current_directory = "/SIR_SIN_L1/2020/01"
+    legacy_directory = "/Ice_Baseline_E/SIR_SIN_L1/2020/01"
+    legacy_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_LEGACY.nc"
+
+    class FakeFtp:
+        def __init__(self):
+            self.directory = None
+            self.cwd_calls = []
+
+        def cwd(self, directory):
+            self.directory = directory
+            self.cwd_calls.append(directory)
+
+        def nlst(self):
+            return {
+                current_directory: ["CS_OFFL_SIR_SIN_1B_20200102T000000_CURRENT.nc"],
+                legacy_directory: [legacy_file],
+            }[self.directory]
+
+        def retrbinary(self, command, callback):
+            assert self.directory == legacy_directory
+            assert command == f"RETR {legacy_file}"
+            callback(b"\x89HDF\r\n\x1a\nfixture")
+
+    class FakeFtpContext:
+        def __init__(self):
+            self.ftp = FakeFtp()
+
+        def __enter__(self):
+            return self.ftp
+
+        def __exit__(self, *args):
+            return False
+
+    context = FakeFtpContext()
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "ftp_cs2_server", lambda: context)
+
+    result = l1b._download_single_file_via_ftp(track_id)
+
+    assert Path(result).name == legacy_file
+    assert context.ftp.cwd_calls == [current_directory, legacy_directory]
+
+
+def test_download_files_via_ftp_prefers_current_directory(monkeypatch, tmp_path):
+    track_id = pd.Timestamp("2020-01-01T00:00:00")
+    current_directory = "/SIR_SIN_L1/2020/01"
+    legacy_directory = "/Ice_Baseline_E/SIR_SIN_L1/2020/01"
+    current_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_CURRENT.nc"
+    legacy_file = "CS_LTA__SIR_SIN_1B_20200101T000000_LEGACY.nc"
+
+    class FakeFtp:
+        def __init__(self):
+            self.directory = None
+            self.cwd_calls = []
+
+        def cwd(self, directory):
+            self.directory = directory
+            self.cwd_calls.append(directory)
+
+        def nlst(self):
+            return {
+                current_directory: [current_file],
+                legacy_directory: [legacy_file],
+            }[self.directory]
+
+        def retrbinary(self, command, callback):
+            assert self.directory == current_directory
+            assert command == f"RETR {current_file}"
+            callback(b"\x89HDF\r\n\x1a\nfixture")
+
+    class FakeFtpContext:
+        def __init__(self):
+            self.ftp = FakeFtp()
+
+        def __enter__(self):
+            return self.ftp
+
+        def __exit__(self, *args):
+            return False
+
+    context = FakeFtpContext()
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "ftp_cs2_server", lambda **kwargs: context)
+
+    l1b._download_files_via_ftp(pd.DatetimeIndex([track_id]))
+
+    assert (tmp_path / "2020" / "01" / current_file).is_file()
+    assert context.ftp.cwd_calls == [current_directory]

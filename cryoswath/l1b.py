@@ -65,6 +65,7 @@ from cryoswath.misc import (
     Ku_band_freq,
     WGS84_ellpsoid,
     _cryosat_l1b_product_sort_key,
+    _ftp_l1b_month_listings,
     _preferred_cryosat_l1b_name,
     _resolve_esa_maap_offline_token,
     antenna_baseline,
@@ -1605,20 +1606,25 @@ def _download_files_via_ftp(
         )
         month_track_ids = month_tracks.strftime("%Y%m%dT%H%M%S")
         with ftp_cs2_server(timeout=120) as ftp:
-            try:
-                ftp.cwd("/SIR_SIN_L1/" + year_month_str)
-            except ftplib.error_perm:
-                warnings.warn(
-                    "Directory /SIR_SIN_L1/" + year_month_str + " couldn't be accessed."
-                )
-                continue
-            remote_listing = ftp.nlst()
             for track_id in month_track_ids:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if track_id in existing_track_ids:
                     continue
-                remote_file = _select_lta_then_offl_for_track(track_id, remote_listing)
+                for _, remote_listing in _ftp_l1b_month_listings(
+                    ftp, year_month_str
+                ):
+                    try:
+                        remote_file = _select_lta_then_offl_for_track(
+                            track_id, remote_listing
+                        )
+                    except FileNotFoundError:
+                        continue
+                    break
+                else:
+                    raise FileNotFoundError(
+                        f"No LTA_ or OFFL product found for track id {track_id}."
+                    )
                 local_path = os.path.join(l1b_path, year_month_str, remote_file)
                 try:
                     _status(f"Downloading {remote_file}.")
@@ -1639,11 +1645,20 @@ def _download_single_file_via_ftp(track_id: str) -> str:
     while retries > 0:
         try:
             with ftp_cs2_server() as ftp:
-                ftp.cwd("/SIR_SIN_L1/" + pd.to_datetime(track_id).strftime("%Y/%m"))
-                remote_file = _select_lta_then_offl_for_track(track_id, ftp.nlst())
-                local_path = os.path.join(
-                    l1b_path, pd.to_datetime(track_id).strftime("%Y/%m")
-                )
+                year_month = pd.to_datetime(track_id).strftime("%Y/%m")
+                for _, remote_listing in _ftp_l1b_month_listings(ftp, year_month):
+                    try:
+                        remote_file = _select_lta_then_offl_for_track(
+                            track_id, remote_listing
+                        )
+                    except FileNotFoundError:
+                        continue
+                    break
+                else:
+                    raise FileNotFoundError(
+                        f"No LTA_ or OFFL product found for track id {track_id}."
+                    )
+                local_path = os.path.join(l1b_path, year_month)
                 if not os.path.isdir(local_path):
                     os.makedirs(local_path)
                 local_path = os.path.join(local_path, remote_file)
