@@ -199,20 +199,6 @@ def test_from_id_reads_from_configured_l1b_path(monkeypatch, tmp_path):
     assert l1b.from_id(pd.Timestamp(track_id)) == local_file
 
 
-def test_download_single_file_requires_maap_catalog_entry(monkeypatch, tmp_path):
-    track_id = "20200101T000000"
-    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
-    monkeypatch.setattr(
-        l1b, "_resolve_esa_maap_offline_token", lambda: ("token", "env")
-    )
-    monkeypatch.setattr(
-        l1b, "_load_cs_l1b_track_catalog_for", lambda idx: pd.DataFrame()
-    )
-
-    with pytest.raises(RuntimeError, match="no MAAP catalog entry"):
-        l1b.download_single_file(track_id)
-
-
 def test_download_single_file_uses_stac_catalog_href(monkeypatch, tmp_path):
     track_id = "20200101T000000"
     catalog_time = pd.Timestamp("2019-12-31T23:59:59")
@@ -329,7 +315,7 @@ def test_download_single_file_reports_maap_failure(monkeypatch, tmp_path):
         "_download_named_file_maap",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("maap failure")),
     )
-    with pytest.raises(RuntimeError, match="ESA MAAP failed"):
+    with pytest.raises(RuntimeError, match="CryoSat L1b delivery failed"):
         l1b.download_single_file(track_id)
 
 
@@ -358,9 +344,7 @@ def test_download_wrapper_returns_0_without_credentials_for_cached_tracks(
     assert "already present" in capsys.readouterr().out
 
 
-def test_download_wrapper_returns_failure_when_credentials_are_unavailable(
-    monkeypatch, tmp_path
-):
+def test_download_wrapper_defers_credentials_to_workers(monkeypatch, tmp_path):
     track = pd.Timestamp("2020-09-01 00:00:00")
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(
@@ -368,22 +352,17 @@ def test_download_wrapper_returns_failure_when_credentials_are_unavailable(
         "_resolve_esa_maap_offline_token",
         lambda: (_ for _ in ()).throw(RuntimeError("no token")),
     )
-    monkeypatch.setattr(
-        l1b,
-        "request_workers",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("workers should not be created")
-        ),
-    )
+    dispatched = []
 
-    with pytest.warns(UserWarning, match="ESA MAAP delivery"):
-        result = l1b.download_wrapper(track_idx=pd.DatetimeIndex([track]))
+    def record_worker(track_idx, stop_event):
+        dispatched.append(pd.DatetimeIndex(track_idx))
 
-    assert result == 1
-    assert not (tmp_path / "2020" / "09").exists()
+    monkeypatch.setattr(l1b, "_download_files_with_catalog_routes", record_worker)
+    assert l1b.download_wrapper(track_idx=pd.DatetimeIndex([track]), n_threads=1) == 0
+    assert dispatched == [pd.DatetimeIndex([track])]
 
 
-def test_download_wrapper_resolves_once_and_dispatches_only_missing_tracks(
+def test_download_wrapper_dispatches_only_missing_tracks_without_token_preflight(
     monkeypatch, tmp_path
 ):
     track_idx = pd.DatetimeIndex(["2020-09-01 00:00:00", "2020-09-02 00:00:00"])
@@ -391,33 +370,32 @@ def test_download_wrapper_resolves_once_and_dispatches_only_missing_tracks(
     local_dir.mkdir(parents=True)
     (local_dir / "CS_OFFL_SIR_SIN_1B_20200901T000000_TEST.nc").touch()
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
-    credential_calls = []
     dispatched = []
 
-    def resolve_token():
-        credential_calls.append(None)
-        return "token", "env"
+    def record_worker(track_idx, stop_event):
+        dispatched.append(pd.DatetimeIndex(track_idx))
 
-    def record_worker(track_idx, stop_event, offline_token):
-        dispatched.append((pd.DatetimeIndex(track_idx), offline_token))
-
-    monkeypatch.setattr(l1b, "_resolve_esa_maap_offline_token", resolve_token)
-    monkeypatch.setattr(l1b, "_download_files_with_maap_auth", record_worker)
+    monkeypatch.setattr(
+        l1b,
+        "_resolve_esa_maap_offline_token",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("token should not be preflighted")
+        ),
+    )
+    monkeypatch.setattr(l1b, "_download_files_with_catalog_routes", record_worker)
 
     assert l1b.download_wrapper(track_idx=track_idx, n_threads=1) == 0
-    assert credential_calls == [None]
-    assert dispatched == [(pd.DatetimeIndex([track_idx[1]]), "token")]
+    assert dispatched == [pd.DatetimeIndex([track_idx[1]])]
 
 
 def test_download_wrapper_returns_failure_when_worker_fails(monkeypatch, tmp_path):
-    def failing_download_files(track_idx, stop_event, offline_token):
+    def failing_download_files(track_idx, stop_event):
         raise RuntimeError("remote unavailable")
 
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
     monkeypatch.setattr(
-        l1b, "_resolve_esa_maap_offline_token", lambda: ("token", "env")
+        l1b, "_download_files_with_catalog_routes", failing_download_files
     )
-    monkeypatch.setattr(l1b, "_download_files_with_maap_auth", failing_download_files)
 
     with pytest.warns(UserWarning):
         result = l1b.download_wrapper(
@@ -461,7 +439,9 @@ def test_download_files_fails_fast_for_unresolved_tracks(monkeypatch, tmp_path):
     assert session.closed
 
 
-def test_download_files_fails_fast_when_maap_token_is_unavailable(monkeypatch):
+def test_download_files_reports_unavailable_maap_token_after_catalog_lookup(
+    monkeypatch,
+):
     track_idx = pd.DatetimeIndex(["2020-01-01 00:00:00", "2020-01-02 00:00:00"])
     monkeypatch.setattr(
         l1b,
@@ -471,8 +451,13 @@ def test_download_files_fails_fast_when_maap_token_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         l1b,
         "_load_cs_l1b_track_catalog_for",
-        lambda idx: (_ for _ in ()).throw(
-            AssertionError("file-name lookup should be skipped")
+        lambda idx: pd.DataFrame(
+            {
+                "filename": ["CS_OFFL_SIR_SIN_1B_20200101T000000_TEST.nc"],
+                "href": ["https://maap.example/test.nc"],
+                "provider": ["maap"],
+            },
+            index=[track_idx[0]],
         ),
     )
     monkeypatch.setattr(
@@ -482,7 +467,7 @@ def test_download_files_fails_fast_when_maap_token_is_unavailable(monkeypatch):
             AssertionError("FTP fallback must not be used")
         ),
     )
-    with pytest.raises(RuntimeError, match="ESA MAAP delivery"):
+    with pytest.raises(RuntimeError, match="no token"):
         l1b.download_files(track_idx)
 
 
@@ -524,6 +509,93 @@ def test_download_files_reuses_one_maap_session_for_batch(monkeypatch, tmp_path)
     assert all(call[1] is session for call in session_calls)
     assert session.closed
     assert credential_calls == [None]
+
+
+def test_download_single_file_uses_ftp_when_maap_href_is_missing(monkeypatch, tmp_path):
+    track_id = "20200101T000000"
+    expected = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_F001.nc"
+    selected = tmp_path / "2020" / "01" / expected.replace("OFFL", "LTA_")
+    catalog = pd.DataFrame(
+        {"filename": [expected], "href": [None], "provider": ["maap"]},
+        index=[pd.Timestamp(track_id)],
+    )
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "_load_cs_l1b_track_catalog_for", lambda idx: catalog)
+
+    def fake_ftp(_):
+        selected.parent.mkdir(parents=True)
+        selected.write_bytes(b"\x89HDF\r\n\x1a\nfixture")
+        return str(selected)
+
+    monkeypatch.setattr(l1b, "_download_single_file_via_ftp", fake_ftp)
+    monkeypatch.setattr(
+        l1b,
+        "_resolve_esa_maap_offline_token",
+        lambda: (_ for _ in ()).throw(AssertionError("MAAP token must not be used")),
+    )
+
+    with pytest.warns(UserWarning, match="no usable MAAP asset URL"):
+        result = l1b.download_single_file(track_id)
+
+    assert result == str(selected)
+
+
+def test_download_single_file_uses_ftp_when_maap_has_no_catalog_entry(
+    monkeypatch, tmp_path
+):
+    track_id = "20200101T000000"
+    selected = tmp_path / "2020" / "01" / "selected.nc"
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(
+        l1b, "_load_cs_l1b_track_catalog_for", lambda idx: pd.DataFrame()
+    )
+
+    def fake_ftp(_):
+        selected.parent.mkdir(parents=True)
+        selected.write_bytes(b"\x89HDF\r\n\x1a\nfixture")
+        return str(selected)
+
+    monkeypatch.setattr(l1b, "_download_single_file_via_ftp", fake_ftp)
+    monkeypatch.setattr(
+        l1b,
+        "_resolve_esa_maap_offline_token",
+        lambda: (_ for _ in ()).throw(AssertionError("MAAP token must not be used")),
+    )
+
+    with pytest.warns(UserWarning, match="no MAAP catalogue entry"):
+        assert l1b.download_single_file(track_id) == str(selected)
+
+
+def test_maap_failure_does_not_use_ftp_fallback(monkeypatch, tmp_path):
+    track_id = "20200101T000000"
+    remote_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_E001.nc"
+    catalog = pd.DataFrame(
+        {
+            "filename": [remote_file],
+            "href": ["https://catalog.maap.eo.esa.int/data/file.nc"],
+            "provider": ["maap"],
+        },
+        index=[pd.Timestamp(track_id)],
+    )
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "_load_cs_l1b_track_catalog_for", lambda idx: catalog)
+    monkeypatch.setattr(
+        l1b, "_resolve_esa_maap_offline_token", lambda: ("token", "env")
+    )
+    monkeypatch.setattr(l1b, "_create_maap_session", lambda _: DummySession())
+    monkeypatch.setattr(
+        l1b,
+        "_download_named_file_maap",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("gone")),
+    )
+    monkeypatch.setattr(
+        l1b,
+        "_download_single_file_via_ftp",
+        lambda _: (_ for _ in ()).throw(AssertionError("FTP must not be used")),
+    )
+
+    with pytest.raises(RuntimeError, match="gone"):
+        l1b.download_single_file(track_id)
 
 
 def test_download_named_file_maap_rejects_html_payload(monkeypatch, tmp_path):
@@ -678,3 +750,98 @@ def test_live_download_single_file_uses_maap_when_enabled(monkeypatch, tmp_path)
     assert header.startswith(b"\x89HDF\r\n\x1a\n") or header.startswith(
         (b"CDF\x01", b"CDF\x02", b"CDF\x05")
     )
+
+
+def test_download_single_file_via_ftp_uses_baseline_e_when_current_lacks_track(
+    monkeypatch, tmp_path
+):
+    track_id = "20200101T000000"
+    current_directory = "/SIR_SIN_L1/2020/01"
+    legacy_directory = "/Ice_Baseline_E/SIR_SIN_L1/2020/01"
+    legacy_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_LEGACY.nc"
+
+    class FakeFtp:
+        def __init__(self):
+            self.directory = None
+            self.cwd_calls = []
+
+        def cwd(self, directory):
+            self.directory = directory
+            self.cwd_calls.append(directory)
+
+        def nlst(self):
+            return {
+                current_directory: ["CS_OFFL_SIR_SIN_1B_20200102T000000_CURRENT.nc"],
+                legacy_directory: [legacy_file],
+            }[self.directory]
+
+        def retrbinary(self, command, callback):
+            assert self.directory == legacy_directory
+            assert command == f"RETR {legacy_file}"
+            callback(b"\x89HDF\r\n\x1a\nfixture")
+
+    class FakeFtpContext:
+        def __init__(self):
+            self.ftp = FakeFtp()
+
+        def __enter__(self):
+            return self.ftp
+
+        def __exit__(self, *args):
+            return False
+
+    context = FakeFtpContext()
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "ftp_cs2_server", lambda: context)
+
+    result = l1b._download_single_file_via_ftp(track_id)
+
+    assert Path(result).name == legacy_file
+    assert context.ftp.cwd_calls == [current_directory, legacy_directory]
+
+
+def test_download_files_via_ftp_prefers_current_directory(monkeypatch, tmp_path):
+    track_id = pd.Timestamp("2020-01-01T00:00:00")
+    current_directory = "/SIR_SIN_L1/2020/01"
+    legacy_directory = "/Ice_Baseline_E/SIR_SIN_L1/2020/01"
+    current_file = "CS_OFFL_SIR_SIN_1B_20200101T000000_CURRENT.nc"
+    legacy_file = "CS_LTA__SIR_SIN_1B_20200101T000000_LEGACY.nc"
+
+    class FakeFtp:
+        def __init__(self):
+            self.directory = None
+            self.cwd_calls = []
+
+        def cwd(self, directory):
+            self.directory = directory
+            self.cwd_calls.append(directory)
+
+        def nlst(self):
+            return {
+                current_directory: [current_file],
+                legacy_directory: [legacy_file],
+            }[self.directory]
+
+        def retrbinary(self, command, callback):
+            assert self.directory == current_directory
+            assert command == f"RETR {current_file}"
+            callback(b"\x89HDF\r\n\x1a\nfixture")
+
+    class FakeFtpContext:
+        def __init__(self):
+            self.ftp = FakeFtp()
+
+        def __enter__(self):
+            return self.ftp
+
+        def __exit__(self, *args):
+            return False
+
+    context = FakeFtpContext()
+    monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
+    monkeypatch.setattr(l1b, "ftp_cs2_server", lambda **kwargs: context)
+
+    l1b._download_files_via_ftp(pd.DatetimeIndex([track_id]))
+
+    assert (tmp_path / "2020" / "01" / current_file).is_file()
+    assert context.ftp.cwd_calls == [current_directory]

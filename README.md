@@ -24,14 +24,16 @@ from waveform-level processing to gridded elevation products.
   `venv`, or `uv`). The dependency tree is broad, and future
   dependency conflicts are otherwise likely.
 - Supported Python version: **>=3.12**.
-- Downloading CryoSat SARIn L1B resources requires a personal ESA MAAP offline
-  token associated with an **[ESA EO account](https://eoiam-idp.eo.esa.int/)**.
+- Downloading CryoSat SARIn L1B resources requires an
+  **[ESA EO account](https://eoiam-idp.eo.esa.int/)**. MAAP assets use a
+  personal MAAP offline token; Science Server FTP fallback uses ESA
+  username/password credentials.
 - Automatic RGI downloads from NSIDC require NASA Earthdata credentials;
   see the prerequisites docs for setup details.
-- CryoSat SARIn L1b track discovery uses ESA MAAP without authentication.
-  Downloads use the selected MAAP asset URL with a personal MAAP offline token;
-  normal download workflows do not fall back to PDS HTTPS or FTP.
-- Anonymous FTP login is no longer supported.
+- CryoSat SARIn L1b track discovery uses MAAP anonymously. When MAAP cannot
+  provide a usable asset, downloads fall back to the authenticated CryoSat
+  Science Server FTP service.
+- Anonymous FTP login does not grant access to CryoSat product directories.
 - Install `xarray` and `zarr` together to avoid version mismatches.
 
 ## Installation
@@ -137,10 +139,12 @@ You can also set `CRYOSWATH_DATA` or more specific `CRYOSWATH_*` path
 variables; environment variables override config files. Set `CRYOSWATH_CONFIG`
 to select a config file explicitly. Legacy `config.ini` files are still read.
 
-CryoSat downloads require a personal ESA MAAP offline token associated with an
+MAAP downloads require a personal ESA MAAP offline token associated with an
 ESA EO Sign-In account. Store it in keyring with `cryoswath update-maap-token`,
 or set `ESA_MAAP_OFFLINE_TOKEN` for automation. The token is different from an
 ESA username/password and should not be stored in `cryoswath.cfg` or `.netrc`.
+The authenticated Science Server FTP fallback uses existing ESA
+username/password credentials.
 Generate a 90-day token through the
 [ESA MAAP portal](https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php).
 

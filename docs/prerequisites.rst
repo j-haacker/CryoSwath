@@ -91,8 +91,9 @@ Access requirements
 -------------------
 
 .. warning::
-   Downloading CryoSat resources via CryoSwath requires a personal ESA MAAP
-   offline token associated with an `ESA EO account <https://eoiam-idp.eo.esa.int/>`_.
+   Downloading CryoSat resources via CryoSwath requires an
+   `ESA EO account <https://eoiam-idp.eo.esa.int/>`_. MAAP assets require a
+   personal offline token; Science Server FTP fallback uses ESA credentials.
 
 MAAP catalog discovery is anonymous, but downloading a selected asset requires
 an offline token. Generate a 90-day token through the
@@ -121,20 +122,26 @@ Automation setup (environment variables):
 This token is distinct from an ESA username/password. Do not store it in
 ``cryoswath.cfg``, legacy ``config.ini``, or ``~/.netrc``.
 
-Legacy ESA credentials
-^^^^^^^^^^^^^^^^^^^^^^
+Science Server credentials
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The legacy FTP helpers retained for compatibility still use ``EOIAM_USER`` and
+Science Server FTP fallback delivery uses ``EOIAM_USER`` and
 ``EOIAM_PASSWORD``, keyring, ``~/.netrc``, or legacy ``config.ini``. Those
-credentials are not used for normal CryoSat L1b MAAP delivery.
+credentials are not used for MAAP asset delivery.
 
 Download protocol defaults
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-L1b workflows use MAAP STAC metadata (``CryoSatIceL110``) to discover missing
-CryoSat SARIn products. The selected direct NetCDF asset is downloaded from its
-MAAP ``enclosure_nc`` or ``enclosure`` URL with a short-lived Bearer token.
-PDS HTTPS and FTP are not normal-download fallbacks.
+L1b workflows query MAAP STAC metadata (``CryoSatIceL110``) first. A selected
+MAAP ``enclosure_nc`` or ``enclosure`` URL is downloaded with a short-lived
+Bearer token. When MAAP has no usable selected asset or is unavailable,
+CryoSwath scans the matching month on the authenticated Science Server using
+FTP_TLS and selects the best same-track product. MAAP transfer failures are
+reported and do not silently fall back. PDS HTTPS URLs are not constructed
+from filenames.
+
+An anonymous FTP connection can be established, but it cannot list or retrieve
+CryoSat product directories. It is therefore not a discovery or download path.
 
 Data dependencies
 -----------------
@@ -162,21 +169,20 @@ auxiliary-data snapshot from Zenodo DOI ``10.5281/zenodo.20241526`` and
 extracts it into ``data/auxiliary`` by default. The snapshot contains the
 CryoSat-2 ground-track database, filename catalog, and static RGI metadata.
 Newer installations may also contain the richer
-``CryoSat-2_SARIn_L1B_track_catalog.feather`` cache, which stores MAAP STAC
-item IDs, product filenames, MAAP enclosure URLs, product versions, processing
-dates, and track geometries for supported ``SIR_SIN_1B`` products. Downloads
-use the selected MAAP enclosure URL directly; cached entries without an asset
-URL are refreshed before delivery.
+``CryoSat-2_SARIn_L1B_track_catalog.feather`` cache, which stores MAAP item
+IDs, product filenames, selected enclosure URLs, product versions,
+processing dates, and track geometries for supported ``SIR_SIN_1B`` products.
+Cached entries without a usable route are refreshed before delivery.
 
 By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
 caches when their latest timestamp covers the requested period. If the request
 extends beyond local coverage and a network connection is available, CryoSwath
-queries MAAP STAC metadata, caches the supported products, and then returns the
-combined local result. Pass ``source="local"`` to force offline/local-only
-behavior, or ``source="stac"`` to force a MAAP STAC metadata query for the
-requested period.
+queries MAAP STAC metadata, caches the supported products, and then returns
+the combined local result. Pass
+``source="local"`` to force offline/local-only behavior, or ``source="stac"``
+to force remote catalogue metadata discovery for the requested period.
 
-The STAC-backed selector currently accepts validated CryoSat Baseline D/E
+The STAC-backed selector currently accepts validated CryoSat Baseline D/E/F
 ``SIR_SIN_1B`` products. If a newer unsupported baseline is seen, CryoSwath
 warns and excludes those products rather than feeding unvalidated files into
 the processing chain. Existing local NetCDF files are not replaced

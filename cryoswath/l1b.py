@@ -65,6 +65,7 @@ from cryoswath.misc import (
     Ku_band_freq,
     WGS84_ellpsoid,
     _cryosat_l1b_product_sort_key,
+    _ftp_l1b_month_listings,
     _preferred_cryosat_l1b_name,
     _resolve_esa_maap_offline_token,
     antenna_baseline,
@@ -1211,23 +1212,11 @@ def download_wrapper(
     if missing_track_idx.empty:
         _status("All selected L1b files are already present.")
         return 0
-    try:
-        offline_token, _ = _resolve_esa_maap_offline_token()
-    except RuntimeError as err:
-        warnings.warn(
-            "Could not configure ESA MAAP delivery: "
-            f"{err}. No download workers were started.",
-            category=UserWarning,
-            stacklevel=2,
-        )
-        _status("ESA MAAP token unavailable; no download workers started.")
-        return 1
-
-    task_queue = request_workers(_download_files_with_maap_auth, n_threads)
+    task_queue = request_workers(_download_files_with_catalog_routes, n_threads)
     months = missing_track_idx.to_period("M")
     for month in months.unique():
         idx_selection = missing_track_idx[months == month]
-        task_queue.put((idx_selection, stop_event, offline_token))
+        task_queue.put((idx_selection, stop_event))
     for _ in range(n_threads):
         task_queue.put(None)
     # wait for threads to finish
@@ -1617,24 +1606,32 @@ def _download_files_via_ftp(
         )
         month_track_ids = month_tracks.strftime("%Y%m%dT%H%M%S")
         with ftp_cs2_server(timeout=120) as ftp:
-            try:
-                ftp.cwd("/SIR_SIN_L1/" + year_month_str)
-            except ftplib.error_perm:
-                warnings.warn(
-                    "Directory /SIR_SIN_L1/" + year_month_str + " couldn't be accessed."
-                )
-                continue
-            remote_listing = ftp.nlst()
             for track_id in month_track_ids:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if track_id in existing_track_ids:
                     continue
-                remote_file = _select_lta_then_offl_for_track(track_id, remote_listing)
+                for _, remote_listing in _ftp_l1b_month_listings(
+                    ftp, year_month_str
+                ):
+                    try:
+                        remote_file = _select_lta_then_offl_for_track(
+                            track_id, remote_listing
+                        )
+                    except FileNotFoundError:
+                        continue
+                    break
+                else:
+                    raise FileNotFoundError(
+                        f"No LTA_ or OFFL product found for track id {track_id}."
+                    )
                 local_path = os.path.join(l1b_path, year_month_str, remote_file)
                 try:
                     _status(f"Downloading {remote_file}.")
-                    _download_remote_file_via_ftp_atomic(ftp, remote_file, local_path)
+                    downloaded = _download_remote_file_via_ftp_atomic(
+                        ftp, remote_file, local_path
+                    )
+                    _validate_netcdf_payload(downloaded)
                 except Exception:
                     _status(f"Download failed for {remote_file}.")
                     raise
@@ -1648,19 +1645,30 @@ def _download_single_file_via_ftp(track_id: str) -> str:
     while retries > 0:
         try:
             with ftp_cs2_server() as ftp:
-                ftp.cwd("/SIR_SIN_L1/" + pd.to_datetime(track_id).strftime("%Y/%m"))
-                remote_file = _select_lta_then_offl_for_track(track_id, ftp.nlst())
-                local_path = os.path.join(
-                    l1b_path, pd.to_datetime(track_id).strftime("%Y/%m")
-                )
+                year_month = pd.to_datetime(track_id).strftime("%Y/%m")
+                for _, remote_listing in _ftp_l1b_month_listings(ftp, year_month):
+                    try:
+                        remote_file = _select_lta_then_offl_for_track(
+                            track_id, remote_listing
+                        )
+                    except FileNotFoundError:
+                        continue
+                    break
+                else:
+                    raise FileNotFoundError(
+                        f"No LTA_ or OFFL product found for track id {track_id}."
+                    )
+                local_path = os.path.join(l1b_path, year_month)
                 if not os.path.isdir(local_path):
                     os.makedirs(local_path)
                 local_path = os.path.join(local_path, remote_file)
                 try:
                     _status(f"Downloading {remote_file}.")
-                    return _download_remote_file_via_ftp_atomic(
+                    downloaded = _download_remote_file_via_ftp_atomic(
                         ftp, remote_file, local_path
                     )
+                    _validate_netcdf_payload(downloaded)
+                    return downloaded
                 except Exception:
                     _status(f"Download failed for {remote_file}.")
                     raise
@@ -1674,27 +1682,26 @@ def _download_single_file_via_ftp(track_id: str) -> str:
     raise RuntimeError(f"FTP retries exhausted for track id {track_id}.")
 
 
-def _download_files_with_maap_auth(
+def _delivery_download_error(failures: list[tuple[str, str]]) -> RuntimeError:
+    """Return one concise error for mixed ESA L1B delivery failures."""
+    details = "; ".join(f"{track_id}: {reason}" for track_id, reason in failures)
+    return RuntimeError("CryoSat L1b delivery failed. Failed product(s): " + details)
+
+
+def _download_files_with_catalog_routes(
     track_idx: pd.DatetimeIndex | str,
     stop_event: Event | None,
-    offline_token: str,
-) -> None:
-    """Download a batch of missing L1b files with one MAAP session."""
+) -> dict[str, str]:
+    """Download a batch from MAAP, falling back to Science Server FTP.
+
+    A MAAP transfer error is terminal for that product.  The FTP fallback is
+    only used when MAAP discovery did not yield a usable asset URL.
+    """
     track_idx = pd.DatetimeIndex(track_idx).sort_values()
     year_month_str_list = track_idx.strftime(f"%Y{os.path.sep}%m").unique()
     maap_session = None
+    downloaded_paths: dict[str, str] = {}
     track_catalog = _load_cs_l1b_track_catalog_for(track_idx)
-    if track_catalog is None or track_catalog.empty:
-        raise _maap_download_error(
-            [
-                (track.strftime("%Y%m%dT%H%M%S"), "no MAAP catalog entry")
-                for track in track_idx
-            ]
-        )
-    try:
-        maap_session = _create_maap_session(offline_token)
-    except Exception as err:
-        raise RuntimeError(f"Could not initialize ESA MAAP session: {err}") from err
     failures = []
     try:
         for year_month_str in year_month_str_list:
@@ -1715,26 +1722,48 @@ def _download_files_with_maap_auth(
                 if catalog_row is not None:
                     remote_file = catalog_row["filename"]
                     href = catalog_row.get("href")
+                    provider = catalog_row.get("provider") or "maap"
                 else:
-                    failures.append((track_id_str, "no MAAP catalog entry"))
-                    continue
-                local_path = Path(l1b_path, year_month_str, remote_file)
+                    remote_file = None
+                    href = None
+                    provider = None
                 try:
-                    _download_named_file_maap(
-                        remote_file=remote_file,
-                        local_path=local_path,
-                        session=maap_session,
-                        href=href,
-                    )
+                    if provider == "maap" and isinstance(href, str) and href.strip():
+                        if maap_session is None:
+                            offline_token, _ = _resolve_esa_maap_offline_token()
+                            maap_session = _create_maap_session(offline_token)
+                        downloaded = _download_named_file_maap(
+                            remote_file=remote_file,
+                            local_path=Path(l1b_path, year_month_str, remote_file),
+                            session=maap_session,
+                            href=href,
+                        )
+                    else:
+                        downloaded = _download_single_file_via_ftp(track_id_str)
+                        reason = (
+                            "no MAAP catalogue entry"
+                            if catalog_row is None
+                            else "no usable MAAP asset URL"
+                        )
+                        warnings.warn(
+                            "Using authenticated Science Server FTP for "
+                            f"{track_id_str}: {reason}.",
+                            category=UserWarning,
+                            stacklevel=2,
+                        )
                     existing_track_ids.add(track_id_str)
+                    downloaded_paths[track_id_str] = str(downloaded)
                 except Exception as err:
-                    failures.append((track_id_str, f"{remote_file}: {err}"))
+                    failures.append(
+                        (track_id_str, f"{remote_file or track_id_str}: {err}")
+                    )
         if failures:
-            raise _maap_download_error(failures)
+            raise _delivery_download_error(failures)
         _status(
             "Finished downloading tracks for months: "
             + ", ".join(str(x) for x in year_month_str_list)
         )
+        return downloaded_paths
     finally:
         if maap_session is not None:
             maap_session.close()
@@ -1746,46 +1775,18 @@ def download_files(
     # baseline: str = "latest",
 ):
     """Download all missing monthly L1b files for ``track_idx``."""
-    try:
-        offline_token, _ = _resolve_esa_maap_offline_token()
-    except RuntimeError as err:
-        raise RuntimeError(f"Could not configure ESA MAAP delivery: {err}") from err
-    return _download_files_with_maap_auth(track_idx, stop_event, offline_token)
+    return _download_files_with_catalog_routes(track_idx, stop_event)
 
 
 def download_single_file(track_id: str) -> str:
     """Download one L1b file for a single CryoSat track ID."""
     track_id_timestamp = pd.to_datetime(track_id)
     track_id = track_id_timestamp.strftime("%Y%m%dT%H%M%S")
-    try:
-        offline_token, _ = _resolve_esa_maap_offline_token()
-    except RuntimeError as err:
-        raise RuntimeError(f"Could not configure ESA MAAP delivery: {err}") from err
     requested_idx = pd.DatetimeIndex([track_id_timestamp])
-    track_catalog = _load_cs_l1b_track_catalog_for(requested_idx)
-    catalog_row = _catalog_row_for_track_id(track_catalog, track_id)
-    if catalog_row is not None:
-        filename = catalog_row["filename"]
-        href = catalog_row.get("href")
-    else:
-        filename = None
-    if filename is not None:
-        local_path = Path(l1b_path, track_id_timestamp.strftime("%Y/%m"), filename)
-        maap_session = None
-        try:
-            maap_session = _create_maap_session(offline_token)
-            return _download_named_file_maap(
-                remote_file=filename,
-                local_path=local_path,
-                session=maap_session,
-                href=href,
-            )
-        except Exception as err:
-            raise _maap_download_error([(track_id, f"{filename}: {err}")]) from err
-        finally:
-            if maap_session is not None:
-                maap_session.close()
-    raise _maap_download_error([(track_id, "no MAAP catalog entry")])
+    downloaded = _download_files_with_catalog_routes(requested_idx, stop_event=None)
+    if track_id in downloaded:
+        return downloaded[track_id]
+    raise _delivery_download_error([(track_id, "no file was downloaded")])
 
 
 def drop_waveform(cs_l1b_ds, time_20_ku_mask):

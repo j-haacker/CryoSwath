@@ -7,9 +7,10 @@ import cryoswath.misc as misc
 
 
 class DummyResponse:
-    def __init__(self, json_data=None, status_code=200):
+    def __init__(self, json_data=None, status_code=200, text=""):
         self._json_data = json_data or {}
         self.status_code = status_code
+        self.text = text
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -68,7 +69,7 @@ def test_stac_catalog_selects_highest_supported_baseline_before_lta():
         ),
     ]
 
-    catalog = misc._stac_items_to_l1b_track_catalog(items, "eocat")
+    catalog = misc._stac_items_to_l1b_track_catalog(items, "maap")
 
     assert len(catalog) == 1
     assert catalog.iloc[0]["filename"] == (
@@ -89,19 +90,19 @@ def test_stac_catalog_prefers_lta_for_same_baseline_and_version():
         ),
     ]
 
-    catalog = misc._stac_items_to_l1b_track_catalog(items, "eocat")
+    catalog = misc._stac_items_to_l1b_track_catalog(items, "maap")
 
     assert catalog.iloc[0]["stage"] == "LTA_"
 
 
 def test_stac_catalog_warns_and_excludes_unsupported_baselines():
     item = _item(
-        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_F001",
-        version="F001",
+        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_G001",
+        version="G001",
     )
 
     with pytest.warns(UserWarning, match="unsupported baseline"):
-        catalog = misc._stac_items_to_l1b_track_catalog([item], "eocat")
+        catalog = misc._stac_items_to_l1b_track_catalog([item], "maap")
 
     assert catalog.empty
 
@@ -187,7 +188,7 @@ def test_load_cs_full_file_names_overlays_stac_catalog(monkeypatch, tmp_path):
                 start="2020-01-01T00:00:00Z",
             )
         ],
-        "eocat",
+        "maap",
     )
     misc._save_cs_l1b_track_catalog(catalog)
 
@@ -240,7 +241,7 @@ def test_load_cs_ground_tracks_auto_refreshes_missing_tail(monkeypatch, tmp_path
                 start="2020-01-02T00:00:00Z",
             )
         ],
-        "eocat",
+        "maap",
     )
     calls = []
 
@@ -259,3 +260,161 @@ def test_load_cs_ground_tracks_auto_refreshes_missing_tail(monkeypatch, tmp_path
 
     assert calls
     assert pd.Timestamp("2020-01-02") in tracks.index
+
+
+class DummyFtp:
+    def __init__(self, listings, payloads=None):
+        self.listings = listings
+        self.payloads = payloads or {}
+        self.directory = None
+        self.retrieved = []
+
+    def cwd(self, directory):
+        if directory not in self.listings:
+            raise misc.ftplib.error_perm("missing")
+        self.directory = directory
+
+    def nlst(self):
+        return self.listings[self.directory]
+
+    def retrbinary(self, command, callback):
+        name = command.removeprefix("RETR ")
+        self.retrieved.append((self.directory, name))
+        callback(self.payloads[(self.directory, name)])
+
+
+def _hdr_payload(start_lat):
+    return f"""<Earth_Explorer_File><Variable_Header><SPH><Product_Location>
+<Start_Long>0</Start_Long><Start_Lat>{start_lat}</Start_Lat>
+<Stop_Long>1000000</Stop_Long><Stop_Lat>{start_lat}</Stop_Lat>
+</Product_Location></SPH></Variable_Header></Earth_Explorer_File>""".encode()
+
+
+def test_ftp_month_listings_prefer_current_root_when_available():
+    current = "/SIR_SIN_L1/2020/01"
+    legacy = "/Ice_Baseline_E/SIR_SIN_L1/2020/01"
+    ftp = DummyFtp({current: ["current.nc"], legacy: ["legacy.nc"]})
+
+    listings = list(misc._ftp_l1b_month_listings(ftp, "2020/01"))
+
+    assert listings == [(current, ["current.nc"]), (legacy, ["legacy.nc"])]
+
+
+def test_ftp_ground_track_discovery_falls_back_and_keeps_current_duplicate(
+    monkeypatch, tmp_path
+):
+    current = "/SIR_SIN_L1/2020/01"
+    legacy = "/Ice_Baseline_E/SIR_SIN_L1/2020/01"
+    name = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR"
+    ftp = DummyFtp(
+        {current: [name], legacy: [name]},
+        {
+            (current, name): _hdr_payload(70000000),
+            (legacy, name): _hdr_payload(71000000),
+        },
+    )
+
+    class DummyFtpServer:
+        def __enter__(self):
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(misc, "ftp_cs2_server", lambda: DummyFtpServer())
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    tracks = misc._ftp_cs_ground_tracks(
+        pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"), gpd.GeoDataFrame()
+    )
+
+    assert tracks.iloc[0].geometry.coords[0][1] == 70
+    assert ftp.retrieved == [(current, name)]
+
+
+def test_ftp_filename_discovery_prefers_highest_version_in_current_root(
+    monkeypatch, tmp_path
+):
+    root = "/SIR_SIN_L1/2020/01"
+    low = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.nc"
+    high = "CS_LTA__SIR_SIN_1B_20200101T000000_20200101T000100_E002.nc"
+    ftp = DummyFtp({root: [low, high]}, {})
+
+    class DummyFtpServer:
+        def __enter__(self):
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(misc, "ftp_cs2_server", lambda: DummyFtpServer())
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    misc._ftp_cs_ground_tracks(
+        pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"), gpd.GeoDataFrame()
+    )
+
+    cached = pd.read_pickle(tmp_path / "CryoSat-2_SARIn_file_names.pkl")
+    assert cached.iloc[0].endswith("E002")
+
+
+@pytest.mark.parametrize("stac_error", [None, RuntimeError("MAAP unavailable")])
+def test_load_cs_ground_tracks_auto_uses_bounded_ftp_fallback(
+    monkeypatch, tmp_path, stac_error
+):
+    _catalog_path(monkeypatch, tmp_path)
+    legacy_path = tmp_path / "tracks.feather"
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(legacy_path))
+    calls = []
+
+    def fake_refresh(start_datetime, end_datetime, *, replace=False):
+        if stac_error:
+            raise stac_error
+        return misc._empty_cs_l1b_track_catalog()
+
+    def fake_ftp(start_datetime, end_datetime, present_tracks):
+        calls.append((start_datetime, end_datetime, present_tracks.copy()))
+        return gpd.GeoDataFrame(
+            geometry=[shapely.LineString([(0, 70), (1, 71)])],
+            index=pd.DatetimeIndex(["2020-01-01"], name="index"),
+            crs=4326,
+        )
+
+    monkeypatch.setattr(misc, "_refresh_cs_l1b_track_catalog", fake_refresh)
+    monkeypatch.setattr(misc, "_ftp_cs_ground_tracks", fake_ftp)
+
+    tracks = misc.load_cs_ground_tracks(
+        start_datetime="2020-01-01", end_datetime="2020-01-02", source="auto"
+    )
+
+    assert calls[0][:2] == (pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"))
+    assert legacy_path.is_file()
+    assert len(tracks) == 1
+
+
+def test_load_cs_ground_tracks_auto_does_not_use_ftp_after_stac_tracks(
+    monkeypatch, tmp_path
+):
+    _catalog_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(tmp_path / "tracks.feather"))
+    refreshed = misc._stac_items_to_l1b_track_catalog(
+        [_item("CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000200_E001")], "maap"
+    )
+    def fake_refresh(*args, **kwargs):
+        misc._save_cs_l1b_track_catalog(refreshed)
+        return refreshed
+
+    monkeypatch.setattr(misc, "_refresh_cs_l1b_track_catalog", fake_refresh)
+    monkeypatch.setattr(
+        misc,
+        "_ftp_cs_ground_tracks",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("FTP should not be queried")
+        ),
+    )
+
+    tracks = misc.load_cs_ground_tracks(
+        start_datetime="2020-01-01", end_datetime="2020-01-02", source="auto"
+    )
+
+    assert len(tracks) == 1

@@ -146,7 +146,7 @@ _CRYOSAT_STAC_TIMEOUT = (10, 60)
 _CRYOSAT_STAC_LIMIT = 500
 _CRYOSAT_STAC_PRODUCT_TYPE = "SIR_SIN_1B"
 _CRYOSAT_STAC_SENSOR_MODE = "SARIN"
-_CRYOSAT_SUPPORTED_BASELINES = ("D", "E")
+_CRYOSAT_SUPPORTED_BASELINES = ("D", "E", "F")
 _CRYOSAT_L1B_TRACK_CATALOG_NAME = "CryoSat-2_SARIn_L1B_track_catalog.feather"
 
 
@@ -1578,7 +1578,22 @@ def ftp_cs2_server(**kwargs):
                 f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
                 "~/.netrc (plaintext fallback)."
             ) from err
+        ftp.prot_p()
         yield ftp
+
+
+_FTP_CS2_L1B_ROOTS = ("/SIR_SIN_L1", "/Ice_Baseline_E/SIR_SIN_L1")
+
+
+def _ftp_l1b_month_listings(ftp: ftplib.FTP, year_month: str):
+    """Yield available SARIn L1B month listings in baseline preference order."""
+    for root in _FTP_CS2_L1B_ROOTS:
+        directory = f"{root}/{year_month}"
+        try:
+            ftp.cwd(directory)
+        except ftplib.error_perm:
+            continue
+        yield directory, ftp.nlst()
 
 
 def _resolve_esa_env_credentials() -> tuple[str, str, str] | None:
@@ -2639,6 +2654,9 @@ def _canonical_l1b_track_catalog(catalog: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     sort_frame["_version_rank"] = pd.to_numeric(
         sort_frame["version_number"], errors="coerce"
     ).fillna(-1)
+    sort_frame["_asset_rank"] = sort_frame["href"].map(
+        lambda value: int(isinstance(value, str) and bool(value.strip()))
+    )
     for column in ["processing_datetime", "published"]:
         sort_frame[column] = pd.to_datetime(sort_frame[column], errors="coerce")
     sort_frame.sort_values(
@@ -2649,13 +2667,20 @@ def _canonical_l1b_track_catalog(catalog: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             "_stage_rank",
             "processing_datetime",
             "published",
+            "_asset_rank",
             "item_id",
         ],
         inplace=True,
     )
     sort_frame.drop_duplicates("start_datetime", keep="last", inplace=True)
     sort_frame.drop(
-        columns=["_baseline_rank", "_version_rank", "_stage_rank"], inplace=True
+        columns=[
+            "_baseline_rank",
+            "_version_rank",
+            "_stage_rank",
+            "_asset_rank",
+        ],
+        inplace=True,
     )
     canonical = gpd.GeoDataFrame(sort_frame, geometry="geometry", crs=4326)
     canonical.set_index("start_datetime", inplace=True)
@@ -2684,6 +2709,10 @@ def _read_cs_l1b_track_catalog() -> gpd.GeoDataFrame:
         catalog["supported"] = catalog["supported"].fillna(False).astype(bool)
     if catalog.crs is None:
         catalog = catalog.set_crs(4326)
+    # EO-CAT was retired upstream.  Ignore rows written by the short-lived
+    # fallback so they cannot be selected from an existing cache.
+    if "provider" in catalog.columns:
+        catalog = catalog[catalog["provider"].isna() | catalog["provider"].eq("maap")]
     return _canonical_l1b_track_catalog(catalog)
 
 
@@ -2733,27 +2762,15 @@ def _query_stac_l1b_track_catalog(
     start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
 ) -> gpd.GeoDataFrame:
     """Query ESA STAC providers for CryoSat SARIn L1B track metadata."""
-    params = {
+    maap_params = {
         "datetime": _stac_datetime_range(start_datetime, end_datetime),
         "productType": _CRYOSAT_STAC_PRODUCT_TYPE,
         "sensorMode": _CRYOSAT_STAC_SENSOR_MODE,
         "limit": str(_CRYOSAT_STAC_LIMIT),
     }
-    errors = []
-    for provider, url, collection in _CRYOSAT_STAC_PROVIDERS:
-        try:
-            features = _stac_search_features(url, {"collections": collection, **params})
-        except Exception as err:
-            errors.append(f"{provider}: {err}")
-            continue
-        catalog = _stac_items_to_l1b_track_catalog(features, provider)
-        if not catalog.empty:
-            return catalog
-    if errors:
-        raise RuntimeError(
-            "Could not query CryoSat STAC metadata. " + "; ".join(errors)
-        )
-    return _empty_cs_l1b_track_catalog()
+    provider, url, collection = _CRYOSAT_STAC_PROVIDERS[0]
+    features = _stac_search_features(url, {"collections": collection, **maap_params})
+    return _stac_items_to_l1b_track_catalog(features, provider)
 
 
 def _refresh_cs_l1b_track_catalog(
@@ -2849,6 +2866,95 @@ def _combine_ground_track_caches(
     return combined
 
 
+def _ftp_cs_ground_tracks(
+    start_datetime: pd.Timestamp,
+    end_datetime: pd.Timestamp,
+    present_tracks: gpd.GeoDataFrame | gpd.GeoSeries,
+) -> gpd.GeoDataFrame:
+    """Read missing legacy track geometries from the preferred FTP roots."""
+    present_index = pd.DatetimeIndex(present_tracks.index)
+    rows = []
+    file_names = {}
+    seen_file_times = set()
+    first_month = pd.Timestamp(start_datetime).replace(day=1)
+    last_month = pd.Timestamp(end_datetime).replace(day=1)
+    for month in pd.date_range(first_month, last_month, freq="MS"):
+        seen = set()
+        with ftp_cs2_server() as ftp:
+            for _directory, remote_files in _ftp_l1b_month_listings(
+                ftp, month.strftime("%Y/%m")
+            ):
+                root_file_names = {}
+                for remote_file in remote_files:
+                    if remote_file.endswith(".nc"):
+                        track_time = pd.to_datetime(remote_file[19:34])
+                        if track_time not in seen_file_times:
+                            root_file_names[track_time] = _preferred_cryosat_l1b_name(
+                                root_file_names.get(track_time, ""), remote_file[:-3]
+                            )
+                for track_time, filename in root_file_names.items():
+                    file_names[track_time] = filename
+                    seen_file_times.add(track_time)
+                for remote_file in remote_files:
+                    if not fnmatch.fnmatch(remote_file, "CS_????_SIR_SIN_1B_*.HDR"):
+                        continue
+                    track_time = pd.to_datetime(remote_file[19:34])
+                    if track_time in present_index or track_time in seen:
+                        continue
+                    seen.add(track_time)
+                    cache = binary_chache()
+                    ftp.retrbinary("RETR " + remote_file, cache.add)
+                    root = ET_from_str(cache.cache).find(
+                        "Variable_Header/SPH/Product_Location"
+                    )
+                    coordinates = {
+                        coord: int(root.find(coord).text) / 1e6
+                        for coord in [
+                            "Start_Long",
+                            "Start_Lat",
+                            "Stop_Long",
+                            "Stop_Lat",
+                        ]
+                    }
+                    rows.append(
+                        {
+                            "index": track_time,
+                            "geometry": shapely.LineString(
+                                (
+                                    [
+                                        coordinates["Start_Long"],
+                                        coordinates["Start_Lat"],
+                                    ],
+                                    [
+                                        coordinates["Stop_Long"],
+                                        coordinates["Stop_Lat"],
+                                    ],
+                                )
+                            ),
+                        }
+                    )
+    if file_names:
+        path = aux_path / "CryoSat-2_SARIn_file_names.pkl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cached = pd.read_pickle(path) if path.is_file() else pd.Series(dtype="object")
+        if cached.empty:
+            cached = pd.Series(file_names).sort_index()
+        else:
+            cached = pd.concat([cached, pd.Series(file_names)]).sort_index()
+            cached = cached[~cached.index.duplicated(keep="last")]
+        cached.to_pickle(path)
+    if not rows:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index")
+
+
+def _save_cs_ground_tracks(tracks: gpd.GeoDataFrame | gpd.GeoSeries) -> None:
+    """Persist the legacy FTP track cache."""
+    path = Path(cs_ground_tracks_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tracks.to_feather(path)
+
+
 def load_cs_full_file_names(
     update: Literal["no", "quick", "regular", "full"] = "no",
 ) -> pd.Series:
@@ -2907,55 +3013,63 @@ def load_cs_full_file_names(
         print(last_lta_idx + pd.offsets.MonthBegin(-1, normalize=True))
 
     with ftp_cs2_server() as ftp:
-        ftp.cwd("/SIR_SIN_L1")
-        year_entries = sorted(
-            name
-            for name, facts in ftp.mlsd()
-            if facts.get("type") == "dir" and re.fullmatch(r"\d{4}", name)
-        )
-        for year in year_entries:
-            if update != "full" and year < str(last_lta_idx.year):
-                print("skip", year)
-                continue
-            month = None
+        seen_track_times = set()
+        for root in _FTP_CS2_L1B_ROOTS:
             try:
-                ftp.cwd(f"/SIR_SIN_L1/{year}")
-                print(f"entered /SIR_SIN_L1/{year}")
-                month_entries = sorted(
+                ftp.cwd(root)
+                year_entries = sorted(
                     name
                     for name, facts in ftp.mlsd()
-                    if facts.get("type") == "dir" and re.fullmatch(r"\d{2}", name)
+                    if facts.get("type") == "dir" and re.fullmatch(r"\d{4}", name)
                 )
-                for month in month_entries:
-                    if update != "full" and pd.to_datetime(
-                        f"{year}-{month}"
-                    ) < last_lta_idx + pd.offsets.MonthBegin(-1, normalize=True):
-                        print("skip", month)
-                        continue
-                    print(f"cwd /SIR_SIN_L1/{year}/{month}")
-                    ftp.cwd(f"/SIR_SIN_L1/{year}/{month}")
-                    print(f"scanning /SIR_SIN_L1/{year}/{month}")
-                    remote_files = sorted(
+            except ftplib.error_perm:
+                continue
+            for year in year_entries:
+                if update != "full" and year < str(last_lta_idx.year):
+                    print("skip", year)
+                    continue
+                month = None
+                try:
+                    ftp.cwd(f"{root}/{year}")
+                    month_entries = sorted(
                         name
                         for name, facts in ftp.mlsd()
-                        if facts.get("type") == "file" and name.endswith(".nc")
+                        if facts.get("type") == "dir" and re.fullmatch(r"\d{2}", name)
                     )
-                    for remote_file in remote_files:
-                        remote_idx = pd.to_datetime(remote_file[19:34])
-                        remote_name = remote_file[:-3]
-                        if update == "regular" and remote_idx in file_names.index:
-                            remote_name = _preferred_cryosat_l1b_name(
-                                file_names.loc[remote_idx], remote_name
-                            )
-                            if remote_name == file_names.loc[remote_idx]:
+                    for month in month_entries:
+                        if update != "full" and pd.to_datetime(
+                            f"{year}-{month}"
+                        ) < last_lta_idx + pd.offsets.MonthBegin(-1, normalize=True):
+                            print("skip", month)
+                            continue
+                        ftp.cwd(f"{root}/{year}/{month}")
+                        root_names = {}
+                        for remote_file in sorted(ftp.nlst()):
+                            if not remote_file.endswith(".nc"):
                                 continue
-                        file_names.loc[remote_idx] = remote_name
-            except Exception:
-                if month is None:
-                    location = f"/SIR_SIN_L1/{year}"
-                else:
-                    location = f"/SIR_SIN_L1/{year}/{month}"
-                warnings.warn(f"Error occurred in remote directory {location}.")
+                            remote_idx = pd.to_datetime(remote_file[19:34])
+                            if remote_idx in seen_track_times:
+                                continue
+                            root_names[remote_idx] = _preferred_cryosat_l1b_name(
+                                root_names.get(remote_idx, ""), remote_file[:-3]
+                            )
+                        for remote_idx, remote_name in root_names.items():
+                            if update == "regular" and remote_idx in file_names.index:
+                                remote_name = _preferred_cryosat_l1b_name(
+                                    file_names.loc[remote_idx], remote_name
+                                )
+                                if remote_name == file_names.loc[remote_idx]:
+                                    seen_track_times.add(remote_idx)
+                                    continue
+                            file_names.loc[remote_idx] = remote_name
+                            seen_track_times.add(remote_idx)
+                except Exception:
+                    location = (
+                        f"{root}/{year}"
+                        if month is None
+                        else f"{root}/{year}/{month}"
+                    )
+                    warnings.warn(f"Error occurred in remote directory {location}.")
 
     stac_file_names = _stac_file_names_series()
     if not stac_file_names.empty:
@@ -3046,6 +3160,7 @@ def load_cs_ground_tracks(
         )
 
     stac_tracks = _read_cs_l1b_track_catalog()
+    ftp_fallback_range = None
     if source in {"auto", "stac"}:
         local_tracks = _combine_ground_track_caches(cs_tracks, stac_tracks)
         query_end = _current_data_query_end(end_datetime)
@@ -3075,12 +3190,45 @@ def load_cs_ground_tracks(
                 stac_tracks = _refresh_cs_l1b_track_catalog(
                     refresh_start, query_end, replace=replace_stac_cache
                 )
+                if source == "auto" and stac_tracks.loc[
+                    refresh_start:query_end
+                ].empty:
+                    ftp_fallback_range = (refresh_start, query_end)
                 update = "no"
             except Exception as err:
                 if source == "stac":
                     raise
+                ftp_fallback_range = (refresh_start, query_end)
+                stac_error = err
+
+    if ftp_fallback_range is not None:
+        fallback_start, fallback_end = ftp_fallback_range
+        try:
+            ftp_tracks = _ftp_cs_ground_tracks(fallback_start, fallback_end, cs_tracks)
+        except Exception as ftp_error:
+            warnings.warn(
+                "Could not refresh CryoSat tracks via STAC or FTP: "
+                f"{locals().get('stac_error', 'no supported STAC tracks')}; "
+                f"{ftp_error}. "
+                "Using local track caches.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+        else:
+            if not ftp_tracks.empty:
+                if cs_tracks.empty:
+                    cs_tracks = ftp_tracks.copy()
+                else:
+                    cs_tracks = pd.concat([cs_tracks, ftp_tracks]).sort_index()
+                    cs_tracks = gpd.GeoDataFrame(
+                        cs_tracks, geometry="geometry", crs=4326
+                    )
+                cs_tracks = cs_tracks[~cs_tracks.index.duplicated(keep="first")]
+                _save_cs_ground_tracks(cs_tracks)
+            else:
                 warnings.warn(
-                    f"Could not refresh CryoSat tracks via STAC: {err}. "
+                    "Could not refresh CryoSat tracks via STAC or FTP: "
+                    f"{locals().get('stac_error', 'no supported STAC tracks')}. "
                     "Using local track caches.",
                     category=UserWarning,
                     stacklevel=2,
@@ -3109,7 +3257,7 @@ def load_cs_ground_tracks(
             new_track_series.to_feather(track_path)
 
         def collect_missing_tracks(
-            remote_files: list[str], present_tracks: gpd.GeoSeries
+            remote_files: list[tuple[str, str]], present_tracks: gpd.GeoSeries
         ) -> gpd.GeoSeries:
             """Gets track if not in list already.
 
@@ -3121,14 +3269,14 @@ def load_cs_ground_tracks(
                 gpd.GeoSeries: Missing tracks to be added to the collection.
             """
             with ftp_cs2_server() as ftp:
-                ftp.cwd(
-                    "/SIR_SIN_L1/"
-                    + pd.to_datetime(remote_files[0][19:34]).strftime("%Y/%m")
-                )
                 tracks_to_be_added = gpd.GeoDataFrame(columns=["geometry"]).rename_axis(
                     "index"
                 )
-                for rf_name in remote_files:
+                current_directory = None
+                for directory, rf_name in remote_files:
+                    if directory != current_directory:
+                        ftp.cwd(directory)
+                        current_directory = directory
                     if fnmatch.fnmatch(rf_name, "CS_????_SIR_SIN_1B_*.HDR"):
                         if pd.to_datetime(rf_name[19:34]) in present_tracks.index:
                             continue
@@ -3175,18 +3323,26 @@ def load_cs_ground_tracks(
         # they are in the local collection.
         while True:
             with ftp_cs2_server() as ftp:
-                try:
-                    ftp.cwd("/SIR_SIN_L1/" + last_idx.strftime("%Y/%m"))
-                except ftplib.error_perm:
+                month_listings = list(
+                    _ftp_l1b_month_listings(ftp, last_idx.strftime("%Y/%m"))
+                )
+                if not month_listings:
                     print(
                         "couldn't switch to month(?)",
                         last_idx.strftime("%Y/%m"),
                         "This should only concern you, if you do expect tracks there.",
                     )
                     break
-                remote_files = [
-                    x[0] for x in ftp.mlsd() if x[0].lower().endswith(".hdr")
-                ]
+                remote_files = []
+                seen_track_times = set()
+                for directory, names in month_listings:
+                    for name in names:
+                        if not name.lower().endswith(".hdr"):
+                            continue
+                        track_time = pd.to_datetime(name[19:34])
+                        if track_time not in seen_track_times:
+                            remote_files.append((directory, name))
+                            seen_track_times.add(track_time)
             # cut the file list into chunks and dispatch to workers
             batch_size = len(remote_files) // (n_threads * 3) + 1
             while remote_files:
