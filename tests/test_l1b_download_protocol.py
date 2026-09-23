@@ -792,12 +792,18 @@ def test_download_single_file_via_ftp_uses_baseline_e_when_current_lacks_track(
 
     context = FakeFtpContext()
     monkeypatch.setattr(l1b, "l1b_path", str(tmp_path))
-    monkeypatch.setattr(l1b, "ftp_cs2_server", lambda: context)
+    ftp_calls = []
+    monkeypatch.setattr(
+        l1b,
+        "ftp_cs2_server",
+        lambda **kwargs: (ftp_calls.append(kwargs), context)[1],
+    )
 
     result = l1b._download_single_file_via_ftp(track_id)
 
     assert Path(result).name == legacy_file
     assert context.ftp.cwd_calls == [current_directory, legacy_directory]
+    assert ftp_calls == [{"timeout": 120}]
 
 
 def test_download_files_via_ftp_prefers_current_directory(monkeypatch, tmp_path):
