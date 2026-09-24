@@ -181,6 +181,19 @@ def _ensure_auxiliary_data(
         )
 
 
+def _ensure_report_dem(config_path: Path) -> None:
+    """Download the ArcticDEM used by report notebooks into their DEM path."""
+    with _using_cryoswath_config(config_path):
+        _, _, paths = misc._resolve_path_configuration()
+        previous_dem_path = misc.dem_path
+        misc.dem_path = paths["dem"]
+        try:
+            dem_reader = misc.get_dem_reader("arctic")
+            dem_reader.close()
+        finally:
+            misc.dem_path = previous_dem_path
+
+
 def _tutorial_support_source(
     repo_root: Path, filename: str, data_path: Path | None = None
 ) -> Path | None:
@@ -214,12 +227,16 @@ def _copy_tutorial_support_files(
         if all(destination.is_file() for destination in destinations):
             continue
 
-        source = _tutorial_support_source(repo_root, filename, data_path)
+        source = next((path for path in destinations if path.is_file()), None)
+        if source is None:
+            source = _tutorial_support_source(repo_root, filename, data_path)
         if source is None:
             missing_sources.append(filename)
             continue
 
         for destination in destinations:
+            if destination == source:
+                continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
             copied.append(destination)
@@ -254,6 +271,7 @@ def prepare_report_project(
         skip_download=skip_aux_download,
         data_path=resolved_data_path,
     )
+    _ensure_report_dem(config_path)
     return PreparedNotebookProject(project_path, config_path)
 
 

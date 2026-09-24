@@ -1644,7 +1644,7 @@ def _download_single_file_via_ftp(track_id: str) -> str:
     retries = 10
     while retries > 0:
         try:
-            with ftp_cs2_server() as ftp:
+            with ftp_cs2_server(timeout=120) as ftp:
                 year_month = pd.to_datetime(track_id).strftime("%Y/%m")
                 for _, remote_listing in _ftp_l1b_month_listings(ftp, year_month):
                     try:

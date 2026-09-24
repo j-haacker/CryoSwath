@@ -177,10 +177,12 @@ Cached entries without a usable route are refreshed before delivery.
 By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
 caches when their latest timestamp covers the requested period. If the request
 extends beyond local coverage and a network connection is available, CryoSwath
-queries MAAP STAC metadata, caches the supported products, and then returns
-the combined local result. Pass
-``source="local"`` to force offline/local-only behavior, or ``source="stac"``
-to force remote catalogue metadata discovery for the requested period.
+queries MAAP STAC metadata and caches supported products. If MAAP cannot supply
+the uncovered tail, callers must explicitly choose ``ftp_fallback=True`` to
+retrieve FTP headers or ``ftp_fallback=False`` to continue with available
+MAAP/local rows. Pass ``cache_only=True`` for strict cached-only track loading,
+or ``source="stac"`` to force remote catalogue metadata discovery for the
+requested period.
 
 The STAC-backed selector currently accepts validated CryoSat Baseline D/E/F
 ``SIR_SIN_1B`` products. If a newer unsupported baseline is seen, CryoSwath

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import shutil
 import zipfile
 from pathlib import Path
@@ -262,3 +263,27 @@ def test_copy_tutorials_force_overwrites_existing_files(tmp_path):
     misc.copy_tutorials(base_dir=tmp_path, force=True)
 
     assert existing.read_text() != "local notes"
+
+def test_packaged_tutorial_track_loading_is_cache_only():
+    resources = {
+        resource.name: resource.read_text() for resource in misc._tutorial_resources()
+    }
+    track_tutorials = {
+        name: json.loads(text)
+        for name, text in resources.items()
+        if "load_cs_ground_tracks" in text
+    }
+
+    assert track_tutorials
+    for notebook in track_tutorials.values():
+        source = "\n".join(
+            "".join(cell["source"])
+            for cell in notebook["cells"]
+            if cell["cell_type"] == "code"
+        )
+        assert source.count("load_cs_ground_tracks") == source.count("cache_only=True")
+    for name in [
+        "tutorial__process_first_waveform.ipynb",
+        "tutorial__process_first_swath.ipynb",
+    ]:
+        assert "latest track in the database is loaded and processed" in resources[name]

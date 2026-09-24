@@ -125,7 +125,7 @@ env = { PYTHONPATH = "$PIXI_PROJECT_ROOT", CRYOSWATH_CONFIG = "$PIXI_PROJECT_ROO
 [feature.test.tasks.test-tutorial-notebooks]
 args = [{ arg = "tutorial_dir", default = "$PIXI_PROJECT_ROOT/tests/tutorials/artifacts/project/tutorials" }]
 depends-on = ["export-conda-for-notebooks", "prepare-tutorial-notebooks"]
-cmd = "env -u CRYOSWATH_DATA -u CRYOSWATH_L1B -u CRYOSWATH_L2_SWATH -u CRYOSWATH_L2_POCA -u CRYOSWATH_L3 -u CRYOSWATH_L4 -u CRYOSWATH_TMP -u CRYOSWATH_AUX -u CRYOSWATH_DEM -u CRYOSWATH_RGI -u CRYOSWATH_CS_GROUND_TRACKS snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 4 --use-conda"
+cmd = "env -u CRYOSWATH_DATA -u CRYOSWATH_L1B -u CRYOSWATH_L2_SWATH -u CRYOSWATH_L2_POCA -u CRYOSWATH_L3 -u CRYOSWATH_L4 -u CRYOSWATH_TMP -u CRYOSWATH_AUX -u CRYOSWATH_DEM -u CRYOSWATH_RGI -u CRYOSWATH_CS_GROUND_TRACKS snakemake --directory \"{{ tutorial_dir }}\" --snakefile \"$PIXI_PROJECT_ROOT/tests/tutorials/Snakefile\" --cores 12 --use-conda"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT", CRYOSWATH_CONFIG = "$PIXI_PROJECT_ROOT/tests/tutorials/artifacts/project/cryoswath.cfg" }
 
 [feature.test.tasks.test-all]
