@@ -4786,7 +4786,10 @@ def cryoswath_cli(argv: list[str] | None = None) -> None:
         "update-tracks",
         help="Refresh cached ground-track and filename lookup tables.",
     )
-    update_tracks_parser.set_defaults(func=lambda args: update_track_database())
+    update_tracks_parser.add_argument(
+        "--resume", action="store_true", help="Resume the interrupted FTP fallback."
+    )
+    update_tracks_parser.set_defaults(func=_update_track_database_from_args)
 
     keyring_parser = subparsers.add_parser(
         "update-keyring",
@@ -4809,7 +4812,12 @@ def cryoswath_cli(argv: list[str] | None = None) -> None:
     netrc_parser.set_defaults(func=_update_netrc_from_args)
 
     args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except RuntimeError as err:
+        if args.command == "update-tracks":
+            parser.error(str(err))
+        raise
 
 
 def update_email(email: str = None):

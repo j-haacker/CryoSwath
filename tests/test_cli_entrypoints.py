@@ -248,17 +248,39 @@ def test_cryoswath_download_rgi_dispatches_after_parsing(monkeypatch, capsys):
     assert "/tmp/rgi" in capsys.readouterr().out
 
 
-def test_cryoswath_update_track_database_dispatches_after_parsing(monkeypatch):
+def test_cryoswath_update_track_database_dispatches_after_parsing(
+    monkeypatch, tmp_path
+):
     calls = []
 
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
     monkeypatch.setattr(
-        misc, "update_track_database", lambda: calls.append("update-tracks")
+        misc,
+        "_update_track_database_with_checkpoint",
+        lambda: calls.append("update"),
     )
     monkeypatch.setattr(sys, "argv", ["cryoswath", "update-tracks"])
 
     misc.cryoswath_cli()
 
-    assert calls == ["update-tracks"]
+    assert calls == ["update"]
+
+
+def test_cryoswath_update_track_database_resumes_after_parsing(monkeypatch, tmp_path):
+    tracks = misc.gpd.GeoDataFrame(
+        geometry=[misc.shapely.LineString([(0, 70), (1, 71)])],
+        index=misc.pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    calls = []
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    misc._save_track_update_checkpoint("2020-01-01", "2020-01-02", tracks)
+    monkeypatch.setattr(misc, "_resume_track_database", lambda: calls.append("resume"))
+    monkeypatch.setattr(sys, "argv", ["cryoswath", "update-tracks", "--resume"])
+
+    misc.cryoswath_cli()
+
+    assert calls == ["resume"]
 
 
 def test_cryoswath_update_keyring_dispatches_after_parsing(monkeypatch, capsys):
