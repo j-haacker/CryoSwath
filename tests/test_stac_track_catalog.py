@@ -604,7 +604,10 @@ def test_load_cs_ground_tracks_auto_uses_bounded_ftp_fallback(
     monkeypatch.setattr(misc, "_ftp_cs_ground_tracks", fake_ftp)
 
     tracks = misc.load_cs_ground_tracks(
-        start_datetime="2020-01-01", end_datetime="2020-01-02", source="auto"
+        start_datetime="2020-01-01",
+        end_datetime="2020-01-02",
+        source="auto",
+        ftp_fallback=True,
     )
 
     assert calls[0][:2] == (pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"))
@@ -638,3 +641,157 @@ def test_load_cs_ground_tracks_auto_does_not_use_ftp_after_stac_tracks(
     )
 
     assert len(tracks) == 1
+
+
+@pytest.mark.parametrize("stac_error", [None, RuntimeError("MAAP unavailable")])
+def test_load_cs_ground_tracks_requires_explicit_ftp_decision(
+    monkeypatch, tmp_path, stac_error
+):
+    _catalog_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(tmp_path / "tracks.feather"))
+    monkeypatch.setattr(
+        misc,
+        "_refresh_cs_l1b_track_catalog",
+        lambda *args, **kwargs: (
+            (_ for _ in ()).throw(stac_error)
+            if stac_error
+            else misc._empty_cs_l1b_track_catalog()
+        ),
+    )
+    monkeypatch.setattr(
+        misc,
+        "_ftp_cs_ground_tracks",
+        lambda *args, **kwargs: pytest.fail("FTP requires ftp_fallback=True"),
+    )
+
+    with pytest.raises(RuntimeError, match="ftp_fallback=True"):
+        misc.load_cs_ground_tracks(
+            start_datetime="2020-01-01", end_datetime="2020-01-02", source="auto"
+        )
+
+def test_load_cs_ground_tracks_can_skip_ftp_after_empty_maap(monkeypatch, tmp_path):
+    _catalog_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(tmp_path / "tracks.feather"))
+    monkeypatch.setattr(
+        misc,
+        "_refresh_cs_l1b_track_catalog",
+        lambda *args, **kwargs: misc._empty_cs_l1b_track_catalog(),
+    )
+    monkeypatch.setattr(
+        misc,
+        "_ftp_cs_ground_tracks",
+        lambda *args, **kwargs: pytest.fail("FTP should be disabled"),
+    )
+
+    tracks = misc.load_cs_ground_tracks(
+        start_datetime="2020-01-01",
+        end_datetime="2020-01-02",
+        source="auto",
+        ftp_fallback=False,
+    )
+
+    assert tracks.empty
+
+def test_load_cs_ground_tracks_warns_when_skipping_ftp_after_maap_failure(
+    monkeypatch, tmp_path
+):
+    _catalog_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(tmp_path / "tracks.feather"))
+    monkeypatch.setattr(
+        misc,
+        "_refresh_cs_l1b_track_catalog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("MAAP unavailable")),
+    )
+    monkeypatch.setattr(
+        misc,
+        "_ftp_cs_ground_tracks",
+        lambda *args, **kwargs: pytest.fail("FTP should be disabled"),
+    )
+
+    with pytest.warns(UserWarning, match="MAAP unavailable"):
+        tracks = misc.load_cs_ground_tracks(
+            start_datetime="2020-01-01",
+            end_datetime="2020-01-02",
+            source="auto",
+            ftp_fallback=False,
+        )
+
+    assert tracks.empty
+
+def test_load_cs_ground_tracks_cache_only_skips_discovery(monkeypatch, tmp_path):
+    _catalog_path(monkeypatch, tmp_path)
+    path = tmp_path / "tracks.feather"
+    cached = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 70), (1, 71)])],
+        index=pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+    cached.to_feather(path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(path))
+    monkeypatch.setattr(
+        misc,
+        "_refresh_cs_l1b_track_catalog",
+        lambda *args, **kwargs: pytest.fail("STAC should be disabled"),
+    )
+    monkeypatch.setattr(
+        misc,
+        "_ftp_cs_ground_tracks",
+        lambda *args, **kwargs: pytest.fail("FTP should be disabled"),
+    )
+
+    tracks = misc.load_cs_ground_tracks(
+        start_datetime="2020-01-01",
+        end_datetime="2020-01-02",
+        cache_only=True,
+    )
+
+    assert list(tracks.index) == [pd.Timestamp("2020-01-01")]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"cache_only": True, "update": "regular"}, "cache_only"),
+        ({"cache_only": True, "source": "stac"}, "cache_only"),
+        ({"cache_only": True, "ftp_fallback": True}, "cache_only"),
+        ({"source": "stac", "ftp_fallback": False}, "ftp_fallback"),
+        ({"source": "local", "ftp_fallback": True}, "ftp_fallback"),
+    ],
+)
+def test_load_cs_ground_tracks_rejects_incompatible_discovery_options(
+    monkeypatch, tmp_path, kwargs, message
+):
+    _catalog_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(misc, "cs_ground_tracks_path", str(tmp_path / "tracks.feather"))
+
+    with pytest.raises(ValueError, match=message):
+        misc.load_cs_ground_tracks(**kwargs)
+
+def test_update_track_database_enables_ftp_fallback(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(
+        misc, "load_cs_ground_tracks", lambda **kwargs: calls.append(kwargs)
+    )
+    monkeypatch.setattr(
+        misc, "load_cs_full_file_names", lambda **kwargs: pd.Series(dtype="object")
+    )
+
+    misc.update_track_database()
+
+    assert calls == [{"update": "regular", "source": "auto", "ftp_fallback": True}]
+
+def test_checkpointed_update_enables_ftp_fallback(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(
+        misc, "load_cs_ground_tracks", lambda **kwargs: calls.append(kwargs)
+    )
+    monkeypatch.setattr(
+        misc, "load_cs_full_file_names", lambda **kwargs: pd.Series(dtype="object")
+    )
+
+    misc._update_track_database_with_checkpoint()
+
+    assert calls[0]["ftp_fallback"] is True
+    assert calls[0]["_ftp_checkpoint"]

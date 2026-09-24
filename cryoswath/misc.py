@@ -3234,6 +3234,8 @@ def load_cs_ground_tracks(
     buffer_region_by: float = None,
     update: Literal["no", "regular", "full"] = "no",
     source: Literal["auto", "local", "stac"] = "auto",
+    ftp_fallback: bool | None = None,
+    cache_only: bool = False,
     n_threads: int = 8,
     _ftp_checkpoint: (
         Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
@@ -3271,11 +3273,17 @@ def load_cs_ground_tracks(
             for missing tail coverage. "local" never contacts STAC. "stac"
             forces a STAC query and updates the local STAC cache. Defaults to
             "auto".
+        ftp_fallback (bool | None, optional): For automatic discovery, choose
+            whether an empty or failed MAAP lookup falls back to FTP. The
+            default, None, requires an explicit choice in that situation.
+        cache_only (bool, optional): Read existing track caches without STAC
+            or FTP discovery and without writing track caches. Defaults to False.
         n_threads (int, optional): Number of parallel ftp connections. If you
             choose too many, ESA will refuse the connection. Defaults to 8.
 
     Raises:
-        ValueError: For invalid `update` arguments.
+        RuntimeError: If automatic MAAP discovery needs an FTP decision.
+        ValueError: For invalid or incompatible discovery arguments.
 
     Returns:
         gpd.GeoDataFrame: CryoSat-2 tracks.
@@ -3291,6 +3299,14 @@ def load_cs_ground_tracks(
             'Allowed values for `source` are "auto", "local", or "stac". '
             + f'You set it to "{source}".'
         )
+    if cache_only and (
+        update != "no" or source == "stac" or ftp_fallback is True
+    ):
+        raise ValueError(
+            "cache_only=True cannot be combined with remote track discovery."
+        )
+    if ftp_fallback is not None and source != "auto":
+        raise ValueError("ftp_fallback is only supported with source='auto'.")
     if os.path.isfile(cs_ground_tracks_path):
         cs_tracks = gpd.read_feather(cs_ground_tracks_path)
         if "index" in cs_tracks.columns:
@@ -3299,7 +3315,7 @@ def load_cs_ground_tracks(
         cs_tracks.sort_index(inplace=True)
     else:
         cs_tracks = gpd.GeoSeries()
-        if source == "local":
+        if source == "local" and not cache_only:
             update = "full"
     if update not in {"no", "regular", "full"}:
         raise ValueError(
@@ -3309,7 +3325,7 @@ def load_cs_ground_tracks(
 
     stac_tracks = _read_cs_l1b_track_catalog()
     ftp_fallback_range = None
-    if source in {"auto", "stac"}:
+    if not cache_only and source in {"auto", "stac"}:
         local_tracks = _combine_ground_track_caches(cs_tracks, stac_tracks)
         query_end = _current_data_query_end(end_datetime)
         local_latest = local_tracks.index.max() if not local_tracks.empty else None
@@ -3338,16 +3354,41 @@ def load_cs_ground_tracks(
                 stac_tracks = _refresh_cs_l1b_track_catalog(
                     refresh_start, query_end, replace=replace_stac_cache
                 )
-                if source == "auto" and stac_tracks.loc[
-                    refresh_start:query_end
-                ].empty:
-                    ftp_fallback_range = (refresh_start, query_end)
-                update = "no"
             except Exception as err:
                 if source == "stac":
                     raise
-                ftp_fallback_range = (refresh_start, query_end)
-                stac_error = err
+                if ftp_fallback is True:
+                    ftp_fallback_range = (refresh_start, query_end)
+                    stac_error = err
+                elif ftp_fallback is None:
+                    raise RuntimeError(
+                        "MAAP could not refresh the uncovered CryoSat range. "
+                        "Set ftp_fallback=True to retrieve FTP headers, "
+                        "ftp_fallback=False to use available MAAP/local tracks, "
+                        "or cache_only=True to skip discovery."
+                    ) from err
+                else:
+                    warnings.warn(
+                        "Could not refresh CryoSat tracks via MAAP: "
+                        f"{err}. Using local track caches.",
+                        category=UserWarning,
+                        stacklevel=2,
+                    )
+            else:
+                if source == "auto" and stac_tracks.loc[
+                    refresh_start:query_end
+                ].empty:
+                    if ftp_fallback is True:
+                        ftp_fallback_range = (refresh_start, query_end)
+                    elif ftp_fallback is None:
+                        raise RuntimeError(
+                            "MAAP returned no supported CryoSat tracks for the "
+                            "uncovered range. Set ftp_fallback=True to retrieve "
+                            "FTP headers, ftp_fallback=False to use available "
+                            "MAAP/local tracks, or cache_only=True to skip "
+                            "discovery."
+                        )
+                update = "no"
 
     if ftp_fallback_range is not None:
         fallback_start, fallback_end = ftp_fallback_range
@@ -4849,7 +4890,7 @@ def update_email(email: str = None):
 
 def update_track_database() -> None:
     """Refresh cached ground-track and filename lookup tables."""
-    load_cs_ground_tracks(update="regular", source="auto")
+    load_cs_ground_tracks(update="regular", source="auto", ftp_fallback=True)
     file_names = load_cs_full_file_names(update="no")
     file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
 
@@ -4929,7 +4970,10 @@ def _update_track_database_with_checkpoint() -> None:
         )
 
     load_cs_ground_tracks(
-        update="regular", source="auto", _ftp_checkpoint=save_progress
+        update="regular",
+        source="auto",
+        ftp_fallback=True,
+        _ftp_checkpoint=save_progress,
     )
     _clear_track_update_checkpoint()
     file_names = load_cs_full_file_names(update="no")
