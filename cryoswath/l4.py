@@ -19,6 +19,7 @@ __all__ = [
 
 import os
 from collections.abc import Callable
+from contextlib import closing
 from datetime import datetime
 from importlib.metadata import version as _version
 from pathlib import Path
@@ -397,22 +398,29 @@ def append_elevation_reference(
     geospatial_ds: xr.Dataset | xr.DataArray,
     ref_elev_name: str = "ref_elev",
     dem_file_name_or_path: str = None,
+    *,
+    missing_dem: Literal["targeted", "full"] = "targeted",
 ) -> xr.Dataset:
     """Append DEM-based elevation reference resampled to dataset grid."""
     if isinstance(geospatial_ds, xr.DataArray):
         geospatial_ds = geospatial_ds.to_dataset()
     # finding a latitude to determine the reference DEM like below may be prone to bugs
-    with get_dem_reader(
-        (geospatial_ds if dem_file_name_or_path is None else dem_file_name_or_path)
-    ) as dem_reader:
-        with rioxr.open_rasterio(dem_reader) as ref_dem:
-            ref_dem = ref_dem.rio.clip_box(
-                *geospatial_ds.rio.transform_bounds(ref_dem.rio.crs)
-            ).squeeze()
-            ref_dem = xr.where(
-                ref_dem == ref_dem._FillValue, np.nan, ref_dem
-            ).rio.write_crs(ref_dem.rio.crs)
-            ref_dem.attrs.update({"_FillValue": np.nan})
+    with closing(get_dem_reader(
+        (geospatial_ds if dem_file_name_or_path is None else dem_file_name_or_path),
+        missing_dem=missing_dem,
+    )) as dem_reader:
+        ref_dem = (
+            dem_reader
+            if isinstance(dem_reader, xr.DataArray)
+            else rioxr.open_rasterio(dem_reader)
+        )
+        ref_dem = ref_dem.rio.clip_box(
+            *geospatial_ds.rio.transform_bounds(ref_dem.rio.crs)
+        ).squeeze()
+        ref_dem = xr.where(
+            ref_dem == ref_dem._FillValue, np.nan, ref_dem
+        ).rio.write_crs(ref_dem.rio.crs)
+        ref_dem.attrs.update({"_FillValue": np.nan})
     geospatial_ds[ref_elev_name] = xr.align(
         ref_dem.rio.reproject_match(
             geospatial_ds,

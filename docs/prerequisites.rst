@@ -200,8 +200,17 @@ DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^
 
 If the default ArcticDEM or REMA 100 m ``*_dem.tif`` file is missing,
-``get_dem_reader`` now attempts an automatic download and extraction before
-raising ``FileNotFoundError``.
+``get_dem_reader`` uses targeted PGC STAC provisioning by default when it is
+given a spatial input. It stores 100 m tiles in one regional ArcticDEM or REMA
+Zarr cache and incrementally fills that cache as later requests cover new
+tiles. A non-spatial input cannot use targeted provisioning and raises a clear
+``FileNotFoundError`` instead of downloading a full archive.
+
+Pass ``missing_dem="full"`` to explicitly download and extract the full
+regional archive. This emits a warning because the archive can be large.
+The same ``missing_dem`` keyword is available from
+``l1b.append_ambiguous_reference_elevation`` and
+``l4.append_elevation_reference``.
 
 - Arctic source archive:
   ``https://data.pgc.umn.edu/elev/dem/setsm/ArcticDEM/mosaic/v4.1/100m/arcticdem_mosaic_100m_v4.1.tar.gz``

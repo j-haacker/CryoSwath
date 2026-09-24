@@ -813,8 +813,10 @@ def _read_stac(item):
         xr.Dataset(
             {
                 da.name: da.drop_attrs()
-                .astype(da.attrs["data_type"])
-                .assign_attrs(encoding={"_FillValue": da.attrs["nodata"]})
+                .astype(da.attrs.get("data_type", da.dtype))
+                .assign_attrs(
+                    encoding={"_FillValue": da.attrs.get("nodata", np.nan)}
+                )
                 for da in tmp.data_vars.values()
             }
         )
@@ -888,7 +890,7 @@ def _pgc_stac_items(catalog, gpd_obj):
 def download_dem(
     gpd_obj: Union[gpd.GeoSeries, gpd.GeoDataFrame, gpd.array.GeometryArray],
     provider: Literal["PGC"] = "PGC",
-):
+) -> Path:
     """
     Download DEM tiles that intersect the provided geometries
 
@@ -907,7 +909,9 @@ def download_dem(
     --------
     - Searches the PGC STAC catalog for arcticdem (v4.1) and rema (v2)
       32 m collections covering the provided bbox.
-    - Creates a Zarr store at Path(dem_path) / '<collection_id>.zarr'.
+    - Reuses one Zarr store per regional collection at
+      ``Path(dem_path) / '<collection_id>_100m-mean.zarr'`` and incrementally
+      fills it with newly discovered tiles.
       Note: the function expects a caller-defined variable `dem_path` to
       exist and be a valid filesystem path.
     - Initializes the store on a fixed regular grid
@@ -929,6 +933,11 @@ def download_dem(
         # rioxr transform_bounds helps
         limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
         items = _pgc_stac_items(catalog, gpd_obj)
+
+    if not items:
+        raise FileNotFoundError(
+            "PGC did not return DEM tiles for the requested extent."
+        )
 
     this_dem_path = Path(dem_path) / (
         items[0].get_collection().id + "_100m-mean.zarr"  # pyright: ignore[reportOptionalMemberAccess]
@@ -973,6 +982,7 @@ def download_dem(
         add.drop_attrs().drop_vars(["spatial_ref"]).to_zarr(
             this_dem_path, region="auto"
         )
+    return this_dem_path
 
 
 def _stream_download_response(response, tmp_file) -> None:
@@ -1765,7 +1775,9 @@ def gauss_filter_DataArray(
         )
 
 
-def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
+def get_dem_reader(
+    data: any = None, *, missing_dem: Literal["targeted", "full"] = "targeted"
+) -> rasterio.DatasetReader:
     """Determines which DEM to use
 
     Attempts to determine location of `data` and returns appropriate
@@ -1891,12 +1903,54 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
             )
         return output_file
 
-    if not (dem_path / dem_filename).exists():
+    if missing_dem not in {"targeted", "full"}:
+        raise ValueError("missing_dem must be either 'targeted' or 'full'.")
+    preferred_dem_path = dem_path / preferred_dem_filename
+    fallback_dem_path = dem_path / fallback_dem_filename
+    if preferred_dem_path.exists():
+        return reader_or_store(preferred_dem_path)
+    if fallback_dem_path.exists():
+        return reader_or_store(fallback_dem_path)
+
+    if not preferred_dem_path.exists():
+        if missing_dem == "targeted":
+            if isinstance(data, shapely.Geometry):
+                download_geometry = gpd.GeoSeries([data], crs="EPSG:4326")
+            elif isinstance(data, gpd.GeoSeries) or isinstance(data, gpd.GeoDataFrame):
+                download_geometry = data
+            elif (
+                hasattr(data, "__contains__")
+                and "lat_20_ku" in data
+                and "lon_20_ku" in data
+            ):
+                lats = np.asarray(data.lat_20_ku).ravel()
+                lons = np.asarray(data.lon_20_ku).ravel()
+                valid = np.isfinite(lats) & np.isfinite(lons)
+                if not valid.any():
+                    raise FileNotFoundError(
+                        "Targeted DEM provisioning needs valid coordinates."
+                    )
+                download_geometry = gpd.GeoSeries(
+                    gpd.points_from_xy(lons[valid], lats[valid]), crs="EPSG:4326"
+                )
+            elif isinstance(data, xr.DataArray) or isinstance(data, xr.Dataset):
+                download_geometry = gpd.GeoSeries(
+                    [shapely.box(*data.rio.transform_bounds("EPSG:4326"))],
+                    crs="EPSG:4326",
+                )
+            else:
+                raise FileNotFoundError(
+                    "Targeted DEM provisioning requires a spatial input. "
+                    "Pass a geometry "
+                    "or georeferenced dataset, or select missing_dem='full'."
+                )
+            return reader_or_store(download_dem(download_geometry))
         archive_url = default_dem_archive_url(preferred_dem_filename)
-        if archive_url is not None and not (dem_path / preferred_dem_filename).exists():
+        if archive_url is not None:
             warnings.warn(
-                f"DEM file {preferred_dem_filename} is missing. "
-                "Attempting automatic download now.",
+                f"Full DEM archive download requested for {preferred_dem_filename}. "
+                "This can be large; use missing_dem='targeted' with a spatial input "
+                "to provision only intersecting PGC tiles.",
                 category=UserWarning,
                 stacklevel=2,
             )
@@ -1909,10 +1963,10 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
                     category=UserWarning,
                     stacklevel=2,
                 )
-        if (dem_path / preferred_dem_filename).exists():
-            return reader_or_store(dem_path / preferred_dem_filename)
-        if (dem_path / dem_filename).exists():
-            return reader_or_store(dem_path / dem_filename)
+        if preferred_dem_path.exists():
+            return reader_or_store(preferred_dem_path)
+        if fallback_dem_path.exists():
+            return reader_or_store(fallback_dem_path)
 
         raster_file_list = []
         for ext in raster_extensions:

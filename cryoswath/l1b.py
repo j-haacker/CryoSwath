@@ -39,8 +39,10 @@ import os
 import tempfile
 import time
 import warnings
+from contextlib import closing
 from pathlib import Path
 from threading import Event
+from typing import Literal
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import geopandas as gpd
@@ -450,7 +452,12 @@ def read_esa_l1b(
 
 
 @if_not_empty
-def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str | None = None):
+def append_ambiguous_reference_elevation(
+    ds,
+    dem_file_name_or_path: str | None = None,
+    *,
+    missing_dem: Literal["targeted", "full"] = "targeted",
+):
     """Sample DEM elevation for each ambiguous phase-wrapping solution."""
     # !! This function causes much of the computation time. I suspect that
     # sparse memory accessing can be minimized with some tricks. However,
@@ -458,9 +465,10 @@ def append_ambiguous_reference_elevation(ds, dem_file_name_or_path: str | None =
     if "xph_lats" not in ds.data_vars:
         ds = locate_ambiguous_origin(ds)
     # ! tbi: auto download ref dem if not present
-    with get_dem_reader(
-        (ds if dem_file_name_or_path is None else dem_file_name_or_path)
-    ) as dem_reader:
+    with closing(get_dem_reader(
+        (ds if dem_file_name_or_path is None else dem_file_name_or_path),
+        missing_dem=missing_dem,
+    )) as dem_reader:
         if isinstance(dem_reader, xr.DataArray):
             crs = dem_reader.rio.crs
         else:
