@@ -1795,6 +1795,11 @@ def get_dem_reader(
     """
 
     raster_extensions = ["tif", "nc", "zarr"]
+    is_l1b_track = (
+        hasattr(data, "__contains__")
+        and "lat_20_ku" in data
+        and "lon_20_ku" in data
+    )
 
     def reader_or_store(path: Path):
         if isinstance(path, str):
@@ -1905,46 +1910,52 @@ def get_dem_reader(
 
     if missing_dem not in {"targeted", "full"}:
         raise ValueError("missing_dem must be either 'targeted' or 'full'.")
+
+    def targeted_download_geometry():
+        if isinstance(data, shapely.Geometry):
+            return gpd.GeoSeries([data], crs="EPSG:4326")
+        if isinstance(data, gpd.GeoSeries) or isinstance(data, gpd.GeoDataFrame):
+            return data
+        if is_l1b_track:
+            lats = np.asarray(data.lat_20_ku).ravel()
+            lons = np.asarray(data.lon_20_ku).ravel()
+            valid = np.isfinite(lats) & np.isfinite(lons)
+            if not valid.any():
+                raise FileNotFoundError(
+                    "Targeted DEM provisioning needs valid coordinates."
+                )
+            ground_track = gpd.GeoSeries(
+                gpd.points_from_xy(lons[valid], lats[valid]), crs="EPSG:4326"
+            )
+            from cryoswath.gis import buffer_4326_shp
+
+            return gpd.GeoSeries(
+                [buffer_4326_shp(ground_track, 30_000, simplify=False)],
+                crs="EPSG:4326",
+            )
+        if isinstance(data, xr.DataArray) or isinstance(data, xr.Dataset):
+            return gpd.GeoSeries(
+                [shapely.box(*data.rio.transform_bounds("EPSG:4326"))],
+                crs="EPSG:4326",
+            )
+        raise FileNotFoundError(
+            "Targeted DEM provisioning requires a spatial input. "
+            "Pass a geometry "
+            "or georeferenced dataset, or select missing_dem='full'."
+        )
+
     preferred_dem_path = dem_path / preferred_dem_filename
     fallback_dem_path = dem_path / fallback_dem_filename
     if preferred_dem_path.exists():
         return reader_or_store(preferred_dem_path)
     if fallback_dem_path.exists():
+        if missing_dem == "targeted" and is_l1b_track:
+            return reader_or_store(download_dem(targeted_download_geometry()))
         return reader_or_store(fallback_dem_path)
 
     if not preferred_dem_path.exists():
         if missing_dem == "targeted":
-            if isinstance(data, shapely.Geometry):
-                download_geometry = gpd.GeoSeries([data], crs="EPSG:4326")
-            elif isinstance(data, gpd.GeoSeries) or isinstance(data, gpd.GeoDataFrame):
-                download_geometry = data
-            elif (
-                hasattr(data, "__contains__")
-                and "lat_20_ku" in data
-                and "lon_20_ku" in data
-            ):
-                lats = np.asarray(data.lat_20_ku).ravel()
-                lons = np.asarray(data.lon_20_ku).ravel()
-                valid = np.isfinite(lats) & np.isfinite(lons)
-                if not valid.any():
-                    raise FileNotFoundError(
-                        "Targeted DEM provisioning needs valid coordinates."
-                    )
-                download_geometry = gpd.GeoSeries(
-                    gpd.points_from_xy(lons[valid], lats[valid]), crs="EPSG:4326"
-                )
-            elif isinstance(data, xr.DataArray) or isinstance(data, xr.Dataset):
-                download_geometry = gpd.GeoSeries(
-                    [shapely.box(*data.rio.transform_bounds("EPSG:4326"))],
-                    crs="EPSG:4326",
-                )
-            else:
-                raise FileNotFoundError(
-                    "Targeted DEM provisioning requires a spatial input. "
-                    "Pass a geometry "
-                    "or georeferenced dataset, or select missing_dem='full'."
-                )
-            return reader_or_store(download_dem(download_geometry))
+            return reader_or_store(download_dem(targeted_download_geometry()))
         archive_url = default_dem_archive_url(preferred_dem_filename)
         if archive_url is not None:
             warnings.warn(

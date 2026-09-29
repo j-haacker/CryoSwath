@@ -1,5 +1,7 @@
 import numpy as np
+import xarray as xr
 
+import cryoswath.l1b as l1b
 from cryoswath.l1b import noise_val
 
 
@@ -36,6 +38,43 @@ def test_noise_val():
         np.linspace(0, 1, test_vec_len)
     )
     assert noise_val(test_vec__exp_increase) < np.mean(test_vec__exp_increase)
+
+
+def test_to_l2_omits_samples_without_a_valid_phase_candidate(monkeypatch):
+    phase_wrap_factor = np.arange(-3, 4)
+    dims = ("time_20_ku", "ns_20_ku", "phase_wrap_factor")
+    elev_diffs = np.full((2, 2, len(phase_wrap_factor)), np.nan)
+    elev_diffs[0, 0] = np.arange(len(phase_wrap_factor))
+    ds = xr.Dataset(
+        data_vars={
+            "xph_elev_diffs": (dims, elev_diffs),
+            "xph_elevs": (dims, np.ones_like(elev_diffs)),
+            "exclude_mask": (("time_20_ku", "ns_20_ku"), np.zeros((2, 2), bool)),
+            "group_id": (("time_20_ku", "ns_20_ku"), [[1, 2], [2, np.nan]]),
+            "poca_idx": ("time_20_ku", [0, 1]),
+        },
+        coords={
+            "time_20_ku": [0, 1],
+            "ns_20_ku": [0, 1],
+            "phase_wrap_factor": phase_wrap_factor,
+        },
+    )
+
+    processed = l1b.append_best_fit_phase_index(ds)
+
+    assert processed.ph_idx.notnull().sum() == 1
+    assert processed.ph_idx.isnull().sum() == 3
+
+    captured = []
+    monkeypatch.setattr(
+        l1b, "l2_from_processed_l1b", lambda data: captured.append(data)
+    )
+
+    l1b.to_l2(processed, out_vars=["xph_elevs"], swath_or_poca="both")
+
+    assert len(captured) == 2
+    for data in captured:
+        assert data.xph_elevs.notnull().sum() == 1
 
 
 test_noise_val()

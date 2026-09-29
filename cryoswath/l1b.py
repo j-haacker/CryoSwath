@@ -571,6 +571,9 @@ def append_best_fit_phase_index(ds, best_column: callable = None) -> xr.Dataset:
         np.abs(ds.xph_elev_diffs).idxmin("phase_wrap_factor"),
         ds.ph_idx,
     )
+    ds["ph_idx"] = ds.ph_idx.where(
+        ds.xph_elev_diffs.notnull().any("phase_wrap_factor")
+    )
     return ds
 
 
@@ -870,10 +873,12 @@ def to_l2(
     elif retain_vars is None:
         retain_vars = []
     if swath_or_poca == "swath":
+        valid_phase_idx = ds.ph_idx.isin(ds.phase_wrap_factor)
+        phase_idx = ds.ph_idx.where(valid_phase_idx, ds.phase_wrap_factor[0])
         tmp = (
             ds[out_vars + retain_vars]
-            .where(~ds.exclude_mask)
-            .sel(phase_wrap_factor=ds.ph_idx)
+            .where(~ds.exclude_mask & valid_phase_idx)
+            .sel(phase_wrap_factor=phase_idx)
             .dropna("time_20_ku", how="all")
         )
     elif swath_or_poca == "poca":
@@ -885,9 +890,12 @@ def to_l2(
             .sel(time_20_ku=waveforms_with_poca)
             .sel(ns_20_ku=ds.poca_idx[~ds.poca_idx.isnull()])
         )
+        valid_phase_idx = tmp.ph_idx.isin(tmp.phase_wrap_factor)
+        phase_idx = tmp.ph_idx.where(valid_phase_idx, tmp.phase_wrap_factor[0])
         tmp = (
             tmp[out_vars + retain_vars]
-            .sel(phase_wrap_factor=tmp.ph_idx)
+            .where(valid_phase_idx)
+            .sel(phase_wrap_factor=phase_idx)
             .dropna("time_20_ku", how="all")
         )
     elif swath_or_poca == "both":

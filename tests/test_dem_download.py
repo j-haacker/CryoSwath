@@ -8,6 +8,7 @@ import pystac
 import pytest
 import rasterio
 import xarray as xr
+from pyproj import Geod
 from rasterio.transform import from_origin
 
 import cryoswath.l1b as l1b
@@ -158,6 +159,61 @@ def test_get_dem_reader_reuses_existing_regional_cache(monkeypatch, tmp_path):
     )
 
     assert misc.get_dem_reader(misc.shapely.Point(10, 80)).identical(reader.dem)
+
+
+def test_get_dem_reader_refreshes_partial_cache_for_buffered_l1b_track(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(misc, "dem_path", tmp_path)
+    cache = tmp_path / "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
+    cache.mkdir()
+    reader = xr.Dataset({"dem": xr.DataArray(1)})
+    captured = []
+    track = xr.Dataset(
+        {
+            "lat_20_ku": ("time_20_ku", [80.0]),
+            "lon_20_ku": ("time_20_ku", [10.0]),
+        }
+    )
+    monkeypatch.setattr(
+        misc,
+        "download_dem",
+        lambda geometry: captured.append(geometry) or cache,
+    )
+    monkeypatch.setattr(misc.xr, "open_dataset", lambda path, **kwargs: reader)
+
+    assert misc.get_dem_reader(track).identical(reader.dem)
+    assert len(captured) == 1
+    west, south, east, north = captured[0].total_bounds
+    assert east - west > 1
+    assert north - south > 0.4
+    _, _, distance_to_south = Geod(ellps="WGS84").inv(10, 80, 10, south)
+    assert distance_to_south == pytest.approx(30_000, rel=0.05)
+
+
+def test_get_dem_reader_does_not_refresh_full_or_specified_dem(monkeypatch, tmp_path):
+    monkeypatch.setattr(misc, "dem_path", tmp_path)
+    full_dem = tmp_path / "arcticdem_mosaic_100m_v4.1_dem.tif"
+    full_dem.write_bytes(b"present")
+    specified_dem = tmp_path / "specified.tif"
+    specified_dem.write_bytes(b"present")
+    track = xr.Dataset(
+        {
+            "lat_20_ku": ("time_20_ku", [80.0]),
+            "lon_20_ku": ("time_20_ku", [10.0]),
+        }
+    )
+    monkeypatch.setattr(
+        misc,
+        "download_dem",
+        lambda geometry: (_ for _ in ()).throw(
+            AssertionError("DEM provisioning should not run")
+        ),
+    )
+    monkeypatch.setattr(misc.rasterio, "open", lambda path: ("reader", Path(path).name))
+
+    assert misc.get_dem_reader(track) == ("reader", full_dem.name)
+    assert misc.get_dem_reader(str(specified_dem)) == ("reader", specified_dem.name)
 
 
 def test_l1b_forwards_missing_dem(monkeypatch):
