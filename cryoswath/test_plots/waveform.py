@@ -280,11 +280,18 @@ def dem_transect(
         dist=sampling_dist,
     )[1::-1]
     xs, ys = trans_4326_to_dem_crs.transform(lats, lons)
-    ref_elevs = np.fromiter(
-        (vals[0] for vals in dem_reader.sample([(x, y) for x, y in zip(xs, ys)])),
-        "float32",
-    )
-    ref_elevs = np.where(ref_elevs != dem_reader.nodata, ref_elevs, np.nan)
+    if isinstance(dem_reader, xr.DataArray):
+        ref_elevs = dem_reader.sel(
+            x=xr.DataArray(xs, dims="sample"),
+            y=xr.DataArray(ys, dims="sample"),
+            method="nearest",
+        ).values
+    else:
+        ref_elevs = np.fromiter(
+            (vals[0] for vals in dem_reader.sample([(x, y) for x, y in zip(xs, ys)])),
+            "float32",
+        )
+        ref_elevs = np.where(ref_elevs != dem_reader.nodata, ref_elevs, np.nan)
     ax.fill_between(sampling_dist, ref_elevs, **line_properties["dem"], label="DEM")
     h_dem = ax.get_legend_handles_labels()[0][0]
     if not selected_phase_only:

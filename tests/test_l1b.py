@@ -3,6 +3,7 @@ import xarray as xr
 
 import cryoswath.l1b as l1b
 from cryoswath.l1b import noise_val
+from cryoswath.test_plots import waveform as waveform_plot
 
 
 def test_noise_val():
@@ -75,6 +76,43 @@ def test_to_l2_omits_samples_without_a_valid_phase_candidate(monkeypatch):
     assert len(captured) == 2
     for data in captured:
         assert data.xph_elevs.notnull().sum() == 1
+
+
+def test_dem_transect_samples_partial_xarray_dem(monkeypatch):
+    dem = xr.DataArray(
+        np.full((3, 3), 100.0),
+        dims=("y", "x"),
+        coords={"x": [-1, 0, 1], "y": [-1, 0, 1]},
+    ).rio.write_crs(4326)
+    waveform = xr.Dataset(
+        {
+            "lon_20_ku": ("time_20_ku", [0.0]),
+            "lat_20_ku": ("time_20_ku", [0.0]),
+            "azimuth": ("time_20_ku", [0.0]),
+            "xph_dists": (
+                ("time_20_ku", "ns_20_ku", "phase_wrap_factor"),
+                [[[0.0], [100.0]]],
+            ),
+            "xph_elevs": (
+                ("time_20_ku", "ns_20_ku", "phase_wrap_factor"),
+                [[[1.0], [2.0]]],
+            ),
+            "ph_idx": (("time_20_ku", "ns_20_ku"), [[0, 0]]),
+            "exclude_mask": (("time_20_ku", "ns_20_ku"), [[False, False]]),
+            "poca_idx": ("time_20_ku", [0]),
+        },
+        coords={
+            "time_20_ku": [np.datetime64("2020-01-01")],
+            "ns_20_ku": [0, 1],
+            "phase_wrap_factor": [0],
+        },
+    )
+    monkeypatch.setattr(waveform_plot, "get_dem_reader", lambda _: dem)
+
+    ax = waveform_plot.dem_transect(waveform)
+
+    assert "DEM" in ax.get_legend_handles_labels()[1]
+    waveform_plot.plt.close(ax.figure)
 
 
 test_noise_val()
