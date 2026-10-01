@@ -461,6 +461,7 @@ dem_path = _resolved_paths["dem"]
 rgi_path = str(_resolved_paths["rgi"])
 cs_ground_tracks_path = str(_resolved_paths["cs_ground_tracks"])
 cs_l1b_track_catalog_path = str(aux_path / _CRYOSAT_L1B_TRACK_CATALOG_NAME)
+_DEM_CACHE_LIMITS = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
 
 _ZENODO_AUX_CONCEPT_RECORD_API_URL = "https://zenodo.org/api/records/20241526"
 _AUX_DATA_ARCHIVE_KEY = "CryoSwath-aux-data.zip"
@@ -918,8 +919,7 @@ def download_dem(
       (x,y in [-3_500_000, 3_500_000]) with 100 m spacing and chunking
       tuned for large tile writes.
     - For each discovered STAC item:
-      - Skips writing if the existing store already contains sufficient
-        data for the item's bbox.
+      - Skips writing only when the existing store covers the item's bbox.
       - Reads the item into an xarray.Dataset, reprojects/resamples it to
         match the store grid (using rioxarray and rasterio Resampling),
         fills nodata values from the existing store, and writes the result
@@ -929,9 +929,6 @@ def download_dem(
     """
     if provider == "PGC":
         catalog = _open_pgc_stac_catalog()
-        # transforming collection extent is difficult, maybe the code behind
-        # rioxr transform_bounds helps
-        limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
         items = _pgc_stac_items(catalog, gpd_obj)
 
     if not items:
@@ -950,7 +947,11 @@ def download_dem(
                 xr.full_like(_read_stac(item), np.nan)
                 .reindex(
                     {
-                        xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100)
+                        xy: np.arange(
+                            _DEM_CACHE_LIMITS[xy][0],
+                            _DEM_CACHE_LIMITS[xy][1] + 1,
+                            100,
+                        )
                         for xy in ["x", "y"]
                     }
                 )
@@ -958,19 +959,12 @@ def download_dem(
             ).to_zarr(this_dem_path, mode="w", compute=False)
 
         parent = xr.open_zarr(this_dem_path, decode_coords="all", mask_and_scale=True)
-        if (
-            parent["count"].rio.clip_box(*item.properties["proj:bbox"]).mean().compute()
-            > 0.1
-        ):
+        bbox = item.properties["proj:bbox"]
+        if parent["count"].rio.clip_box(*bbox).notnull().all().compute():
             continue
         ds = _read_stac(item)
-        # # the general case:
-        # x0, y0, x1, y1 = ds.rio.bounds()
-        # excerpt = parent.pipe(sel_chunk_range, x=[x0, x1], y=[y0, y1]).load()
-        # however, if chunks tuned to tiles:
-        c = shapely.box(*item.properties["proj:bbox"]).centroid
         excerpt = parent.pipe(
-            sel_chunk_range, **{xy: [getattr(c, xy)] * 2 for xy in ["x", "y"]}
+            sel_chunk_range, x=bbox[::2], y=bbox[1::2]
         ).load()
         add = ds.map(
             lambda da: da.rio.reproject_match(
@@ -4492,7 +4486,7 @@ def sel_chunk_idx_range(ds, dim, start, stop):
 def sel_chunk_range(ds, **dim_intervals):
     """Select chunk range by coordinate intervals per dimension."""
     for dim, interval in dim_intervals.items():
-        ds = sel_chunk_idx_range(ds, dim, *chunk_idx(ds, dim, interval))
+        ds = sel_chunk_idx_range(ds, dim, *sorted(chunk_idx(ds, dim, interval)))
     return ds
 
 

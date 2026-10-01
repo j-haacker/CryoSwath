@@ -2,6 +2,7 @@ import io
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pystac
@@ -337,3 +338,72 @@ def test_download_dem_reraises_non_connectivity_pgc_stac_api_error(monkeypatch):
         misc.download_dem(object())
 
     assert excinfo.value is error
+
+
+def test_download_dem_repairs_partial_item_coverage(monkeypatch, tmp_path):
+    """A finite cache sliver must not mark an entire source item complete."""
+    monkeypatch.setattr(misc, "dem_path", tmp_path)
+    monkeypatch.setattr(
+        misc,
+        "_DEM_CACHE_LIMITS",
+        {"x": (-3_500_000, -3_399_900), "y": (-3_450_100, -3_449_900)},
+    )
+    bbox = [-3_400_100, -3_450_100, -3_399_900, -3_449_900]
+
+    class Item:
+        properties = {"proj:bbox": bbox}
+
+        @staticmethod
+        def get_collection():
+            return SimpleNamespace(id="arcticdem-mosaics-v4.1-32m")
+
+    item = Item()
+    source = xr.Dataset(
+        {
+            "dem": (("y", "x"), np.full((3, 3), 100, dtype="float32")),
+            "count": (("y", "x"), np.full((3, 3), 19, dtype="float32")),
+        },
+        coords={
+            "x": [-3_400_100, -3_400_000, -3_399_900],
+            "y": [-3_450_100, -3_450_000, -3_449_900],
+        },
+    ).rio.write_crs(3413)
+    for var in source.data_vars.values():
+        var.attrs["encoding"] = {"_FillValue": 0}
+
+    calls = []
+    monkeypatch.setattr(misc, "_open_pgc_stac_catalog", lambda: object())
+    monkeypatch.setattr(misc, "_pgc_stac_items", lambda *args: [item])
+    monkeypatch.setattr(
+        misc,
+        "_read_stac",
+        lambda requested_item: calls.append(requested_item) or source,
+    )
+
+    cache = misc.download_dem(object())
+    far_side = {"x": -3_399_900, "y": -3_450_000}
+    cached = xr.open_zarr(cache, mask_and_scale=True)
+    assert cached["dem"].sel(far_side).compute().item() == 100
+
+    xr.Dataset(
+        {
+            name: xr.DataArray(
+                [[np.nan]],
+                dims=("y", "x"),
+                coords={key: [value] for key, value in far_side.items()},
+            )
+            for name in ["dem", "count"]
+        }
+    ).to_zarr(cache, mode="r+", region="auto")
+
+    calls.clear()
+    misc.download_dem(object())
+    assert calls == [item]
+    assert (
+        xr.open_zarr(cache, mask_and_scale=True)["dem"].sel(far_side).compute().item()
+        == 100
+    )
+
+    calls.clear()
+    misc.download_dem(object())
+    assert calls == []
