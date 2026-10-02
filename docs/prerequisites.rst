@@ -179,6 +179,29 @@ IDs, product filenames, selected enclosure URLs, product versions,
 processing dates, and track geometries for supported ``SIR_SIN_1B`` products.
 Cached entries without a usable route are refreshed before delivery.
 
+Maintainer update workflow
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After refreshing the local caches, validate the ground-track and filename
+catalogs without querying remote track listings:
+
+.. code-block:: console
+
+   pixi run -e test validate-tracks --base-dir <project-directory>
+
+To prepare a Zenodo upload, use a clean checkout whose ``HEAD`` matches
+``origin/data``. The builder writes a timestamped archive and prints its source
+commit, member list, size, and SHA-256 checksum:
+
+.. code-block:: console
+
+   pixi run python tools/build_auxiliary_archive.py --data-dir <data-checkout>
+
+In the Zenodo UI, create a new version of the auxiliary-data record, replace
+the file with the generated archive renamed to ``CryoSwath-aux-data.zip``,
+compare the member list and checksum, then publish after review. The builder
+does not upload or publish anything.
+
 By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
 caches when their latest timestamp covers the requested period. If the request
 extends beyond local coverage and a network connection is available, CryoSwath

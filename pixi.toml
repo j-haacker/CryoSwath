@@ -102,6 +102,7 @@ depends-on = [
 ]
 
 [feature.test.tasks]
+validate-tracks = "python tools/validate_track_database.py"
 lint = "ruff check ."
 format-check = "ruff format --check ."
 pre-commit-validate = "pre-commit validate-config"
