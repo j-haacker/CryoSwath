@@ -52,6 +52,8 @@ def copy_unit_tests(repo_root: Path, target: Path) -> list[Path]:
     target.mkdir()
     copied: list[Path] = []
     for test_file in sorted(source.glob("test_*.py")):
+        if test_file.name == "test_maintainer_tools.py":
+            continue
         destination = target / test_file.name
         shutil.copy2(test_file, destination)
         copied.append(destination)

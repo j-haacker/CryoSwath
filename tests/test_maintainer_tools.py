@@ -23,6 +23,15 @@ def _load_tool(name):
 
 track_validator = _load_tool("validate_track_database.py")
 archive_builder = _load_tool("build_auxiliary_archive.py")
+installed_wheel_tester = _load_tool("test_installed_wheel.py")
+
+
+def test_installed_wheel_excludes_source_only_maintainer_tools(tmp_path):
+    copied = installed_wheel_tester.copy_unit_tests(
+        Path(__file__).parents[1], tmp_path / "tests"
+    )
+
+    assert "test_maintainer_tools.py" not in {path.name for path in copied}
 
 
 def _write_caches(tmp_path, timestamps):
