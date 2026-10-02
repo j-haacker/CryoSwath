@@ -469,8 +469,8 @@ def test_download_files_reports_unavailable_maap_token_after_catalog_lookup(
     )
     monkeypatch.setattr(
         l1b,
-        "_download_files_via_ftp",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
+        "_download_single_file_via_ftp",
+        lambda track_id: (_ for _ in ()).throw(
             AssertionError("FTP fallback must not be used")
         ),
     )
