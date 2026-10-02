@@ -116,6 +116,10 @@ prepare-notebook-tests = "python tools/prepare_notebook_tests.py"
 prepare-report-notebooks = "python tools/prepare_notebook_tests.py reports"
 prepare-tutorial-notebooks = "python tools/prepare_notebook_tests.py tutorials"
 
+[feature.test.tasks.test-live-ftp]
+cmd = "pytest -q tests/test_l1b_download_protocol.py::test_live_ftp_lists_month_when_enabled"
+env = { CRYOSWATH_RUN_LIVE_FTP = "1" }
+
 [feature.test.tasks.test-notebooks]
 depends-on = ["export-conda-for-notebooks", "prepare-report-notebooks"]
 cmd = "env -u CRYOSWATH_DATA -u CRYOSWATH_L1B -u CRYOSWATH_L2_SWATH -u CRYOSWATH_L2_POCA -u CRYOSWATH_L3 -u CRYOSWATH_L4 -u CRYOSWATH_TMP -u CRYOSWATH_AUX -u CRYOSWATH_DEM -u CRYOSWATH_RGI -u CRYOSWATH_CS_GROUND_TRACKS snakemake --snakefile Snakefile --cores 4 --use-conda"

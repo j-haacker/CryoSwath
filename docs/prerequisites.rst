@@ -129,6 +129,11 @@ Science Server FTP fallback delivery uses ``EOIAM_USER`` and
 ``EOIAM_PASSWORD``, keyring, ``~/.netrc``, or legacy ``config.ini``. Those
 credentials are not used for MAAP asset delivery.
 
+Maintainers can verify authenticated FTP listing separately with
+``pixi run -e test test-live-ftp``. This opt-in smoke test lists one SARIn
+month without downloading a product and uses a 30-second connection timeout;
+it is intentionally not part of ``test-unit`` or CI.
+
 Download protocol defaults
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
