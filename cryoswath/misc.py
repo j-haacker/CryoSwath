@@ -97,6 +97,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Union
 from urllib.parse import parse_qs, unquote, urlparse
 
+import fasteners
 import geopandas as gpd
 import h5py
 import numpy as np
@@ -507,6 +508,7 @@ empty_GeoDataFrame = gpd.GeoDataFrame(
 )
 _ESA_AUTH_IDP_HOST = "eoiam-idp.eo.esa.int"
 _ESA_CS2_HOST = "science-pds.cryosat.esa.int"
+_ESA_FTP_TIMEOUT = 60
 _ESA_CRYOSWATH_KEYRING_SERVICE = "cryoswath.esa"  # legacy keyring service name
 _ESA_KEYRING_SERVICE_CANDIDATES = (
     _ESA_AUTH_IDP_HOST,
@@ -1570,21 +1572,27 @@ def flag_translator(cs_l1b_flag):
 
 
 @contextmanager
-def ftp_cs2_server(**kwargs):
+def ftp_cs2_server(*, timeout: float = _ESA_FTP_TIMEOUT, **kwargs):
     """Yield authenticated FTP connection to ESA CryoSat server."""
     user, password, source = _resolve_esa_ftp_credentials()
-    with ftplib.FTP_TLS(_ESA_CS2_HOST, **kwargs) as ftp:
-        try:
-            ftp.login(user=user, passwd=password)
-        except ftplib.error_perm as err:
-            raise RuntimeError(
-                "ESA FTP authentication failed using credentials from "
-                f"{source}. Configure keyring via cryoswath update-keyring, set "
-                f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
-                "~/.netrc (plaintext fallback)."
-            ) from err
-        ftp.prot_p()
-        yield ftp
+    try:
+        with ftplib.FTP_TLS(_ESA_CS2_HOST, timeout=timeout, **kwargs) as ftp:
+            try:
+                ftp.login(user=user, passwd=password)
+            except ftplib.error_perm as err:
+                raise RuntimeError(
+                    "ESA FTP authentication failed using credentials from "
+                    f"{source}. Configure keyring via cryoswath update-keyring, set "
+                    f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
+                    "~/.netrc (plaintext fallback)."
+                ) from err
+            ftp.prot_p()
+            yield ftp
+    except TimeoutError as err:
+        raise RuntimeError(
+            f"ESA FTP operation timed out after {timeout:g} seconds. "
+            "Check the network or retry the update later."
+        ) from err
 
 
 _FTP_CS2_L1B_ROOTS = ("/SIR_SIN_L1", "/Ice_Baseline_E/SIR_SIN_L1")
@@ -2927,11 +2935,29 @@ def _combine_ground_track_caches(
 
 
 _TRACK_UPDATE_CHECKPOINT_NAME = ".CryoSat-2_SARIn_ground_tracks.resume.pkl"
+_TRACK_UPDATE_LOCK_NAME = ".CryoSat-2_SARIn_ground_tracks.update.lock"
 
 
 def _track_update_checkpoint_path() -> Path:
     """Return the private checkpoint path used by the update-tracks CLI."""
     return Path(aux_path) / _TRACK_UPDATE_CHECKPOINT_NAME
+
+
+@contextmanager
+def _track_database_update_lock():
+    """Acquire the cache-local lock shared by track database updates."""
+    path = Path(aux_path) / _TRACK_UPDATE_LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = fasteners.InterProcessLock(path)
+    if not lock.acquire(blocking=False):
+        raise RuntimeError(
+            "Another track database update is already running for "
+            f"{path.parent}. Wait for it to finish before retrying."
+        )
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _save_track_update_checkpoint(
@@ -3027,6 +3053,10 @@ def _ftp_cs_ground_tracks(
         for month in pd.date_range(first_month, last_month, freq="MS"):
             seen = set()
             pending_headers = []
+            print(
+                f"FTP ground-track fallback {month:%Y-%m}: connecting/listing",
+                flush=True,
+            )
             with ftp_cs2_server() as ftp:
                 for directory, remote_files in _ftp_l1b_month_listings(
                     ftp, month.strftime("%Y/%m")
@@ -4949,9 +4979,10 @@ def update_email(email: str = None):
 
 def update_track_database() -> None:
     """Refresh cached ground-track and filename lookup tables."""
-    load_cs_ground_tracks(update="regular", source="auto", ftp_fallback=True)
-    file_names = load_cs_full_file_names(update="no")
-    file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+    with _track_database_update_lock():
+        load_cs_ground_tracks(update="regular", source="auto", ftp_fallback=True)
+        file_names = load_cs_full_file_names(update="no")
+        file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
 
 
 def _merge_legacy_ground_tracks(*tracks: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -5041,25 +5072,26 @@ def _update_track_database_with_checkpoint() -> None:
 
 def _update_track_database_from_args(args) -> None:
     """Run the resumable CLI-only update path from parsed arguments."""
-    checkpoint_path = _track_update_checkpoint_path()
-    if checkpoint_path.is_file() and not args.resume:
-        raise RuntimeError(
-            "An interrupted update exists; run cryoswath-update-tracks --resume."
-        )
-    if args.resume and not checkpoint_path.is_file():
-        raise RuntimeError("No interrupted update-tracks checkpoint is available.")
-    try:
-        if args.resume:
-            _resume_track_database()
-        else:
-            _update_track_database_with_checkpoint()
-    except KeyboardInterrupt:
-        if checkpoint_path.is_file():
-            print(
-                "Update interrupted. Resume with: cryoswath-update-tracks --resume",
-                file=sys.stderr,
+    with _track_database_update_lock():
+        checkpoint_path = _track_update_checkpoint_path()
+        if checkpoint_path.is_file() and not args.resume:
+            raise RuntimeError(
+                "An interrupted update exists; run cryoswath-update-tracks --resume."
             )
-        raise SystemExit(130) from None
+        if args.resume and not checkpoint_path.is_file():
+            raise RuntimeError("No interrupted update-tracks checkpoint is available.")
+        try:
+            if args.resume:
+                _resume_track_database()
+            else:
+                _update_track_database_with_checkpoint()
+        except KeyboardInterrupt:
+            if checkpoint_path.is_file():
+                print(
+                    "Update interrupted. Resume with: cryoswath-update-tracks --resume",
+                    file=sys.stderr,
+                )
+            raise SystemExit(130) from None
 
 
 def update_track_database_cli() -> None:

@@ -222,7 +222,13 @@ future workflow.
 Run ``cryoswath update-tracks`` periodically to extend or refresh the local
 track metadata after installing the baseline. This refreshes STAC-backed
 metadata where possible and leaves the legacy filename catalog available for
-older workflows.
+older workflows. ESA FTP operations time out after 60 seconds; a detached log
+prints ``FTP ground-track fallback YYYY-MM: connecting/listing`` before each
+FTP attempt, so a later timeout identifies the stalled month. Only one update
+may use an auxiliary-data directory at a time. A second update fails
+immediately without changing the cache or checkpoint. After an interrupted FTP
+fallback, run ``cryoswath update-tracks --resume`` once the first process has
+exited.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^

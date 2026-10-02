@@ -1,4 +1,6 @@
 import io
+import subprocess
+import sys
 
 import geopandas as gpd
 import pandas as pd
@@ -364,6 +366,7 @@ def test_ftp_ground_track_discovery_reports_noninteractive_progress(
     )
 
     assert capsys.readouterr().out.splitlines() == [
+        "FTP ground-track fallback 2020-01: connecting/listing",
         "FTP ground-track fallback 2020-01: 0/2 HDR files",
         "FTP ground-track fallback 2020-01: 1/2 HDR files",
         "FTP ground-track fallback 2020-01: 2/2 HDR files",
@@ -780,6 +783,82 @@ def test_update_track_database_enables_ftp_fallback(monkeypatch, tmp_path):
     misc.update_track_database()
 
     assert calls == [{"update": "regular", "source": "auto", "ftp_fallback": True}]
+
+
+def test_update_track_database_rejects_held_lock(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(
+        misc, "load_cs_ground_tracks", lambda **kwargs: calls.append(kwargs)
+    )
+    lock_path = tmp_path / misc._TRACK_UPDATE_LOCK_NAME
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                [
+                    "import sys",
+                    "from fasteners import InterProcessLock",
+                    "lock = InterProcessLock(sys.argv[1])",
+                    "if not lock.acquire(blocking=False): raise SystemExit(2)",
+                    "print('locked', flush=True)",
+                    "sys.stdin.read(1)",
+                    "lock.release()",
+                ]
+            ),
+            str(lock_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline().strip() == "locked"
+
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            misc.update_track_database()
+    finally:
+        assert holder.stdin is not None
+        holder.stdin.write("x")
+        holder.stdin.close()
+        assert holder.wait(timeout=5) == 0
+
+    assert calls == []
+
+
+def test_update_track_database_releases_lock_after_error(monkeypatch, tmp_path):
+    events = []
+
+    class RecordingLock:
+        def __init__(self, path):
+            events.append(("init", path))
+
+        def acquire(self, *, blocking):
+            events.append(("acquire", blocking))
+            return True
+
+        def release(self):
+            events.append(("release",))
+
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(misc.fasteners, "InterProcessLock", RecordingLock)
+    monkeypatch.setattr(
+        misc,
+        "load_cs_ground_tracks",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("FTP failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="FTP failed"):
+        misc.update_track_database()
+
+    assert events == [
+        ("init", tmp_path / misc._TRACK_UPDATE_LOCK_NAME),
+        ("acquire", False),
+        ("release",),
+    ]
+
 
 def test_checkpointed_update_enables_ftp_fallback(monkeypatch, tmp_path):
     calls = []

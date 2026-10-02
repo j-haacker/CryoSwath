@@ -25,6 +25,7 @@ dependencies = [
     "dask",
     "defusedxml",
     "earthaccess>=0.18",
+    "fasteners",
     "geopandas>=1.0.1",
     "h5netcdf",
     "h5py",

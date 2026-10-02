@@ -384,6 +384,43 @@ def test_update_track_database_cli_dispatches_after_parsing(monkeypatch, tmp_pat
     assert calls == ["update"]
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["cryoswath-update-tracks"],
+        ["cryoswath-update-tracks", "--resume"],
+    ],
+)
+def test_update_track_database_cli_rejects_held_lock(
+    monkeypatch, tmp_path, capsys, argv
+):
+    calls = []
+    lock_paths = []
+
+    class HeldLock:
+        def __init__(self, path):
+            lock_paths.append(path)
+
+        def acquire(self, **kwargs):
+            assert kwargs == {"blocking": False}
+            return False
+
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(
+        misc, "_update_track_database_with_checkpoint", lambda: calls.append("update")
+    )
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(misc.fasteners, "InterProcessLock", HeldLock)
+
+    with pytest.raises(SystemExit) as excinfo:
+        misc.update_track_database_cli()
+
+    assert excinfo.value.code == 2
+    assert calls == []
+    assert lock_paths == [tmp_path / misc._TRACK_UPDATE_LOCK_NAME]
+    assert "already running" in capsys.readouterr().err
+
+
 def test_update_track_database_cli_requires_resume_for_checkpoint(
     monkeypatch, tmp_path, capsys
 ):
