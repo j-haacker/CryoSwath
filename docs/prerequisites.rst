@@ -228,7 +228,11 @@ FTP attempt, so a later timeout identifies the stalled month. Only one update
 may use an auxiliary-data directory at a time. A second update fails
 immediately without changing the cache or checkpoint. After an interrupted FTP
 fallback, run ``cryoswath update-tracks --resume`` once the first process has
-exited.
+exited. FTP header discovery uses a bounded pool of private FTP connections
+and checkpoints completed partial-month batches. Cancellation can repeat one
+unfinished batch per active connection, but ``--resume`` skips completed
+tracks. ESA may reject excessive concurrent connections, so keep the worker
+count modest.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^

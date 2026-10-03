@@ -90,6 +90,7 @@ import traceback
 import warnings
 import zipfile
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from configparser import ConfigParser
 from contextlib import contextmanager
 from importlib import resources as importlib_resources
@@ -3021,6 +3022,40 @@ def _clear_track_update_checkpoint() -> None:
         path.unlink()
 
 
+def _ftp_cs_ground_track_batch(
+    headers: list[tuple[str, str, pd.Timestamp]], cancel: threading.Event
+) -> tuple[list[dict[str, Any]], int]:
+    """Retrieve one FTP header batch through a private connection."""
+    rows = []
+    with ftp_cs2_server() as ftp:
+        current_directory = None
+        for directory, remote_file, track_time in headers:
+            if cancel.is_set():
+                break
+            if directory != current_directory:
+                ftp.cwd(directory)
+                current_directory = directory
+            cache = binary_chache()
+            ftp.retrbinary("RETR " + remote_file, cache.add)
+            root = ET_from_str(cache.cache).find("Variable_Header/SPH/Product_Location")
+            coordinates = {
+                coord: int(root.find(coord).text) / 1e6
+                for coord in ["Start_Long", "Start_Lat", "Stop_Long", "Stop_Lat"]
+            }
+            rows.append(
+                {
+                    "index": track_time,
+                    "geometry": shapely.LineString(
+                        (
+                            [coordinates["Start_Long"], coordinates["Start_Lat"]],
+                            [coordinates["Stop_Long"], coordinates["Stop_Lat"]],
+                        )
+                    ),
+                }
+            )
+    return rows, len(rows)
+
+
 def _ftp_cs_ground_tracks(
     start_datetime: pd.Timestamp,
     end_datetime: pd.Timestamp,
@@ -3029,27 +3064,39 @@ def _ftp_cs_ground_tracks(
     checkpoint: (
         Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
     ) = None,
+    n_threads: int = 8,
+    batch_size: int = 100,
 ) -> gpd.GeoDataFrame:
     """Read missing legacy track geometries from the preferred FTP roots."""
+    if not isinstance(n_threads, int) or isinstance(n_threads, bool) or n_threads < 1:
+        raise ValueError("n_threads must be a positive integer.")
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size < 1
+    ):
+        raise ValueError("batch_size must be a positive integer.")
     present_index = pd.DatetimeIndex(present_tracks.index)
     rows = []
     file_names = {}
     seen_file_times = set()
-    last_checkpointed = 0
-    last_checkpoint_time = time.monotonic() if checkpoint is not None else None
 
     def save_checkpoint() -> None:
-        if checkpoint is None or not rows:
+        if checkpoint is None:
             return
         checkpoint(
             start_datetime,
             end_datetime,
-            gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index"),
+            gpd.GeoDataFrame(
+                rows, columns=["index", "geometry"], geometry="geometry", crs=4326
+            ).set_index("index"),
         )
 
     first_month = pd.Timestamp(start_datetime).replace(day=1)
     last_month = pd.Timestamp(end_datetime).replace(day=1)
     try:
+        # A cancellation during listing must still be resumable.
+        save_checkpoint()
         for month in pd.date_range(first_month, last_month, freq="MS"):
             seen = set()
             pending_headers = []
@@ -3098,55 +3145,31 @@ def _ftp_cs_ground_tracks(
                     print(f"{progress_label}: 0/{total_headers} HDR files", flush=True)
                     last_reported = 0
                     last_report_time = time.monotonic()
-                current_directory = None
                 try:
-                    for completed, (directory, remote_file, track_time) in enumerate(
-                        pending_headers, start=1
-                    ):
-                        if directory != current_directory:
-                            ftp.cwd(directory)
-                            current_directory = directory
-                        cache = binary_chache()
-                        ftp.retrbinary("RETR " + remote_file, cache.add)
-                        root = ET_from_str(cache.cache).find(
-                            "Variable_Header/SPH/Product_Location"
-                        )
-                        coordinates = {
-                            coord: int(root.find(coord).text) / 1e6
-                            for coord in [
-                                "Start_Long",
-                                "Start_Lat",
-                                "Stop_Long",
-                                "Stop_Lat",
-                            ]
-                        }
-                        rows.append(
-                            {
-                                "index": track_time,
-                                "geometry": shapely.LineString(
-                                    (
-                                        [
-                                            coordinates["Start_Long"],
-                                            coordinates["Start_Lat"],
-                                        ],
-                                        [
-                                            coordinates["Stop_Long"],
-                                            coordinates["Stop_Lat"],
-                                        ],
-                                    )
-                                ),
-                            }
-                        )
+                    pending_headers.sort(
+                        key=lambda header: (header[2], header[0], header[1])
+                    )
+                    batches = [
+                        pending_headers[offset : offset + batch_size]
+                        for offset in range(0, total_headers, batch_size)
+                    ]
+                    cancel = threading.Event()
+                    executor = ThreadPoolExecutor(max_workers=n_threads)
+                    futures = [
+                        executor.submit(_ftp_cs_ground_track_batch, batch, cancel)
+                        for batch in batches
+                    ]
+                    unprocessed_futures = set(futures)
+                    completed = 0
+
+                    def record_batch(batch_rows, batch_completed) -> None:
+                        nonlocal completed, last_reported, last_report_time
+                        rows.extend(batch_rows)
+                        completed += batch_completed
+                        save_checkpoint()
                         now = time.monotonic()
-                        if checkpoint is not None and (
-                            len(rows) - last_checkpointed >= 100
-                            or now - last_checkpoint_time >= 30
-                        ):
-                            save_checkpoint()
-                            last_checkpointed = len(rows)
-                            last_checkpoint_time = now
                         if progress is not None:
-                            progress.update()
+                            progress.update(batch_completed)
                         elif (
                             completed == total_headers
                             or completed - last_reported >= 100
@@ -3159,6 +3182,27 @@ def _ftp_cs_ground_tracks(
                             )
                             last_reported = completed
                             last_report_time = now
+
+                    try:
+                        for future in as_completed(futures):
+                            unprocessed_futures.remove(future)
+                            record_batch(*future.result())
+                    except BaseException:
+                        # ``as_completed`` may yield a failed future before another
+                        # batch that has already finished successfully.
+                        for pending in tuple(unprocessed_futures):
+                            if pending.done() and not pending.cancelled():
+                                try:
+                                    record_batch(*pending.result())
+                                except BaseException:
+                                    pass
+                        cancel.set()
+                        for future in futures:
+                            future.cancel()
+                        executor.shutdown(wait=True, cancel_futures=True)
+                        raise
+                    else:
+                        executor.shutdown(wait=True)
                     if progress is None and total_headers == 0:
                         print(f"{progress_label}: 0/0 HDR files", flush=True)
                 finally:
@@ -3179,7 +3223,8 @@ def _ftp_cs_ground_tracks(
         cached.to_pickle(path)
     if not rows:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index")
+    tracks = gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index")
+    return tracks[~tracks.index.duplicated(keep="first")].sort_index()
 
 
 def _save_cs_ground_tracks(tracks: gpd.GeoDataFrame | gpd.GeoSeries) -> None:
@@ -3381,6 +3426,8 @@ def load_cs_ground_tracks(
         r"^20[0-9]{2}.?[01][0-9]$", end_datetime
     )
     start_datetime, end_datetime = pd.to_datetime([start_datetime, end_datetime])
+    if not isinstance(n_threads, int) or isinstance(n_threads, bool) or n_threads < 1:
+        raise ValueError("n_threads must be a positive integer.")
     if advance_end:
         end_datetime = end_datetime + pd.DateOffset(months=1)
     if source not in {"auto", "local", "stac"}:
@@ -3484,7 +3531,7 @@ def load_cs_ground_tracks(
         try:
             if _ftp_checkpoint is None:
                 ftp_tracks = _ftp_cs_ground_tracks(
-                    fallback_start, fallback_end, cs_tracks
+                    fallback_start, fallback_end, cs_tracks, n_threads=n_threads
                 )
             else:
                 ftp_tracks = _ftp_cs_ground_tracks(
@@ -3492,6 +3539,7 @@ def load_cs_ground_tracks(
                     fallback_end,
                     cs_tracks,
                     checkpoint=_ftp_checkpoint,
+                    n_threads=n_threads,
                 )
         except Exception as ftp_error:
             if _ftp_checkpoint is not None:
@@ -5037,9 +5085,9 @@ def _resume_track_database() -> None:
     _save_cs_ground_tracks(
         _merge_legacy_ground_tracks(cached_tracks, recovered_tracks, new_tracks)
     )
-    _clear_track_update_checkpoint()
     file_names = load_cs_full_file_names(update="no")
     file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+    _clear_track_update_checkpoint()
 
 
 def _update_track_database_with_checkpoint() -> None:
@@ -5065,9 +5113,9 @@ def _update_track_database_with_checkpoint() -> None:
         ftp_fallback=True,
         _ftp_checkpoint=save_progress,
     )
-    _clear_track_update_checkpoint()
     file_names = load_cs_full_file_names(update="no")
     file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+    _clear_track_update_checkpoint()
 
 
 def _update_track_database_from_args(args) -> None:

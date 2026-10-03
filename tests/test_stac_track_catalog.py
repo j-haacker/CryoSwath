@@ -1,6 +1,7 @@
 import io
 import subprocess
 import sys
+import threading
 
 import geopandas as gpd
 import pandas as pd
@@ -356,7 +357,7 @@ def test_ftp_ground_track_discovery_reports_noninteractive_progress(
         def __exit__(self, *args):
             return False
 
-    clock = iter([0, 31, 31])
+    clock = iter([0, 31])
     monkeypatch.setattr(misc, "ftp_cs2_server", lambda: DummyFtpServer())
     monkeypatch.setattr(misc, "aux_path", tmp_path)
     monkeypatch.setattr(misc.time, "monotonic", lambda: next(clock))
@@ -368,7 +369,6 @@ def test_ftp_ground_track_discovery_reports_noninteractive_progress(
     assert capsys.readouterr().out.splitlines() == [
         "FTP ground-track fallback 2020-01: connecting/listing",
         "FTP ground-track fallback 2020-01: 0/2 HDR files",
-        "FTP ground-track fallback 2020-01: 1/2 HDR files",
         "FTP ground-track fallback 2020-01: 2/2 HDR files",
     ]
 
@@ -391,8 +391,8 @@ def test_ftp_ground_track_discovery_uses_tqdm_on_tty(monkeypatch, tmp_path):
             self.updates = 0
             self.closed = False
 
-        def update(self):
-            self.updates += 1
+        def update(self, count=1):
+            self.updates += count
 
         def close(self):
             self.closed = True
@@ -420,8 +420,6 @@ def test_ftp_ground_track_discovery_uses_tqdm_on_tty(monkeypatch, tmp_path):
     assert progress[0].kwargs["file"] is output
     assert progress[0].updates == 1
     assert progress[0].closed
-
-
 
 def test_track_update_checkpoint_roundtrip(monkeypatch, tmp_path):
     tracks = gpd.GeoDataFrame(
@@ -476,12 +474,149 @@ def test_ftp_ground_track_discovery_checkpoints_before_interrupt(monkeypatch, tm
             checkpoint=lambda start, end, tracks: checkpoints.append(
                 (start, end, tracks.copy())
             ),
+            batch_size=1,
         )
 
     start_datetime, end_datetime, tracks = checkpoints[-1]
     assert start_datetime == pd.Timestamp("2020-01-15")
     assert end_datetime == pd.Timestamp("2020-02-15")
     assert tracks.index.equals(pd.DatetimeIndex(["2020-01-01"]))
+
+
+def test_ftp_ground_track_discovery_batches_private_connections_and_sorts_results(
+    monkeypatch, tmp_path
+):
+    root = "/SIR_SIN_L1/2020/01"
+    names = [
+        f"CS_OFFL_SIR_SIN_1B_20200101T00{minute:02}00_20200101T000100_E001.HDR"
+        for minute in (20, 10, 0)
+    ]
+    payloads = {(root, name): _hdr_payload(70000000) for name in names}
+    connections = []
+    first_batch_started = threading.Event()
+    second_batch_finished = threading.Event()
+
+    class FtpServer:
+        def __enter__(self):
+            ftp = DummyFtp({root: names}, payloads)
+            retrbinary = ftp.retrbinary
+
+            def retrieve_out_of_order(command, callback):
+                name = command.removeprefix("RETR ")
+                if name == names[2]:
+                    first_batch_started.set()
+                    assert second_batch_finished.wait(timeout=1)
+                elif name == names[0]:
+                    assert first_batch_started.wait(timeout=1)
+                    retrbinary(command, callback)
+                    second_batch_finished.set()
+                    return
+                retrbinary(command, callback)
+
+            ftp.retrbinary = retrieve_out_of_order
+            connections.append(ftp)
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(misc, "ftp_cs2_server", FtpServer)
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    tracks = misc._ftp_cs_ground_tracks(
+        pd.Timestamp("2020-01-01"),
+        pd.Timestamp("2020-01-02"),
+        gpd.GeoDataFrame(),
+        n_threads=2,
+        batch_size=2,
+    )
+
+    worker_connections = [ftp for ftp in connections if ftp.retrieved]
+    assert len(worker_connections) == 2
+    assert len({id(ftp) for ftp in worker_connections}) == 2
+    assert all(len(ftp.retrieved) <= 2 for ftp in worker_connections)
+    assert tracks.index.equals(tracks.index.sort_values())
+    assert tracks.index.is_unique
+
+
+def test_ftp_ground_track_discovery_keeps_completed_batch_on_worker_failure(
+    monkeypatch, tmp_path
+):
+    root = "/SIR_SIN_L1/2020/01"
+    names = [
+        "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR",
+        "CS_OFFL_SIR_SIN_1B_20200101T001000_20200101T001100_E001.HDR",
+    ]
+    payloads = {(root, name): _hdr_payload(70000000) for name in names}
+
+    class FtpServer:
+        count = 0
+
+        def __enter__(self):
+            FtpServer.count += 1
+            ftp = DummyFtp({root: names}, payloads)
+            if FtpServer.count == 3:
+                ftp.retrbinary = lambda *args: (_ for _ in ()).throw(
+                    RuntimeError("bad HDR")
+                )
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    checkpoints = []
+    monkeypatch.setattr(misc, "ftp_cs2_server", FtpServer)
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    with pytest.raises(RuntimeError, match="bad HDR"):
+        misc._ftp_cs_ground_tracks(
+            pd.Timestamp("2020-01-01"),
+            pd.Timestamp("2020-01-02"),
+            gpd.GeoDataFrame(),
+            checkpoint=lambda _start, _end, tracks: checkpoints.append(tracks.copy()),
+            n_threads=1,
+            batch_size=1,
+        )
+
+    assert any(
+        checkpoint.index.equals(pd.DatetimeIndex(["2020-01-01"]))
+        for checkpoint in checkpoints
+    )
+
+
+def test_ftp_ground_track_discovery_creates_empty_checkpoint_before_first_batch(
+    monkeypatch, tmp_path
+):
+    root = "/SIR_SIN_L1/2020/01"
+    name = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR"
+
+    class FtpServer:
+        def __enter__(self):
+            ftp = DummyFtp({root: [name]}, {(root, name): _hdr_payload(70000000)})
+            if hasattr(self, "worker"):
+                ftp.retrbinary = lambda *args: (_ for _ in ()).throw(
+                    KeyboardInterrupt()
+                )
+            self.worker = True
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    server = FtpServer()
+    checkpoints = []
+    monkeypatch.setattr(misc, "ftp_cs2_server", lambda: server)
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+
+    with pytest.raises(KeyboardInterrupt):
+        misc._ftp_cs_ground_tracks(
+            pd.Timestamp("2020-01-01"),
+            pd.Timestamp("2020-01-02"),
+            gpd.GeoDataFrame(),
+            checkpoint=lambda _start, _end, tracks: checkpoints.append(tracks.copy()),
+        )
+
+    assert checkpoints[-1].empty
 
 
 def test_resume_track_database_uses_checkpoint_without_stac(monkeypatch, tmp_path):
@@ -534,6 +669,37 @@ def test_resume_track_database_uses_checkpoint_without_stac(monkeypatch, tmp_pat
     assert not misc._track_update_checkpoint_path().exists()
     persisted = gpd.read_feather(cached_path)
     assert len(persisted) == 3
+
+
+def test_checkpointed_update_keeps_checkpoint_when_filename_write_fails(
+    monkeypatch, tmp_path
+):
+    tracks = gpd.GeoDataFrame(
+        geometry=[shapely.LineString([(0, 70), (1, 71)])],
+        index=pd.DatetimeIndex(["2020-01-01"]),
+        crs=4326,
+    )
+
+    class FailingFileNames:
+        def to_pickle(self, path):
+            raise OSError("filename catalog failed")
+
+    def fake_load_tracks(**kwargs):
+        kwargs["_ftp_checkpoint"](
+            pd.Timestamp("2020-01-01"), pd.Timestamp("2020-02-01"), tracks
+        )
+        return tracks
+
+    monkeypatch.setattr(misc, "aux_path", tmp_path)
+    monkeypatch.setattr(misc, "load_cs_ground_tracks", fake_load_tracks)
+    monkeypatch.setattr(
+        misc, "load_cs_full_file_names", lambda **kwargs: FailingFileNames()
+    )
+
+    with pytest.raises(OSError, match="filename catalog failed"):
+        misc._update_track_database_with_checkpoint()
+
+    assert misc._track_update_checkpoint_path().is_file()
 
 
 def test_library_ground_track_discovery_ignores_cli_checkpoint(monkeypatch, tmp_path):
@@ -595,8 +761,8 @@ def test_load_cs_ground_tracks_auto_uses_bounded_ftp_fallback(
             raise stac_error
         return misc._empty_cs_l1b_track_catalog()
 
-    def fake_ftp(start_datetime, end_datetime, present_tracks):
-        calls.append((start_datetime, end_datetime, present_tracks.copy()))
+    def fake_ftp(start_datetime, end_datetime, present_tracks, **kwargs):
+        calls.append((start_datetime, end_datetime, present_tracks.copy(), kwargs))
         return gpd.GeoDataFrame(
             geometry=[shapely.LineString([(0, 70), (1, 71)])],
             index=pd.DatetimeIndex(["2020-01-01"], name="index"),
@@ -614,6 +780,7 @@ def test_load_cs_ground_tracks_auto_uses_bounded_ftp_fallback(
     )
 
     assert calls[0][:2] == (pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"))
+    assert calls[0][3] == {"n_threads": 8}
     assert legacy_path.is_file()
     assert len(tracks) == 1
 
