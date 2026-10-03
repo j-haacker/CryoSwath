@@ -22,6 +22,13 @@ _START_MONTH = pd.Period("2010-07", freq="M")
 _STARTUP_END_MONTH = pd.Period("2010-12", freq="M")
 _MAX_GAP = pd.Timedelta(days=14)
 _TAIL_GRACE_MONTHS = 3
+_MIN_SEASONAL_COUNT = 20
+_FILENAME_ONLY_WARNING_FRACTION = 0.05
+_FILENAME_ONLY_ERROR_FRACTION = 0.10
+_FILENAME_PATTERN = (
+    r"^CS_(?:OFFL|LTA_)_SIR_SIN_1B_"
+    r"(?P<start>\d{8}T\d{6})_\d{8}T\d{6}_[A-Z]\d{3}$"
+)
 
 
 class ValidationError(RuntimeError):
@@ -47,7 +54,9 @@ def _datetime_index(index: pd.Index, label: str) -> pd.DatetimeIndex:
     return timestamps
 
 
-def _read_tracks(path: Path) -> tuple[gpd.GeoDataFrame, pd.DatetimeIndex]:
+def _read_tracks(
+    path: Path,
+) -> tuple[gpd.GeoDataFrame, pd.DatetimeIndex, list[str]]:
     try:
         tracks = gpd.read_feather(path)
     except Exception as err:
@@ -57,8 +66,6 @@ def _read_tracks(path: Path) -> tuple[gpd.GeoDataFrame, pd.DatetimeIndex]:
     timestamps = _datetime_index(tracks.index, "Ground tracks")
     if not len(tracks):
         raise ValidationError("Ground tracks are empty.")
-    if tracks.crs is None or tracks.crs.to_epsg() != 4326:
-        raise ValidationError("Ground tracks must use WGS84 (EPSG:4326).")
     geometry = tracks.geometry
     if geometry.isna().any() or geometry.is_empty.any() or not geometry.is_valid.all():
         raise ValidationError(
@@ -66,7 +73,25 @@ def _read_tracks(path: Path) -> tuple[gpd.GeoDataFrame, pd.DatetimeIndex]:
         )
     if not geometry.geom_type.eq("LineString").all():
         raise ValidationError("Ground tracks must contain LineString geometry.")
-    return tracks, timestamps
+    bounds = tracks.total_bounds
+    if (
+        not pd.notna(bounds).all()
+        or bounds[0] < -180
+        or bounds[2] > 180
+        or bounds[1] < -90
+        or bounds[3] > 90
+    ):
+        raise ValidationError("Ground-track coordinates exceed geographic bounds.")
+    warnings = []
+    if tracks.crs is None:
+        tracks = tracks.set_crs(4326)
+        warnings.append(
+            "ground tracks have missing CRS metadata; inferred WGS84 (EPSG:4326) "
+            "from valid geographic coordinate bounds."
+        )
+    elif tracks.crs.to_epsg() != 4326:
+        raise ValidationError("Ground tracks must use WGS84 (EPSG:4326).")
+    return tracks, timestamps, warnings
 
 
 def _read_filenames(path: Path) -> tuple[pd.Series, pd.DatetimeIndex]:
@@ -81,6 +106,21 @@ def _read_filenames(path: Path) -> tuple[pd.Series, pd.DatetimeIndex]:
     timestamps = _datetime_index(filenames.index, "Filename catalog")
     if filenames.isna().any():
         raise ValidationError("Filename catalog contains null values.")
+    filename_parts = filenames.astype("string").str.extract(_FILENAME_PATTERN)
+    malformed = filename_parts["start"].isna()
+    if malformed.any():
+        raise ValidationError(
+            f"Filename catalog contains {malformed.sum()} malformed product names."
+        )
+    embedded_times = pd.DatetimeIndex(
+        pd.to_datetime(filename_parts["start"], format="%Y%m%dT%H%M%S")
+    )
+    mismatched = embedded_times != timestamps
+    if mismatched.any():
+        raise ValidationError(
+            f"Filename catalog contains {mismatched.sum()} product timestamps "
+            "that do not match their index."
+        )
     return filenames, timestamps
 
 
@@ -111,7 +151,9 @@ def _coverage_warnings(timestamps: pd.DatetimeIndex, now: pd.Timestamp) -> list[
             continue
         median = history.median()
         mad = (history - median).abs().median()
-        threshold = min(median * 0.5, median - 6 * mad)
+        if median < _MIN_SEASONAL_COUNT:
+            continue
+        threshold = max(median * 0.5, median - 6 * mad)
         if counts[month] < threshold:
             warnings.append(
                 f"low track count in {month}: {counts[month]} "
@@ -142,21 +184,48 @@ def validate_track_database(
     now: str | pd.Timestamp | None = None,
 ) -> ValidationReport:
     """Validate local caches and return coverage warnings without remote access."""
-    _, track_times = _read_tracks(Path(tracks_path))
+    _, track_times, warnings = _read_tracks(Path(tracks_path))
     _, filename_times = _read_filenames(Path(filenames_path))
-    if not filename_times.isin(track_times).all():
-        absent = filename_times[~filename_times.isin(track_times)]
+    tracks_without_filenames = track_times[~track_times.isin(filename_times)]
+    if len(tracks_without_filenames):
         raise ValidationError(
-            f"Filename catalog contains {len(absent)} timestamps "
-            "absent from ground tracks."
+            f"Ground tracks contain {len(tracks_without_filenames)} timestamps "
+            "without filename entries."
         )
     current_time = pd.Timestamp.now() if now is None else pd.Timestamp(now)
+    warnings.extend(_coverage_warnings(track_times, current_time))
+    filename_only = filename_times[~filename_times.isin(track_times)]
+    if len(filename_only):
+        filename_months = filename_times.to_period("M")
+        filename_counts = pd.Series(1, index=filename_months).groupby(level=0).sum()
+        filename_only_counts = (
+            pd.Series(1, index=filename_only.to_period("M")).groupby(level=0).sum()
+        )
+        monthly_fractions = (
+            filename_only_counts / filename_counts[filename_only_counts.index]
+        )
+        worst_month = monthly_fractions.idxmax()
+        worst_fraction = monthly_fractions.loc[worst_month]
+        if worst_fraction > _FILENAME_ONLY_ERROR_FRACTION:
+            raise ValidationError(
+                "Filename entries without ground-track geometry account for "
+                f"{worst_fraction:.1%} of {worst_month}, exceeding the "
+                f"{_FILENAME_ONLY_ERROR_FRACTION:.0%} publication limit."
+            )
+        qualifier = (
+            " elevated" if worst_fraction > _FILENAME_ONLY_WARNING_FRACTION else ""
+        )
+        warnings.append(
+            f"filename catalog has {len(filename_only)} entries without "
+            f"ground-track geometry ({len(filename_only) / len(filename_times):.3%} "
+            f"overall;{qualifier} maximum {worst_fraction:.1%} in {worst_month})."
+        )
     return ValidationReport(
         track_count=len(track_times),
         filename_count=len(filename_times),
         first_timestamp=track_times.min(),
         last_timestamp=track_times.max(),
-        warnings=_coverage_warnings(track_times, current_time),
+        warnings=warnings,
     )
 
 

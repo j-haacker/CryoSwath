@@ -10,7 +10,10 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from validate_track_database import ValidationError, validate_track_database
 
 from cryoswath import misc
 
@@ -109,6 +112,13 @@ def build_archive(
     auxiliary = data_dir / "auxiliary"
     if not auxiliary.is_dir():
         raise ArchiveError(f"No auxiliary directory in {data_dir}.")
+    try:
+        validate_track_database(
+            auxiliary / "CryoSat-2_SARIn_ground_tracks.feather",
+            auxiliary / "CryoSat-2_SARIn_file_names.pkl",
+        )
+    except ValidationError as err:
+        raise ArchiveError(f"Invalid track database: {err}") from err
     target = Path(output) if output is not None else _default_output(Path(output_dir))
     target = target.resolve()
     if target.exists():

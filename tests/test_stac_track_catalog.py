@@ -1,3 +1,4 @@
+import ftplib
 import io
 import subprocess
 import sys
@@ -9,6 +10,95 @@ import pytest
 import shapely
 
 import cryoswath.misc as misc
+
+
+def test_ftp_ground_track_batch_retries_temporary_passive_socket_error(monkeypatch):
+    directory = "/SIR_SIN_L1/2020/01"
+    name = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR"
+    ftp = DummyFtp({directory: [name]}, {(directory, name): _hdr_payload(70000000)})
+    retrieve = ftp.retrbinary
+    attempts = []
+
+    def temporarily_unavailable(command, callback):
+        attempts.append(command)
+        if len(attempts) == 1:
+            raise ftplib.error_temp(
+                "425 Unable to identify the local data socket: Address already in use"
+            )
+        retrieve(command, callback)
+
+    ftp.retrbinary = temporarily_unavailable
+
+    class FtpServer:
+        def __enter__(self):
+            return ftp
+
+        def __exit__(self, *args):
+            return False
+
+    delays = []
+
+    class Cancel:
+        def is_set(self):
+            return False
+
+        def wait(self, delay):
+            delays.append(delay)
+            return False
+
+    monkeypatch.setattr(misc, "ftp_cs2_server", FtpServer)
+
+    rows, completed = misc._ftp_cs_ground_track_batch(
+        [(directory, name, pd.Timestamp("2020-01-01"))], Cancel()
+    )
+
+    assert completed == 1
+    assert len(rows) == 1
+    assert len(attempts) == 2
+    assert delays == [1]
+
+
+def test_ftp_ground_track_batch_bounds_temporary_socket_retries(monkeypatch):
+    directory = "/SIR_SIN_L1/2020/01"
+    name = "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.HDR"
+    attempts = []
+
+    class Ftp:
+        def cwd(self, _directory):
+            pass
+
+        def retrbinary(self, command, _callback):
+            attempts.append(command)
+            raise ftplib.error_temp(
+                "425 Unable to identify the local data socket: Address already in use"
+            )
+
+    class FtpServer:
+        def __enter__(self):
+            return Ftp()
+
+        def __exit__(self, *args):
+            return False
+
+    delays = []
+
+    class Cancel:
+        def is_set(self):
+            return False
+
+        def wait(self, delay):
+            delays.append(delay)
+            return False
+
+    monkeypatch.setattr(misc, "ftp_cs2_server", FtpServer)
+
+    with pytest.raises(ftplib.error_temp, match="425 .*Address already in use"):
+        misc._ftp_cs_ground_track_batch(
+            [(directory, name, pd.Timestamp("2020-01-01"))], Cancel()
+        )
+
+    assert len(attempts) == misc._ESA_FTP_TRANSFER_ATTEMPTS
+    assert delays == [1, 2, 4]
 
 
 class DummyResponse:
@@ -780,7 +870,7 @@ def test_load_cs_ground_tracks_auto_uses_bounded_ftp_fallback(
     )
 
     assert calls[0][:2] == (pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"))
-    assert calls[0][3] == {"n_threads": 8}
+    assert calls[0][3] == {"n_threads": misc._FTP_TRACK_WORKERS}
     assert legacy_path.is_file()
     assert len(tracks) == 1
 

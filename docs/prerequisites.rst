@@ -189,6 +189,13 @@ catalogs without querying remote track listings:
 
    pixi run -e test validate-tracks --base-dir <project-directory>
 
+The validator treats unusable track rows, malformed filename entries, tracks
+without filenames, and large per-month geometry gaps as errors. Filename-only
+entries are warnings while they remain at or below the 10% monthly publication
+limit. Missing CRS metadata is also a warning when all coordinates safely fit
+WGS84 bounds; an explicit wrong CRS or impossible coordinates remains an
+error.
+
 To prepare a Zenodo upload, use a clean checkout whose ``HEAD`` matches
 ``origin/data``. The builder writes a timestamped archive and prints its source
 commit, member list, size, and SHA-256 checksum:
@@ -196,6 +203,10 @@ commit, member list, size, and SHA-256 checksum:
 .. code-block:: console
 
    pixi run python tools/build_auxiliary_archive.py --data-dir <data-checkout>
+
+The archive builder repeats semantic track-database validation and refuses to
+create an archive when validation reports an error. Warnings remain visible in
+the standalone validation report but do not block publication.
 
 In the Zenodo UI, create a new version of the auxiliary-data record, replace
 the file with the generated archive renamed to ``CryoSwath-aux-data.zip``,
@@ -232,7 +243,8 @@ exited. FTP header discovery uses a bounded pool of private FTP connections
 and checkpoints completed partial-month batches. Cancellation can repeat one
 unfinished batch per active connection, but ``--resume`` skips completed
 tracks. ESA may reject excessive concurrent connections, so keep the worker
-count modest.
+count modest. The update command uses four connections by default and retries
+temporary ``425`` data-socket failures with bounded backoff.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^

@@ -510,6 +510,8 @@ empty_GeoDataFrame = gpd.GeoDataFrame(
 _ESA_AUTH_IDP_HOST = "eoiam-idp.eo.esa.int"
 _ESA_CS2_HOST = "science-pds.cryosat.esa.int"
 _ESA_FTP_TIMEOUT = 60
+_ESA_FTP_TRANSFER_ATTEMPTS = 4
+_FTP_TRACK_WORKERS = 4
 _ESA_CRYOSWATH_KEYRING_SERVICE = "cryoswath.esa"  # legacy keyring service name
 _ESA_KEYRING_SERVICE_CANDIDATES = (
     _ESA_AUTH_IDP_HOST,
@@ -3035,8 +3037,17 @@ def _ftp_cs_ground_track_batch(
             if directory != current_directory:
                 ftp.cwd(directory)
                 current_directory = directory
-            cache = binary_chache()
-            ftp.retrbinary("RETR " + remote_file, cache.add)
+            for attempt in range(_ESA_FTP_TRANSFER_ATTEMPTS):
+                cache = binary_chache()
+                try:
+                    ftp.retrbinary("RETR " + remote_file, cache.add)
+                    break
+                except ftplib.error_temp as err:
+                    retryable = str(err).startswith("425 ")
+                    if not retryable or attempt == _ESA_FTP_TRANSFER_ATTEMPTS - 1:
+                        raise
+                    if cancel.wait(2**attempt):
+                        return rows, len(rows)
             root = ET_from_str(cache.cache).find("Variable_Header/SPH/Product_Location")
             coordinates = {
                 coord: int(root.find(coord).text) / 1e6
@@ -3064,7 +3075,7 @@ def _ftp_cs_ground_tracks(
     checkpoint: (
         Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
     ) = None,
-    n_threads: int = 8,
+    n_threads: int = _FTP_TRACK_WORKERS,
     batch_size: int = 100,
 ) -> gpd.GeoDataFrame:
     """Read missing legacy track geometries from the preferred FTP roots."""
@@ -3370,7 +3381,7 @@ def load_cs_ground_tracks(
     source: Literal["auto", "local", "stac"] = "auto",
     ftp_fallback: bool | None = None,
     cache_only: bool = False,
-    n_threads: int = 8,
+    n_threads: int = _FTP_TRACK_WORKERS,
     _ftp_checkpoint: (
         Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
     ) = None,
@@ -3413,7 +3424,7 @@ def load_cs_ground_tracks(
         cache_only (bool, optional): Read existing track caches without STAC
             or FTP discovery and without writing track caches. Defaults to False.
         n_threads (int, optional): Number of parallel ftp connections. If you
-            choose too many, ESA will refuse the connection. Defaults to 8.
+            choose too many, ESA will refuse the connection. Defaults to 4.
 
     Raises:
         RuntimeError: If automatic MAAP discovery needs an FTP decision.
