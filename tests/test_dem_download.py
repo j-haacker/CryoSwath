@@ -145,21 +145,43 @@ def test_get_dem_reader_targeted_rejects_extent_free_input(monkeypatch, tmp_path
         misc.get_dem_reader(80)
 
 
-def test_get_dem_reader_reuses_existing_regional_cache(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "spatial_input",
+    [
+        lambda: misc.shapely.Point(10, 80),
+        lambda: misc.gpd.GeoSeries([misc.shapely.box(9, 79, 11, 81)], crs="EPSG:4326"),
+        lambda: misc.gpd.GeoDataFrame(
+            geometry=[misc.shapely.box(9, 79, 11, 81)], crs="EPSG:4326"
+        ),
+        lambda: xr.DataArray(
+            [[1, 1], [1, 1]],
+            dims=("y", "x"),
+            coords={"x": [9, 11], "y": [79, 81]},
+        ).rio.write_crs(4326),
+        lambda: xr.Dataset(
+            {"value": (("y", "x"), [[1, 1], [1, 1]])},
+            coords={"x": [9, 11], "y": [79, 81]},
+        ).rio.write_crs(4326),
+    ],
+    ids=["shapely", "geoseries", "geodataframe", "dataarray", "dataset"],
+)
+def test_get_dem_reader_refreshes_existing_regional_cache(
+    monkeypatch, tmp_path, spatial_input
+):
     monkeypatch.setattr(misc, "dem_path", tmp_path)
     cache = tmp_path / "arcticdem-mosaics-v4.1-32m_100m-mean.zarr"
     cache.mkdir()
     reader = xr.Dataset({"dem": xr.DataArray(1)})
     monkeypatch.setattr(misc.xr, "open_dataset", lambda path, **kwargs: reader)
+    captured = []
     monkeypatch.setattr(
         misc,
         "download_dem",
-        lambda geometry: (_ for _ in ()).throw(
-            AssertionError("cache should be reused")
-        ),
+        lambda geometry: captured.append(geometry) or cache,
     )
 
-    assert misc.get_dem_reader(misc.shapely.Point(10, 80)).identical(reader.dem)
+    assert misc.get_dem_reader(spatial_input()).identical(reader.dem)
+    assert len(captured) == 1
 
 
 def test_get_dem_reader_refreshes_partial_cache_for_buffered_l1b_track(
@@ -259,6 +281,20 @@ def test_l4_forwards_missing_dem(monkeypatch):
 
     assert calls == [(ds, "full")]
 
+
+def test_l4_uses_encoded_fill_value_from_xarray_dem(monkeypatch):
+    dem = xr.DataArray(
+        [[100.0, -9999.0], [200.0, 300.0]],
+        dims=("y", "x"),
+        coords={"x": [0.0, 1.0], "y": [1.0, 0.0]},
+    ).rio.write_crs(4326)
+    dem.encoding["_FillValue"] = -9999.0
+    target = xr.Dataset(coords={"x": [0.0, 1.0], "y": [1.0, 0.0]}).rio.write_crs(4326)
+    monkeypatch.setattr(l4, "get_dem_reader", lambda *args, **kwargs: dem)
+
+    result = l4.append_elevation_reference(target)
+
+    assert np.isnan(result.ref_elev.sel(x=1.0, y=1.0))
 
 
 def test_read_stac_accepts_static_item_with_numpy_python_scalars(tmp_path):

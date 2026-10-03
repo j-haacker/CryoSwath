@@ -1951,7 +1951,7 @@ def get_dem_reader(
     if preferred_dem_path.exists():
         return reader_or_store(preferred_dem_path)
     if fallback_dem_path.exists():
-        if missing_dem == "targeted" and is_l1b_track:
+        if missing_dem == "targeted":
             return reader_or_store(download_dem(targeted_download_geometry()))
         return reader_or_store(fallback_dem_path)
 

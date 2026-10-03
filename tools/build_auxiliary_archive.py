@@ -38,7 +38,16 @@ def _git(data_dir: Path, *args: str) -> str:
 
 
 def _source_commit(data_dir: Path) -> str:
-    if _git(data_dir, "status", "--porcelain"):
+    transient_files = {
+        f"auxiliary/{misc._TRACK_UPDATE_CHECKPOINT_NAME}",
+        f"auxiliary/{misc._TRACK_UPDATE_LOCK_NAME}",
+    }
+    dirty_files = [
+        entry
+        for entry in _git(data_dir, "status", "--porcelain").splitlines()
+        if entry[3:] not in transient_files
+    ]
+    if dirty_files:
         raise ArchiveError("Data checkout must be clean.")
     head = _git(data_dir, "rev-parse", "HEAD")
     remote_data = _git(data_dir, "rev-parse", "origin/data")
@@ -50,7 +59,10 @@ def _source_commit(data_dir: Path) -> str:
 def _include(path: Path) -> bool:
     return not (
         path.name.startswith(f"{_ARCHIVE_PREFIX}") and path.suffix == ".zip"
-    ) and not path.name.endswith(".resume.pkl")
+    ) and path.name not in {
+        misc._TRACK_UPDATE_CHECKPOINT_NAME,
+        misc._TRACK_UPDATE_LOCK_NAME,
+    }
 
 
 def _default_output(output_dir: Path) -> Path:

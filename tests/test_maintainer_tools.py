@@ -114,7 +114,6 @@ def _data_checkout(tmp_path):
     (auxiliary / "CryoSat-2_SARIn_file_names.pkl").write_bytes(b"filenames")
     (rgi / "metadata.txt").write_text("rgi")
     (auxiliary / "CryoSwath-aux-data-old.zip").write_bytes(b"old")
-    (auxiliary / ".CryoSat-2_SARIn_ground_tracks.resume.pkl").write_bytes(b"resume")
     subprocess.run(["git", "init", "-q", str(data_dir)], check=True)
     subprocess.run(
         ["git", "-C", str(data_dir), "config", "user.email", "test@example.org"],
@@ -137,6 +136,10 @@ def _data_checkout(tmp_path):
         ],
         check=True,
     )
+    (auxiliary / archive_builder.misc._TRACK_UPDATE_CHECKPOINT_NAME).write_bytes(
+        b"resume"
+    )
+    (auxiliary / archive_builder.misc._TRACK_UPDATE_LOCK_NAME).write_bytes(b"lock")
     return data_dir
 
 
@@ -152,7 +155,8 @@ def test_archive_builder_creates_valid_archive_and_excludes_transient_files(tmp_
     assert len(commit) == 40
     assert "CryoSat-2_SARIn_ground_tracks.feather" in members
     assert all("CryoSwath-aux-data-old.zip" not in member for member in members)
-    assert all("resume.pkl" not in member for member in members)
+    assert archive_builder.misc._TRACK_UPDATE_CHECKPOINT_NAME not in members
+    assert archive_builder.misc._TRACK_UPDATE_LOCK_NAME not in members
 
 
 def test_archive_builder_rejects_dirty_checkout(tmp_path):
