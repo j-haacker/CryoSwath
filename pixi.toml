@@ -11,6 +11,7 @@ bottleneck = "*"
 dask = "*"
 defusedxml = "*"
 earthaccess = ">=0.18"
+fasteners = "*"
 geopandas = ">=1.0.1"
 h5netcdf = "*"
 h5py = "*"
@@ -29,7 +30,7 @@ rioxarray = "*"
 scikit-learn = "*"
 scipy = "*"
 shapely = "*"
-stackstac = "*"
+stackstac = ">=0.5.1"
 statsmodels = "*"
 pytables = "*"
 tqdm = "*"
@@ -102,6 +103,7 @@ depends-on = [
 ]
 
 [feature.test.tasks]
+validate-tracks = "python tools/validate_track_database.py"
 lint = "ruff check ."
 format-check = "ruff format --check ."
 pre-commit-validate = "pre-commit validate-config"
@@ -115,6 +117,10 @@ export-conda-for-notebooks = "bash \"$PIXI_PROJECT_ROOT/tests/reports/export_con
 prepare-notebook-tests = "python tools/prepare_notebook_tests.py"
 prepare-report-notebooks = "python tools/prepare_notebook_tests.py reports"
 prepare-tutorial-notebooks = "python tools/prepare_notebook_tests.py tutorials"
+
+[feature.test.tasks.test-live-ftp]
+cmd = "pytest -q tests/test_l1b_download_protocol.py::test_live_ftp_lists_month_when_enabled"
+env = { CRYOSWATH_RUN_LIVE_FTP = "1" }
 
 [feature.test.tasks.test-notebooks]
 depends-on = ["export-conda-for-notebooks", "prepare-report-notebooks"]

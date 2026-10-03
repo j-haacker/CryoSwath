@@ -129,6 +129,11 @@ Science Server FTP fallback delivery uses ``EOIAM_USER`` and
 ``EOIAM_PASSWORD``, keyring, ``~/.netrc``, or legacy ``config.ini``. Those
 credentials are not used for MAAP asset delivery.
 
+Maintainers can verify authenticated FTP listing separately with
+``pixi run -e test test-live-ftp``. This opt-in smoke test lists one SARIn
+month without downloading a product and uses a 30-second connection timeout;
+it is intentionally not part of ``test-unit`` or CI.
+
 Download protocol defaults
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -174,6 +179,40 @@ IDs, product filenames, selected enclosure URLs, product versions,
 processing dates, and track geometries for supported ``SIR_SIN_1B`` products.
 Cached entries without a usable route are refreshed before delivery.
 
+Maintainer update workflow
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After refreshing the local caches, validate the ground-track and filename
+catalogs without querying remote track listings:
+
+.. code-block:: console
+
+   pixi run -e test validate-tracks --base-dir <project-directory>
+
+The validator treats unusable track rows, malformed filename entries, tracks
+without filenames, and large per-month geometry gaps as errors. Filename-only
+entries are warnings while they remain at or below the 10% monthly publication
+limit. Missing CRS metadata is also a warning when all coordinates safely fit
+WGS84 bounds; an explicit wrong CRS or impossible coordinates remains an
+error.
+
+To prepare a Zenodo upload, use a clean checkout whose ``HEAD`` matches
+``origin/data``. The builder writes a timestamped archive and prints its source
+commit, member list, size, and SHA-256 checksum:
+
+.. code-block:: console
+
+   pixi run python tools/build_auxiliary_archive.py --data-dir <data-checkout>
+
+The archive builder repeats semantic track-database validation and refuses to
+create an archive when validation reports an error. Warnings remain visible in
+the standalone validation report but do not block publication.
+
+In the Zenodo UI, create a new version of the auxiliary-data record, replace
+the file with the generated archive renamed to ``CryoSwath-aux-data.zip``,
+compare the member list and checksum, then publish after review. The builder
+does not upload or publish anything.
+
 By default, :func:`cryoswath.misc.load_cs_ground_tracks` uses local track
 caches when their latest timestamp covers the requested period. If the request
 extends beyond local coverage and a network connection is available, CryoSwath
@@ -194,14 +233,34 @@ future workflow.
 Run ``cryoswath update-tracks`` periodically to extend or refresh the local
 track metadata after installing the baseline. This refreshes STAC-backed
 metadata where possible and leaves the legacy filename catalog available for
-older workflows.
+older workflows. ESA FTP operations time out after 60 seconds; a detached log
+prints ``FTP ground-track fallback YYYY-MM: connecting/listing`` before each
+FTP attempt, so a later timeout identifies the stalled month. Only one update
+may use an auxiliary-data directory at a time. A second update fails
+immediately without changing the cache or checkpoint. After an interrupted FTP
+fallback, run ``cryoswath update-tracks --resume`` once the first process has
+exited. FTP header discovery uses a bounded pool of private FTP connections
+and checkpoints completed partial-month batches. Cancellation can repeat one
+unfinished batch per active connection, but ``--resume`` skips completed
+tracks. ESA may reject excessive concurrent connections, so keep the worker
+count modest. The update command uses four connections by default and retries
+temporary ``425`` data-socket failures with bounded backoff.
 
 DEM download behavior
 ^^^^^^^^^^^^^^^^^^^^^
 
 If the default ArcticDEM or REMA 100 m ``*_dem.tif`` file is missing,
-``get_dem_reader`` now attempts an automatic download and extraction before
-raising ``FileNotFoundError``.
+``get_dem_reader`` uses targeted PGC STAC provisioning by default when it is
+given a spatial input. It stores 100 m tiles in one regional ArcticDEM or REMA
+Zarr cache and incrementally fills that cache as later requests cover new
+tiles. A non-spatial input cannot use targeted provisioning and raises a clear
+``FileNotFoundError`` instead of downloading a full archive.
+
+Pass ``missing_dem="full"`` to explicitly download and extract the full
+regional archive. This emits a warning because the archive can be large.
+The same ``missing_dem`` keyword is available from
+``l1b.append_ambiguous_reference_elevation`` and
+``l4.append_elevation_reference``.
 
 - Arctic source archive:
   ``https://data.pgc.umn.edu/elev/dem/setsm/ArcticDEM/mosaic/v4.1/100m/arcticdem_mosaic_100m_v4.1.tar.gz``

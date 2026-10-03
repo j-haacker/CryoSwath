@@ -431,6 +431,13 @@ def test_download_files_fails_fast_for_unresolved_tracks(monkeypatch, tmp_path):
 
     monkeypatch.setattr(l1b, "_create_maap_session", lambda token: session)
     monkeypatch.setattr(l1b, "_download_named_file_maap", fake_maap)
+    monkeypatch.setattr(
+        l1b,
+        "_download_single_file_via_ftp",
+        lambda track_id: (_ for _ in ()).throw(
+            FileNotFoundError(f"fixture has no FTP file for {track_id}")
+        ),
+    )
     with pytest.raises(RuntimeError, match="20200102T000000"):
         l1b.download_files(track_idx)
     assert len(maap_calls) == 1
@@ -462,8 +469,8 @@ def test_download_files_reports_unavailable_maap_token_after_catalog_lookup(
     )
     monkeypatch.setattr(
         l1b,
-        "_download_files_via_ftp",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
+        "_download_single_file_via_ftp",
+        lambda track_id: (_ for _ in ()).throw(
             AssertionError("FTP fallback must not be used")
         ),
     )
@@ -750,6 +757,15 @@ def test_live_download_single_file_uses_maap_when_enabled(monkeypatch, tmp_path)
     assert header.startswith(b"\x89HDF\r\n\x1a\n") or header.startswith(
         (b"CDF\x01", b"CDF\x02", b"CDF\x05")
     )
+
+
+def test_live_ftp_lists_month_when_enabled():
+    if os.environ.get("CRYOSWATH_RUN_LIVE_FTP") != "1":
+        pytest.skip("Set CRYOSWATH_RUN_LIVE_FTP=1 to run the live ESA FTP smoke test.")
+
+    with l1b.ftp_cs2_server(timeout=30) as ftp:
+        ftp.cwd("/SIR_SIN_L1/2023/03")
+        assert ftp.nlst()
 
 
 def test_download_single_file_via_ftp_uses_baseline_e_when_current_lacks_track(

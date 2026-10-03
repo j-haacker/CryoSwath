@@ -90,6 +90,7 @@ import traceback
 import warnings
 import zipfile
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from configparser import ConfigParser
 from contextlib import contextmanager
 from importlib import resources as importlib_resources
@@ -97,6 +98,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Union
 from urllib.parse import parse_qs, unquote, urlparse
 
+import fasteners
 import geopandas as gpd
 import h5py
 import numpy as np
@@ -461,6 +463,7 @@ dem_path = _resolved_paths["dem"]
 rgi_path = str(_resolved_paths["rgi"])
 cs_ground_tracks_path = str(_resolved_paths["cs_ground_tracks"])
 cs_l1b_track_catalog_path = str(aux_path / _CRYOSAT_L1B_TRACK_CATALOG_NAME)
+_DEM_CACHE_LIMITS = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
 
 _ZENODO_AUX_CONCEPT_RECORD_API_URL = "https://zenodo.org/api/records/20241526"
 _AUX_DATA_ARCHIVE_KEY = "CryoSwath-aux-data.zip"
@@ -506,6 +509,9 @@ empty_GeoDataFrame = gpd.GeoDataFrame(
 )
 _ESA_AUTH_IDP_HOST = "eoiam-idp.eo.esa.int"
 _ESA_CS2_HOST = "science-pds.cryosat.esa.int"
+_ESA_FTP_TIMEOUT = 60
+_ESA_FTP_TRANSFER_ATTEMPTS = 4
+_FTP_TRACK_WORKERS = 4
 _ESA_CRYOSWATH_KEYRING_SERVICE = "cryoswath.esa"  # legacy keyring service name
 _ESA_KEYRING_SERVICE_CANDIDATES = (
     _ESA_AUTH_IDP_HOST,
@@ -813,8 +819,10 @@ def _read_stac(item):
         xr.Dataset(
             {
                 da.name: da.drop_attrs()
-                .astype(da.attrs["data_type"])
-                .assign_attrs(encoding={"_FillValue": da.attrs["nodata"]})
+                .astype(da.attrs.get("data_type", da.dtype))
+                .assign_attrs(
+                    encoding={"_FillValue": da.attrs.get("nodata", np.nan)}
+                )
                 for da in tmp.data_vars.values()
             }
         )
@@ -888,7 +896,7 @@ def _pgc_stac_items(catalog, gpd_obj):
 def download_dem(
     gpd_obj: Union[gpd.GeoSeries, gpd.GeoDataFrame, gpd.array.GeometryArray],
     provider: Literal["PGC"] = "PGC",
-):
+) -> Path:
     """
     Download DEM tiles that intersect the provided geometries
 
@@ -907,15 +915,16 @@ def download_dem(
     --------
     - Searches the PGC STAC catalog for arcticdem (v4.1) and rema (v2)
       32 m collections covering the provided bbox.
-    - Creates a Zarr store at Path(dem_path) / '<collection_id>.zarr'.
+    - Reuses one Zarr store per regional collection at
+      ``Path(dem_path) / '<collection_id>_100m-mean.zarr'`` and incrementally
+      fills it with newly discovered tiles.
       Note: the function expects a caller-defined variable `dem_path` to
       exist and be a valid filesystem path.
     - Initializes the store on a fixed regular grid
       (x,y in [-3_500_000, 3_500_000]) with 100 m spacing and chunking
       tuned for large tile writes.
     - For each discovered STAC item:
-      - Skips writing if the existing store already contains sufficient
-        data for the item's bbox.
+      - Skips writing only when the existing store covers the item's bbox.
       - Reads the item into an xarray.Dataset, reprojects/resamples it to
         match the store grid (using rioxarray and rasterio Resampling),
         fills nodata values from the existing store, and writes the result
@@ -925,10 +934,12 @@ def download_dem(
     """
     if provider == "PGC":
         catalog = _open_pgc_stac_catalog()
-        # transforming collection extent is difficult, maybe the code behind
-        # rioxr transform_bounds helps
-        limits = {"x": (-3_500_000, 3_500_000), "y": (-3_500_000, 3_500_000)}
         items = _pgc_stac_items(catalog, gpd_obj)
+
+    if not items:
+        raise FileNotFoundError(
+            "PGC did not return DEM tiles for the requested extent."
+        )
 
     this_dem_path = Path(dem_path) / (
         items[0].get_collection().id + "_100m-mean.zarr"  # pyright: ignore[reportOptionalMemberAccess]
@@ -941,7 +952,11 @@ def download_dem(
                 xr.full_like(_read_stac(item), np.nan)
                 .reindex(
                     {
-                        xy: np.arange(limits[xy][0], limits[xy][1] + 1, 100)
+                        xy: np.arange(
+                            _DEM_CACHE_LIMITS[xy][0],
+                            _DEM_CACHE_LIMITS[xy][1] + 1,
+                            100,
+                        )
                         for xy in ["x", "y"]
                     }
                 )
@@ -949,19 +964,12 @@ def download_dem(
             ).to_zarr(this_dem_path, mode="w", compute=False)
 
         parent = xr.open_zarr(this_dem_path, decode_coords="all", mask_and_scale=True)
-        if (
-            parent["count"].rio.clip_box(*item.properties["proj:bbox"]).mean().compute()
-            > 0.1
-        ):
+        bbox = item.properties["proj:bbox"]
+        if parent["count"].rio.clip_box(*bbox).notnull().all().compute():
             continue
         ds = _read_stac(item)
-        # # the general case:
-        # x0, y0, x1, y1 = ds.rio.bounds()
-        # excerpt = parent.pipe(sel_chunk_range, x=[x0, x1], y=[y0, y1]).load()
-        # however, if chunks tuned to tiles:
-        c = shapely.box(*item.properties["proj:bbox"]).centroid
         excerpt = parent.pipe(
-            sel_chunk_range, **{xy: [getattr(c, xy)] * 2 for xy in ["x", "y"]}
+            sel_chunk_range, x=bbox[::2], y=bbox[1::2]
         ).load()
         add = ds.map(
             lambda da: da.rio.reproject_match(
@@ -973,6 +981,7 @@ def download_dem(
         add.drop_attrs().drop_vars(["spatial_ref"]).to_zarr(
             this_dem_path, region="auto"
         )
+    return this_dem_path
 
 
 def _stream_download_response(response, tmp_file) -> None:
@@ -1566,21 +1575,27 @@ def flag_translator(cs_l1b_flag):
 
 
 @contextmanager
-def ftp_cs2_server(**kwargs):
+def ftp_cs2_server(*, timeout: float = _ESA_FTP_TIMEOUT, **kwargs):
     """Yield authenticated FTP connection to ESA CryoSat server."""
     user, password, source = _resolve_esa_ftp_credentials()
-    with ftplib.FTP_TLS(_ESA_CS2_HOST, **kwargs) as ftp:
-        try:
-            ftp.login(user=user, passwd=password)
-        except ftplib.error_perm as err:
-            raise RuntimeError(
-                "ESA FTP authentication failed using credentials from "
-                f"{source}. Configure keyring via cryoswath update-keyring, set "
-                f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
-                "~/.netrc (plaintext fallback)."
-            ) from err
-        ftp.prot_p()
-        yield ftp
+    try:
+        with ftplib.FTP_TLS(_ESA_CS2_HOST, timeout=timeout, **kwargs) as ftp:
+            try:
+                ftp.login(user=user, passwd=password)
+            except ftplib.error_perm as err:
+                raise RuntimeError(
+                    "ESA FTP authentication failed using credentials from "
+                    f"{source}. Configure keyring via cryoswath update-keyring, set "
+                    f"{_ESA_ENV_USER}/{_ESA_ENV_PASSWORD}, or use "
+                    "~/.netrc (plaintext fallback)."
+                ) from err
+            ftp.prot_p()
+            yield ftp
+    except TimeoutError as err:
+        raise RuntimeError(
+            f"ESA FTP operation timed out after {timeout:g} seconds. "
+            "Check the network or retry the update later."
+        ) from err
 
 
 _FTP_CS2_L1B_ROOTS = ("/SIR_SIN_L1", "/Ice_Baseline_E/SIR_SIN_L1")
@@ -1765,7 +1780,9 @@ def gauss_filter_DataArray(
         )
 
 
-def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
+def get_dem_reader(
+    data: any = None, *, missing_dem: Literal["targeted", "full"] = "targeted"
+) -> rasterio.DatasetReader:
     """Determines which DEM to use
 
     Attempts to determine location of `data` and returns appropriate
@@ -1783,6 +1800,11 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
     """
 
     raster_extensions = ["tif", "nc", "zarr"]
+    is_l1b_track = (
+        hasattr(data, "__contains__")
+        and "lat_20_ku" in data
+        and "lon_20_ku" in data
+    )
 
     def reader_or_store(path: Path):
         if isinstance(path, str):
@@ -1891,12 +1913,60 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
             )
         return output_file
 
-    if not (dem_path / dem_filename).exists():
+    if missing_dem not in {"targeted", "full"}:
+        raise ValueError("missing_dem must be either 'targeted' or 'full'.")
+
+    def targeted_download_geometry():
+        if isinstance(data, shapely.Geometry):
+            return gpd.GeoSeries([data], crs="EPSG:4326")
+        if isinstance(data, gpd.GeoSeries) or isinstance(data, gpd.GeoDataFrame):
+            return data
+        if is_l1b_track:
+            lats = np.asarray(data.lat_20_ku).ravel()
+            lons = np.asarray(data.lon_20_ku).ravel()
+            valid = np.isfinite(lats) & np.isfinite(lons)
+            if not valid.any():
+                raise FileNotFoundError(
+                    "Targeted DEM provisioning needs valid coordinates."
+                )
+            ground_track = gpd.GeoSeries(
+                gpd.points_from_xy(lons[valid], lats[valid]), crs="EPSG:4326"
+            )
+            from cryoswath.gis import buffer_4326_shp
+
+            return gpd.GeoSeries(
+                [buffer_4326_shp(ground_track, 30_000, simplify=False)],
+                crs="EPSG:4326",
+            )
+        if isinstance(data, xr.DataArray) or isinstance(data, xr.Dataset):
+            return gpd.GeoSeries(
+                [shapely.box(*data.rio.transform_bounds("EPSG:4326"))],
+                crs="EPSG:4326",
+            )
+        raise FileNotFoundError(
+            "Targeted DEM provisioning requires a spatial input. "
+            "Pass a geometry "
+            "or georeferenced dataset, or select missing_dem='full'."
+        )
+
+    preferred_dem_path = dem_path / preferred_dem_filename
+    fallback_dem_path = dem_path / fallback_dem_filename
+    if preferred_dem_path.exists():
+        return reader_or_store(preferred_dem_path)
+    if fallback_dem_path.exists():
+        if missing_dem == "targeted":
+            return reader_or_store(download_dem(targeted_download_geometry()))
+        return reader_or_store(fallback_dem_path)
+
+    if not preferred_dem_path.exists():
+        if missing_dem == "targeted":
+            return reader_or_store(download_dem(targeted_download_geometry()))
         archive_url = default_dem_archive_url(preferred_dem_filename)
-        if archive_url is not None and not (dem_path / preferred_dem_filename).exists():
+        if archive_url is not None:
             warnings.warn(
-                f"DEM file {preferred_dem_filename} is missing. "
-                "Attempting automatic download now.",
+                f"Full DEM archive download requested for {preferred_dem_filename}. "
+                "This can be large; use missing_dem='targeted' with a spatial input "
+                "to provision only intersecting PGC tiles.",
                 category=UserWarning,
                 stacklevel=2,
             )
@@ -1909,10 +1979,10 @@ def get_dem_reader(data: any = None) -> rasterio.DatasetReader:
                     category=UserWarning,
                     stacklevel=2,
                 )
-        if (dem_path / preferred_dem_filename).exists():
-            return reader_or_store(dem_path / preferred_dem_filename)
-        if (dem_path / dem_filename).exists():
-            return reader_or_store(dem_path / dem_filename)
+        if preferred_dem_path.exists():
+            return reader_or_store(preferred_dem_path)
+        if fallback_dem_path.exists():
+            return reader_or_store(fallback_dem_path)
 
         raster_file_list = []
         for ext in raster_extensions:
@@ -2868,11 +2938,29 @@ def _combine_ground_track_caches(
 
 
 _TRACK_UPDATE_CHECKPOINT_NAME = ".CryoSat-2_SARIn_ground_tracks.resume.pkl"
+_TRACK_UPDATE_LOCK_NAME = ".CryoSat-2_SARIn_ground_tracks.update.lock"
 
 
 def _track_update_checkpoint_path() -> Path:
     """Return the private checkpoint path used by the update-tracks CLI."""
     return Path(aux_path) / _TRACK_UPDATE_CHECKPOINT_NAME
+
+
+@contextmanager
+def _track_database_update_lock():
+    """Acquire the cache-local lock shared by track database updates."""
+    path = Path(aux_path) / _TRACK_UPDATE_LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = fasteners.InterProcessLock(path)
+    if not lock.acquire(blocking=False):
+        raise RuntimeError(
+            "Another track database update is already running for "
+            f"{path.parent}. Wait for it to finish before retrying."
+        )
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _save_track_update_checkpoint(
@@ -2936,6 +3024,49 @@ def _clear_track_update_checkpoint() -> None:
         path.unlink()
 
 
+def _ftp_cs_ground_track_batch(
+    headers: list[tuple[str, str, pd.Timestamp]], cancel: threading.Event
+) -> tuple[list[dict[str, Any]], int]:
+    """Retrieve one FTP header batch through a private connection."""
+    rows = []
+    with ftp_cs2_server() as ftp:
+        current_directory = None
+        for directory, remote_file, track_time in headers:
+            if cancel.is_set():
+                break
+            if directory != current_directory:
+                ftp.cwd(directory)
+                current_directory = directory
+            for attempt in range(_ESA_FTP_TRANSFER_ATTEMPTS):
+                cache = binary_chache()
+                try:
+                    ftp.retrbinary("RETR " + remote_file, cache.add)
+                    break
+                except ftplib.error_temp as err:
+                    retryable = str(err).startswith("425 ")
+                    if not retryable or attempt == _ESA_FTP_TRANSFER_ATTEMPTS - 1:
+                        raise
+                    if cancel.wait(2**attempt):
+                        return rows, len(rows)
+            root = ET_from_str(cache.cache).find("Variable_Header/SPH/Product_Location")
+            coordinates = {
+                coord: int(root.find(coord).text) / 1e6
+                for coord in ["Start_Long", "Start_Lat", "Stop_Long", "Stop_Lat"]
+            }
+            rows.append(
+                {
+                    "index": track_time,
+                    "geometry": shapely.LineString(
+                        (
+                            [coordinates["Start_Long"], coordinates["Start_Lat"]],
+                            [coordinates["Stop_Long"], coordinates["Stop_Lat"]],
+                        )
+                    ),
+                }
+            )
+    return rows, len(rows)
+
+
 def _ftp_cs_ground_tracks(
     start_datetime: pd.Timestamp,
     end_datetime: pd.Timestamp,
@@ -2944,30 +3075,46 @@ def _ftp_cs_ground_tracks(
     checkpoint: (
         Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
     ) = None,
+    n_threads: int = _FTP_TRACK_WORKERS,
+    batch_size: int = 100,
 ) -> gpd.GeoDataFrame:
     """Read missing legacy track geometries from the preferred FTP roots."""
+    if not isinstance(n_threads, int) or isinstance(n_threads, bool) or n_threads < 1:
+        raise ValueError("n_threads must be a positive integer.")
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size < 1
+    ):
+        raise ValueError("batch_size must be a positive integer.")
     present_index = pd.DatetimeIndex(present_tracks.index)
     rows = []
     file_names = {}
     seen_file_times = set()
-    last_checkpointed = 0
-    last_checkpoint_time = time.monotonic() if checkpoint is not None else None
 
     def save_checkpoint() -> None:
-        if checkpoint is None or not rows:
+        if checkpoint is None:
             return
         checkpoint(
             start_datetime,
             end_datetime,
-            gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index"),
+            gpd.GeoDataFrame(
+                rows, columns=["index", "geometry"], geometry="geometry", crs=4326
+            ).set_index("index"),
         )
 
     first_month = pd.Timestamp(start_datetime).replace(day=1)
     last_month = pd.Timestamp(end_datetime).replace(day=1)
     try:
+        # A cancellation during listing must still be resumable.
+        save_checkpoint()
         for month in pd.date_range(first_month, last_month, freq="MS"):
             seen = set()
             pending_headers = []
+            print(
+                f"FTP ground-track fallback {month:%Y-%m}: connecting/listing",
+                flush=True,
+            )
             with ftp_cs2_server() as ftp:
                 for directory, remote_files in _ftp_l1b_month_listings(
                     ftp, month.strftime("%Y/%m")
@@ -3009,55 +3156,31 @@ def _ftp_cs_ground_tracks(
                     print(f"{progress_label}: 0/{total_headers} HDR files", flush=True)
                     last_reported = 0
                     last_report_time = time.monotonic()
-                current_directory = None
                 try:
-                    for completed, (directory, remote_file, track_time) in enumerate(
-                        pending_headers, start=1
-                    ):
-                        if directory != current_directory:
-                            ftp.cwd(directory)
-                            current_directory = directory
-                        cache = binary_chache()
-                        ftp.retrbinary("RETR " + remote_file, cache.add)
-                        root = ET_from_str(cache.cache).find(
-                            "Variable_Header/SPH/Product_Location"
-                        )
-                        coordinates = {
-                            coord: int(root.find(coord).text) / 1e6
-                            for coord in [
-                                "Start_Long",
-                                "Start_Lat",
-                                "Stop_Long",
-                                "Stop_Lat",
-                            ]
-                        }
-                        rows.append(
-                            {
-                                "index": track_time,
-                                "geometry": shapely.LineString(
-                                    (
-                                        [
-                                            coordinates["Start_Long"],
-                                            coordinates["Start_Lat"],
-                                        ],
-                                        [
-                                            coordinates["Stop_Long"],
-                                            coordinates["Stop_Lat"],
-                                        ],
-                                    )
-                                ),
-                            }
-                        )
+                    pending_headers.sort(
+                        key=lambda header: (header[2], header[0], header[1])
+                    )
+                    batches = [
+                        pending_headers[offset : offset + batch_size]
+                        for offset in range(0, total_headers, batch_size)
+                    ]
+                    cancel = threading.Event()
+                    executor = ThreadPoolExecutor(max_workers=n_threads)
+                    futures = [
+                        executor.submit(_ftp_cs_ground_track_batch, batch, cancel)
+                        for batch in batches
+                    ]
+                    unprocessed_futures = set(futures)
+                    completed = 0
+
+                    def record_batch(batch_rows, batch_completed) -> None:
+                        nonlocal completed, last_reported, last_report_time
+                        rows.extend(batch_rows)
+                        completed += batch_completed
+                        save_checkpoint()
                         now = time.monotonic()
-                        if checkpoint is not None and (
-                            len(rows) - last_checkpointed >= 100
-                            or now - last_checkpoint_time >= 30
-                        ):
-                            save_checkpoint()
-                            last_checkpointed = len(rows)
-                            last_checkpoint_time = now
                         if progress is not None:
-                            progress.update()
+                            progress.update(batch_completed)
                         elif (
                             completed == total_headers
                             or completed - last_reported >= 100
@@ -3070,6 +3193,27 @@ def _ftp_cs_ground_tracks(
                             )
                             last_reported = completed
                             last_report_time = now
+
+                    try:
+                        for future in as_completed(futures):
+                            unprocessed_futures.remove(future)
+                            record_batch(*future.result())
+                    except BaseException:
+                        # ``as_completed`` may yield a failed future before another
+                        # batch that has already finished successfully.
+                        for pending in tuple(unprocessed_futures):
+                            if pending.done() and not pending.cancelled():
+                                try:
+                                    record_batch(*pending.result())
+                                except BaseException:
+                                    pass
+                        cancel.set()
+                        for future in futures:
+                            future.cancel()
+                        executor.shutdown(wait=True, cancel_futures=True)
+                        raise
+                    else:
+                        executor.shutdown(wait=True)
                     if progress is None and total_headers == 0:
                         print(f"{progress_label}: 0/0 HDR files", flush=True)
                 finally:
@@ -3090,7 +3234,8 @@ def _ftp_cs_ground_tracks(
         cached.to_pickle(path)
     if not rows:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index")
+    tracks = gpd.GeoDataFrame(rows, geometry="geometry", crs=4326).set_index("index")
+    return tracks[~tracks.index.duplicated(keep="first")].sort_index()
 
 
 def _save_cs_ground_tracks(tracks: gpd.GeoDataFrame | gpd.GeoSeries) -> None:
@@ -3236,7 +3381,7 @@ def load_cs_ground_tracks(
     source: Literal["auto", "local", "stac"] = "auto",
     ftp_fallback: bool | None = None,
     cache_only: bool = False,
-    n_threads: int = 8,
+    n_threads: int = _FTP_TRACK_WORKERS,
     _ftp_checkpoint: (
         Callable[[pd.Timestamp, pd.Timestamp, gpd.GeoDataFrame], None] | None
     ) = None,
@@ -3279,7 +3424,7 @@ def load_cs_ground_tracks(
         cache_only (bool, optional): Read existing track caches without STAC
             or FTP discovery and without writing track caches. Defaults to False.
         n_threads (int, optional): Number of parallel ftp connections. If you
-            choose too many, ESA will refuse the connection. Defaults to 8.
+            choose too many, ESA will refuse the connection. Defaults to 4.
 
     Raises:
         RuntimeError: If automatic MAAP discovery needs an FTP decision.
@@ -3292,6 +3437,8 @@ def load_cs_ground_tracks(
         r"^20[0-9]{2}.?[01][0-9]$", end_datetime
     )
     start_datetime, end_datetime = pd.to_datetime([start_datetime, end_datetime])
+    if not isinstance(n_threads, int) or isinstance(n_threads, bool) or n_threads < 1:
+        raise ValueError("n_threads must be a positive integer.")
     if advance_end:
         end_datetime = end_datetime + pd.DateOffset(months=1)
     if source not in {"auto", "local", "stac"}:
@@ -3395,7 +3542,7 @@ def load_cs_ground_tracks(
         try:
             if _ftp_checkpoint is None:
                 ftp_tracks = _ftp_cs_ground_tracks(
-                    fallback_start, fallback_end, cs_tracks
+                    fallback_start, fallback_end, cs_tracks, n_threads=n_threads
                 )
             else:
                 ftp_tracks = _ftp_cs_ground_tracks(
@@ -3403,6 +3550,7 @@ def load_cs_ground_tracks(
                     fallback_end,
                     cs_tracks,
                     checkpoint=_ftp_checkpoint,
+                    n_threads=n_threads,
                 )
         except Exception as ftp_error:
             if _ftp_checkpoint is not None:
@@ -4427,7 +4575,7 @@ def sel_chunk_idx_range(ds, dim, start, stop):
 def sel_chunk_range(ds, **dim_intervals):
     """Select chunk range by coordinate intervals per dimension."""
     for dim, interval in dim_intervals.items():
-        ds = sel_chunk_idx_range(ds, dim, *chunk_idx(ds, dim, interval))
+        ds = sel_chunk_idx_range(ds, dim, *sorted(chunk_idx(ds, dim, interval)))
     return ds
 
 
@@ -4890,9 +5038,10 @@ def update_email(email: str = None):
 
 def update_track_database() -> None:
     """Refresh cached ground-track and filename lookup tables."""
-    load_cs_ground_tracks(update="regular", source="auto", ftp_fallback=True)
-    file_names = load_cs_full_file_names(update="no")
-    file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+    with _track_database_update_lock():
+        load_cs_ground_tracks(update="regular", source="auto", ftp_fallback=True)
+        file_names = load_cs_full_file_names(update="no")
+        file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
 
 
 def _merge_legacy_ground_tracks(*tracks: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -4947,9 +5096,9 @@ def _resume_track_database() -> None:
     _save_cs_ground_tracks(
         _merge_legacy_ground_tracks(cached_tracks, recovered_tracks, new_tracks)
     )
-    _clear_track_update_checkpoint()
     file_names = load_cs_full_file_names(update="no")
     file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+    _clear_track_update_checkpoint()
 
 
 def _update_track_database_with_checkpoint() -> None:
@@ -4975,32 +5124,33 @@ def _update_track_database_with_checkpoint() -> None:
         ftp_fallback=True,
         _ftp_checkpoint=save_progress,
     )
-    _clear_track_update_checkpoint()
     file_names = load_cs_full_file_names(update="no")
     file_names.to_pickle(aux_path / "CryoSat-2_SARIn_file_names.pkl")
+    _clear_track_update_checkpoint()
 
 
 def _update_track_database_from_args(args) -> None:
     """Run the resumable CLI-only update path from parsed arguments."""
-    checkpoint_path = _track_update_checkpoint_path()
-    if checkpoint_path.is_file() and not args.resume:
-        raise RuntimeError(
-            "An interrupted update exists; run cryoswath-update-tracks --resume."
-        )
-    if args.resume and not checkpoint_path.is_file():
-        raise RuntimeError("No interrupted update-tracks checkpoint is available.")
-    try:
-        if args.resume:
-            _resume_track_database()
-        else:
-            _update_track_database_with_checkpoint()
-    except KeyboardInterrupt:
-        if checkpoint_path.is_file():
-            print(
-                "Update interrupted. Resume with: cryoswath-update-tracks --resume",
-                file=sys.stderr,
+    with _track_database_update_lock():
+        checkpoint_path = _track_update_checkpoint_path()
+        if checkpoint_path.is_file() and not args.resume:
+            raise RuntimeError(
+                "An interrupted update exists; run cryoswath-update-tracks --resume."
             )
-        raise SystemExit(130) from None
+        if args.resume and not checkpoint_path.is_file():
+            raise RuntimeError("No interrupted update-tracks checkpoint is available.")
+        try:
+            if args.resume:
+                _resume_track_database()
+            else:
+                _update_track_database_with_checkpoint()
+        except KeyboardInterrupt:
+            if checkpoint_path.is_file():
+                print(
+                    "Update interrupted. Resume with: cryoswath-update-tracks --resume",
+                    file=sys.stderr,
+                )
+            raise SystemExit(130) from None
 
 
 def update_track_database_cli() -> None:

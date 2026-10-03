@@ -6,15 +6,6 @@ import pytest
 notebook_setup = pytest.importorskip("tools.prepare_notebook_tests")
 
 
-@pytest.fixture(autouse=True)
-def _mock_report_dem_download(monkeypatch):
-    class Reader:
-        def close(self):
-            pass
-
-    monkeypatch.setattr(notebook_setup.misc, "get_dem_reader", lambda region: Reader())
-
-
 def _write_auxiliary_sentinels(project_dir: Path) -> None:
     for relative_path in notebook_setup.AUXILIARY_SENTINELS:
         target = project_dir / relative_path
@@ -26,7 +17,6 @@ def test_prepare_report_project_creates_config_and_downloads_auxiliary(
     monkeypatch, tmp_path
 ):
     calls = []
-    dem_paths = []
 
     def fake_download_auxiliary_data(base_dir=".", *, force=False, timeout=120):
         calls.append((Path(base_dir), force, timeout))
@@ -39,23 +29,12 @@ def test_prepare_report_project_creates_config_and_downloads_auxiliary(
         fake_download_auxiliary_data,
     )
 
-    class Reader:
-        def close(self):
-            pass
-
-    def fake_get_dem_reader(region):
-        dem_paths.append(notebook_setup.misc.dem_path)
-        return Reader()
-
-    monkeypatch.setattr(notebook_setup.misc, "get_dem_reader", fake_get_dem_reader)
-
     project = notebook_setup.prepare_report_project(tmp_path / "reports", timeout=7)
 
     config = ConfigParser()
     config.read(project.config_path)
     assert config["path"]["data"] == "data"
     assert calls == [(tmp_path / "reports", False, 7)]
-    assert dem_paths == [tmp_path / "reports" / "data" / "auxiliary" / "DEM"]
 
 
 def test_prepare_report_project_writes_external_dem_path(monkeypatch, tmp_path):

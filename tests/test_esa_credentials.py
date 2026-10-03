@@ -3,6 +3,110 @@ import pytest
 import cryoswath.misc as misc
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "expected_timeout"),
+    [({}, misc._ESA_FTP_TIMEOUT), ({"timeout": 30}, 30)],
+)
+def test_ftp_cs2_server_uses_timeout(monkeypatch, kwargs, expected_timeout):
+    observed = {}
+
+    class FakeFtp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def login(self, **kwargs):
+            observed["login"] = kwargs
+
+        def prot_p(self):
+            observed["protected"] = True
+
+    def ftp_tls(host, **kwargs):
+        observed["host"] = host
+        observed["kwargs"] = kwargs
+        return FakeFtp()
+
+    monkeypatch.setattr(
+        misc, "_resolve_esa_ftp_credentials", lambda: ("u", "p", "test")
+    )
+    monkeypatch.setattr(misc.ftplib, "FTP_TLS", ftp_tls)
+
+    with misc.ftp_cs2_server(**kwargs) as ftp:
+        assert isinstance(ftp, FakeFtp)
+
+    assert observed == {
+        "host": misc._ESA_CS2_HOST,
+        "kwargs": {"timeout": expected_timeout},
+        "login": {"user": "u", "passwd": "p"},
+        "protected": True,
+    }
+
+
+def test_ftp_cs2_server_reports_setup_timeout(monkeypatch):
+    monkeypatch.setattr(
+        misc, "_resolve_esa_ftp_credentials", lambda: ("u", "p", "test")
+    )
+    monkeypatch.setattr(
+        misc.ftplib,
+        "FTP_TLS",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()),
+    )
+
+    with pytest.raises(RuntimeError, match="timed out after 60 seconds"):
+        with misc.ftp_cs2_server():
+            pass
+
+
+def test_ftp_cs2_server_reports_operation_timeout(monkeypatch):
+    class FakeFtp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def login(self, **kwargs):
+            pass
+
+        def prot_p(self):
+            pass
+
+        def nlst(self):
+            raise TimeoutError()
+
+    monkeypatch.setattr(
+        misc, "_resolve_esa_ftp_credentials", lambda: ("u", "p", "test")
+    )
+    monkeypatch.setattr(misc.ftplib, "FTP_TLS", lambda *args, **kwargs: FakeFtp())
+
+    with pytest.raises(RuntimeError, match="timed out after 60 seconds"):
+        with misc.ftp_cs2_server() as ftp:
+            ftp.nlst()
+
+
+def test_ftp_cs2_server_preserves_authentication_error(monkeypatch):
+    class FakeFtp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def login(self, **kwargs):
+            raise misc.ftplib.error_perm("denied")
+
+    monkeypatch.setattr(
+        misc, "_resolve_esa_ftp_credentials", lambda: ("u", "p", "test source")
+    )
+    monkeypatch.setattr(misc.ftplib, "FTP_TLS", lambda *args, **kwargs: FakeFtp())
+
+    with pytest.raises(RuntimeError, match="authentication failed.*test source"):
+        with misc.ftp_cs2_server():
+            pass
+
+
 def test_resolve_esa_credentials_prefers_environment_variables(monkeypatch):
     monkeypatch.setenv("EOIAM_USER", "env-user")
     monkeypatch.setenv("EOIAM_PASSWORD", "env-password")

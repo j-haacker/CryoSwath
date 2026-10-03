@@ -471,6 +471,7 @@ def from_processed_l1b(
         if tmp.empty:
             return empty_GeoDataFrame
     if isinstance(tmp.index, pd.MultiIndex):  #
+        tmp.index = tmp.index.remove_unused_levels()
         tmp.rename_axis(("time", "sample"), inplace=True)
         tmp.index = tmp.index.set_levels(
             pd.DatetimeIndex(tmp["time"].groupby(level=0).first(), tz="UTC"), level=0
