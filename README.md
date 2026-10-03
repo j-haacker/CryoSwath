@@ -184,11 +184,11 @@ If you use CryoSwath, please cite:
 ```bibtex
 @software{cryoswath,
   author       = {Haacker, Jan},
-  title        = {CryoSwath 0.2.7},
-  month        = jul,
+  title        = {CryoSwath 0.2.8},
+  month        = oct,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.2.7},
+  version      = {0.2.8},
   doi          = {10.5281/zenodo.14825358} % replace concept DOI on release
 }
 ```
