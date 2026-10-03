@@ -44,7 +44,7 @@ dependencies = [
     "scikit-learn",
     "scipy",
     "shapely",
-    "stackstac",
+    "stackstac>=0.5.1",
     "statsmodels",
     "tables",
     "tqdm",
