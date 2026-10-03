@@ -2,6 +2,19 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
+## 0.2.8 - 2026-10-03
+
+- Prefer ESA MAAP for CryoSat L1b delivery and track discovery, with bounded
+  authenticated Science Server FTP fallback when required.
+- Make track database updates locked, parallel, checkpointed, and resumable with
+  `cryoswath update-tracks --resume`.
+- Provision only intersecting ArcticDEM or REMA tiles by default, maintain
+  incremental regional caches, and retain full archive downloads as an explicit option.
+- Add track database validation and auxiliary-data archive tooling for safer releases.
+- Improve handling of sparse L2 results, missing phase solutions, partial DEM coverage,
+  credentials, and temporary network failures.
+- Require `stackstac>=0.5.1` for compatibility with NumPy 2.
+
 ## 0.2.7 - 2026-07-11
 
 - Use MAAP CryoSat STAC metadata with authenticated PDS HTTPS delivery for L1b
