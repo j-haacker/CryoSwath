@@ -56,7 +56,7 @@ dependencies = [
 dev = ["flit", "pip-tools", "pre-commit", "ruff"]
 docs = ["sphinx", "pydata-sphinx-theme"]
 notebooks = ["ipykernel"]
-production = ["xarray[accel]>=2025.3,<2025.12", "dask[distributed]"]
+production = ["xarray[accel]>=2026.4", "dask[distributed]"]
 zarrguard = ["xzarrguard>=0.1.2; python_version >= '3.12'"]
 all = ["cryoswath[dev,docs,notebooks,production,zarrguard]"]
 

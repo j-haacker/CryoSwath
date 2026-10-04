@@ -189,7 +189,7 @@ If you use CryoSwath, please cite:
   year         = 2026,
   publisher    = {Zenodo},
   version      = {0.2.8},
-  doi          = {10.5281/zenodo.14825358} % replace concept DOI on release
+  doi          = {10.5281/zenodo.23124855} % concept DOI on release; update to specific afterward
 }
 ```
 
