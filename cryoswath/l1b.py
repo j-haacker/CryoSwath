@@ -465,10 +465,12 @@ def append_ambiguous_reference_elevation(
     if "xph_lats" not in ds.data_vars:
         ds = locate_ambiguous_origin(ds)
     # ! tbi: auto download ref dem if not present
-    with closing(get_dem_reader(
-        (ds if dem_file_name_or_path is None else dem_file_name_or_path),
-        missing_dem=missing_dem,
-    )) as dem_reader:
+    with closing(
+        get_dem_reader(
+            (ds if dem_file_name_or_path is None else dem_file_name_or_path),
+            missing_dem=missing_dem,
+        )
+    ) as dem_reader:
         if isinstance(dem_reader, xr.DataArray):
             crs = dem_reader.rio.crs
         else:
@@ -571,9 +573,7 @@ def append_best_fit_phase_index(ds, best_column: callable = None) -> xr.Dataset:
         np.abs(ds.xph_elev_diffs).idxmin("phase_wrap_factor"),
         ds.ph_idx,
     )
-    ds["ph_idx"] = ds.ph_idx.where(
-        ds.xph_elev_diffs.notnull().any("phase_wrap_factor")
-    )
+    ds["ph_idx"] = ds.ph_idx.where(ds.xph_elev_diffs.notnull().any("phase_wrap_factor"))
     return ds
 
 
@@ -1151,9 +1151,13 @@ def _existing_local_l1b_track_ids(year_month_str: str) -> set[str]:
 
 
 def _catalog_row_for_track_id(track_catalog, track_id: str):
-    """Return the MAAP catalog row whose filename encodes ``track_id``."""
+    """Match the catalog sensing time first, then the product filename time."""
     if track_catalog is None or track_catalog.empty or "filename" not in track_catalog:
         return None
+    # STAC start_datetime can differ from the timestamp in the product name.
+    track_time = pd.Timestamp(track_id)
+    if track_time in track_catalog.index:
+        return track_catalog.loc[[track_time]].iloc[-1]
     matching_rows = track_catalog[
         track_catalog["filename"].map(
             lambda filename: Path(str(filename)).name[19:34] == track_id
@@ -1627,9 +1631,7 @@ def _download_files_via_ftp(
                     return
                 if track_id in existing_track_ids:
                     continue
-                for _, remote_listing in _ftp_l1b_month_listings(
-                    ftp, year_month_str
-                ):
+                for _, remote_listing in _ftp_l1b_month_listings(ftp, year_month_str):
                     try:
                         remote_file = _select_lta_then_offl_for_track(
                             track_id, remote_listing
