@@ -2,6 +2,12 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
+## 0.2.9 - 2026-10-13
+
+- Fix MAAP track catalogue lookup when the STAC sensing time differs from the
+  timestamp in the product filename.
+- Update the production extra to require `xarray[accel]>=2026.4`.
+
 ## 0.2.8 - 2026-10-03
 
 - Prefer ESA MAAP for CryoSat L1b delivery and track discovery, with bounded
