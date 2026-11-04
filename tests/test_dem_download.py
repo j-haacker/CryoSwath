@@ -297,6 +297,65 @@ def test_l4_uses_encoded_fill_value_from_xarray_dem(monkeypatch):
     assert np.isnan(result.ref_elev.sel(x=1.0, y=1.0))
 
 
+@pytest.mark.parametrize("target_crs", [4326, 3857])
+@pytest.mark.parametrize("nodata", [-9999.0, np.nan])
+def test_l4_reprojects_reference_elevations_with_average(
+    monkeypatch, target_crs, nodata
+):
+    # Three-by-three footprints: a partial void, a full void, and an outlier.
+    values = np.array(
+        [
+            [1, 2, 3, nodata, nodata, nodata],
+            [4, nodata, 6, nodata, nodata, nodata],
+            [7, 8, 18, nodata, nodata, nodata],
+            [10, 10, 10, 20, 20, 20],
+            [10, 100, 10, 20, 20, 20],
+            [10, 10, 10, 20, 20, 20],
+        ],
+        dtype=float,
+    )
+    dem = (
+        xr.DataArray(
+            values,
+            dims=("y", "x"),
+            coords={"x": np.arange(6), "y": np.arange(5, -1, -1)},
+        )
+        .rio.write_crs(4326)
+        .rio.write_nodata(nodata)
+    )
+    bounds = rasterio.warp.transform_bounds(4326, target_crs, *dem.rio.bounds())
+    transform = rasterio.transform.from_bounds(*bounds, width=2, height=2)
+    target = xr.Dataset(
+        coords={
+            "x": transform.c + (np.arange(2) + 0.5) * transform.a,
+            "y": transform.f + (np.arange(2) + 0.5) * transform.e,
+        }
+    ).rio.write_crs(target_crs)
+    expected = np.full((2, 2), np.nan)
+    rasterio.warp.reproject(
+        source=values,
+        destination=expected,
+        src_transform=dem.rio.transform(),
+        src_crs=dem.rio.crs,
+        src_nodata=nodata,
+        dst_transform=transform,
+        dst_crs=target_crs,
+        dst_nodata=np.nan,
+        resampling=rasterio.warp.Resampling.average,
+    )
+    if target_crs == 4326:
+        # Target centers coincide with source centers, whose values are wrong
+        # without resampling (the lower-left center is 100 rather than 20).
+        np.testing.assert_allclose(expected, [[49 / 8, np.nan], [20, 20]])
+    assert np.isnan(expected[0, 1])
+    monkeypatch.setattr(l4, "get_dem_reader", lambda *args, **kwargs: dem)
+
+    result = l4.append_elevation_reference(target)
+
+    np.testing.assert_allclose(result.ref_elev.values, expected, equal_nan=True)
+    assert np.isnan(result.ref_elev.rio.nodata)
+
+
 def test_read_stac_accepts_static_item_with_numpy_python_scalars(tmp_path):
     """Exercise stackstac item construction with NumPy Python scalars locally."""
     raster_path = tmp_path / "tile.tif"
