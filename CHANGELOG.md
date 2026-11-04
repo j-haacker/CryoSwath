@@ -2,6 +2,12 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
+## 0.2.10 - 2026-11-04
+
+- Fix `l4.append_elevation_reference()` to retain the averaged DEM reprojection
+  before alignment, restoring reference elevations across different coordinate
+  systems and resolutions. Restore NaN nodata for missing reference elevations.
+
 ## 0.2.9 - 2026-10-13
 
 - Fix MAAP track catalogue lookup when the STAC sensing time differs from the
