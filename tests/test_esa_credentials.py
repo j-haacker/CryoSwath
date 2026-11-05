@@ -1,6 +1,45 @@
+import threading
+
 import pytest
 
 import cryoswath.misc as misc
+
+
+@pytest.mark.parametrize("resolver", ["maap", "ftp"])
+def test_keyring_timeout_does_not_block_credential_resolution(monkeypatch, resolver):
+    release = threading.Event()
+    finished = threading.Event()
+
+    class LockedKeyring:
+        def get_password(self, service, user):
+            try:
+                release.wait()
+            finally:
+                finished.set()
+
+    monkeypatch.delenv("ESA_MAAP_OFFLINE_TOKEN", raising=False)
+    monkeypatch.setattr(misc, "keyring", LockedKeyring())
+    monkeypatch.setattr(misc, "_ESA_KEYRING_TIMEOUT", 0.01)
+    try:
+        with pytest.warns(UserWarning, match="keyring.*timed out"):
+            if resolver == "maap":
+                with pytest.raises(RuntimeError, match="ESA_MAAP_OFFLINE_TOKEN"):
+                    misc._resolve_esa_maap_offline_token()
+            else:
+                assert misc._resolve_esa_keyring_credentials() is None
+    finally:
+        release.set()
+        assert finished.wait(timeout=2)
+
+
+def test_keyring_backend_error_is_preserved(monkeypatch):
+    class FailingKeyring:
+        def get_password(self, service, user):
+            raise misc.KeyringError("backend unavailable")
+
+    monkeypatch.setattr(misc, "keyring", FailingKeyring())
+    with pytest.raises(misc.KeyringError, match="backend unavailable"):
+        misc._get_keyring_password("service", "user")
 
 
 @pytest.mark.parametrize(

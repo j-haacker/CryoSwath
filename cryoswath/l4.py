@@ -429,10 +429,10 @@ def append_elevation_reference(
             ref_dem = xr.where(ref_dem == fill_value, np.nan, ref_dem)
         ref_dem = ref_dem.rio.write_crs(ref_dem_crs)
         ref_dem.attrs.update({"_FillValue": np.nan})
-        ref_dem.rio.reproject_match(
+        ref_dem = ref_dem.rio.reproject_match(
             geospatial_ds,
             resampling=rasterio.warp.Resampling.average,
-            nodata=fill_value,
+            nodata=np.nan,
         )
     geospatial_ds[ref_elev_name] = xr.align(
         ref_dem,

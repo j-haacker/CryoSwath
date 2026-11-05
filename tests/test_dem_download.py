@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import dask.array as da
 import numpy as np
 import pystac
 import pytest
@@ -297,7 +298,68 @@ def test_l4_uses_encoded_fill_value_from_xarray_dem(monkeypatch):
     assert np.isnan(result.ref_elev.sel(x=1.0, y=1.0))
 
 
-def test_read_stac_accepts_static_item_with_numpy_python_scalars(tmp_path):
+@pytest.mark.parametrize("target_crs", [4326, 3857])
+@pytest.mark.parametrize("nodata", [-9999.0, np.nan])
+def test_l4_reprojects_reference_elevations_with_average(
+    monkeypatch, target_crs, nodata
+):
+    # Three-by-three footprints: a partial void, a full void, and an outlier.
+    values = np.array(
+        [
+            [1, 2, 3, nodata, nodata, nodata],
+            [4, nodata, 6, nodata, nodata, nodata],
+            [7, 8, 18, nodata, nodata, nodata],
+            [10, 10, 10, 20, 20, 20],
+            [10, 100, 10, 20, 20, 20],
+            [10, 10, 10, 20, 20, 20],
+        ],
+        dtype=float,
+    )
+    dem = (
+        xr.DataArray(
+            values,
+            dims=("y", "x"),
+            coords={"x": np.arange(6), "y": np.arange(5, -1, -1)},
+        )
+        .rio.write_crs(4326)
+        .rio.write_nodata(nodata)
+    )
+    bounds = rasterio.warp.transform_bounds(4326, target_crs, *dem.rio.bounds())
+    transform = rasterio.transform.from_bounds(*bounds, width=2, height=2)
+    target = xr.Dataset(
+        coords={
+            "x": transform.c + (np.arange(2) + 0.5) * transform.a,
+            "y": transform.f + (np.arange(2) + 0.5) * transform.e,
+        }
+    ).rio.write_crs(target_crs)
+    expected = np.full((2, 2), np.nan)
+    rasterio.warp.reproject(
+        source=values,
+        destination=expected,
+        src_transform=dem.rio.transform(),
+        src_crs=dem.rio.crs,
+        src_nodata=nodata,
+        dst_transform=transform,
+        dst_crs=target_crs,
+        dst_nodata=np.nan,
+        resampling=rasterio.warp.Resampling.average,
+    )
+    if target_crs == 4326:
+        # Target centers coincide with source centers, whose values are wrong
+        # without resampling (the lower-left center is 100 rather than 20).
+        np.testing.assert_allclose(expected, [[49 / 8, np.nan], [20, 20]])
+    assert np.isnan(expected[0, 1])
+    monkeypatch.setattr(l4, "get_dem_reader", lambda *args, **kwargs: dem)
+
+    result = l4.append_elevation_reference(target)
+
+    np.testing.assert_allclose(result.ref_elev.values, expected, equal_nan=True)
+    assert np.isnan(result.ref_elev.rio.nodata)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "int16"])
+@pytest.mark.filterwarnings("error:invalid value encountered in cast:RuntimeWarning")
+def test_read_stac_accepts_static_item_with_numpy_python_scalars(tmp_path, dtype):
     """Exercise stackstac item construction with NumPy Python scalars locally."""
     raster_path = tmp_path / "tile.tif"
     transform = from_origin(10, 80, 0.1, 0.1)
@@ -308,12 +370,12 @@ def test_read_stac_accepts_static_item_with_numpy_python_scalars(tmp_path):
         height=2,
         width=2,
         count=1,
-        dtype="float32",
+        dtype=dtype,
         crs="EPSG:4326",
         transform=transform,
         nodata=-9999,
     ) as raster:
-        raster.write(np.array([[1, 2], [3, 4]], dtype="float32"), 1)
+        raster.write(np.array([[1, -9999], [3, 4]], dtype=dtype), 1)
 
     item = pystac.Item(
         id="static-tile",
@@ -334,16 +396,51 @@ def test_read_stac_accepts_static_item_with_numpy_python_scalars(tmp_path):
             media_type=pystac.MediaType.COG,
             roles=["data"],
             extra_fields={
+                "data_type": dtype,
+                "nodata": -9999,
                 "proj:shape": [2, 2],
                 "proj:transform": list(transform)[:6],
-                "raster:bands": [{"data_type": "float32", "nodata": -9999}],
+                "raster:bands": [{"data_type": dtype, "nodata": -9999}],
             },
         ),
     )
 
     result = misc._read_stac(item).compute()
 
-    np.testing.assert_array_equal(result["dem"].values[:2, :2], [[1, 2], [3, 4]])
+    np.testing.assert_allclose(result["dem"].values[:2, :2], [[1, np.nan], [3, 4]])
+
+
+@pytest.mark.filterwarnings("error:Behaviour of argmin/argmax:FutureWarning")
+def test_chunk_idx_uses_explicit_coordinate_dimension():
+    ds = xr.Dataset({"data": ("x", np.zeros(6))}, coords={"x": np.arange(6)}).chunk(x=2)
+    assert misc.chunk_idx(ds, "x", [0, 2, 4]) == [0, 1, 2]
+
+
+@pytest.mark.filterwarnings("error:invalid value encountered in cast:RuntimeWarning")
+def test_read_stac_preserves_missing_integer_band_values(monkeypatch):
+    stacked = xr.DataArray(
+        da.from_array(np.array([[[[1, np.nan], [3, 4]]]]), chunks=(1, 1, 2, 2)),
+        dims=("time", "band", "y", "x"),
+        coords={
+            "time": [0],
+            "id": ("time", ["tile"]),
+            "band": ["count"],
+            "y": [1, 0],
+            "x": [0, 1],
+            "data_type": ("band", ["int16"]),
+            "nodata": ("band", [-9999]),
+        },
+    )
+    monkeypatch.setattr(misc.stackstac, "stack", lambda *args, **kwargs: stacked)
+    item = SimpleNamespace(properties={"proj:code": "EPSG:3413"})
+    result = misc._read_stac(item).compute()
+    np.testing.assert_allclose(result["count"], [[1, np.nan], [3, 4]])
+    assert np.isnan(xr.full_like(result, np.nan)["count"]).all()
+    target = xr.Dataset(coords={"x": [0.5, 2.5], "y": [0.5, -1.5]}).rio.write_crs(3413)
+    averaged = result["count"].rio.reproject_match(
+        target, resampling=rasterio.warp.Resampling.average, nodata=np.nan
+    )
+    np.testing.assert_allclose(averaged, [[8 / 3, np.nan], [np.nan, np.nan]])
 
 
 def test_download_dem_wraps_pgc_stac_timeout(monkeypatch):
