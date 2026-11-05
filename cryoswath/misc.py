@@ -526,6 +526,7 @@ _ESA_KEYRING_DEFAULT_USER_KEYS = (
 )
 _ESA_ENV_USER = "EOIAM_USER"
 _ESA_ENV_PASSWORD = "EOIAM_PASSWORD"
+_ESA_KEYRING_TIMEOUT = 10
 _ESA_MAAP_IAM_HOST = "iam.maap.eo.esa.int"
 _ESA_MAAP_OFFLINE_TOKEN_ENV = "ESA_MAAP_OFFLINE_TOKEN"
 _ESA_MAAP_KEYRING_SERVICE = _ESA_MAAP_IAM_HOST
@@ -1628,6 +1629,30 @@ def _resolve_esa_env_credentials() -> tuple[str, str, str] | None:
     return None
 
 
+def _get_keyring_password(service: str, user: str) -> str | None:
+    """Bound automatic keyring reads, including interactive unlock prompts."""
+    result = queue.Queue(maxsize=1)
+
+    def lookup():
+        try:
+            result.put((keyring.get_password(service, user), None))
+        except Exception as err:
+            result.put((None, err))
+
+    # A locked backend cannot be cancelled; it must not delay Python shutdown.
+    threading.Thread(target=lookup, daemon=True).start()
+    try:
+        password, error = result.get(timeout=_ESA_KEYRING_TIMEOUT)
+    except queue.Empty:
+        raise KeyringError(
+            f"keyring lookup timed out after {_ESA_KEYRING_TIMEOUT:g} seconds. "
+            "Unlock the keyring or configure ESA credentials through the environment."
+        ) from None
+    if error is not None:
+        raise error
+    return password
+
+
 def _resolve_esa_keyring_credentials() -> tuple[str, str, str] | None:
     """Resolve ESA credentials from keyring if available."""
     if keyring is None:
@@ -1639,13 +1664,13 @@ def _resolve_esa_keyring_credentials() -> tuple[str, str, str] | None:
             env_users.append(user)
         for service in _ESA_KEYRING_SERVICE_CANDIDATES:
             for user in env_users:
-                password = keyring.get_password(service, user)
+                password = _get_keyring_password(service, user)
                 if password:
                     return user, password, f"keyring service {service}"
             for username_key in _ESA_KEYRING_DEFAULT_USER_KEYS:
-                keyring_user = keyring.get_password(service, username_key)
+                keyring_user = _get_keyring_password(service, username_key)
                 if keyring_user:
-                    keyring_password = keyring.get_password(service, keyring_user)
+                    keyring_password = _get_keyring_password(service, keyring_user)
                     if keyring_password:
                         return (
                             keyring_user,
@@ -1720,7 +1745,7 @@ def _resolve_esa_maap_offline_token() -> tuple[str, str]:
         return token, f"environment variable {_ESA_MAAP_OFFLINE_TOKEN_ENV}"
     if keyring is not None:
         try:
-            token = keyring.get_password(
+            token = _get_keyring_password(
                 _ESA_MAAP_KEYRING_SERVICE, _ESA_MAAP_KEYRING_USER
             )
         except KeyringError as err:
