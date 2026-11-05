@@ -2,11 +2,17 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
-## 0.2.10 - 2026-11-04
+## 0.2.10 - 2026-11-05
 
 - Fix `l4.append_elevation_reference()` to retain the averaged DEM reprojection
   before alignment, restoring reference elevations across different coordinate
   systems and resolutions. Restore NaN nodata for missing reference elevations.
+- Limit automatic ESA keyring lookups to 10 seconds so locked keyrings cannot
+  indefinitely block unattended processing.
+- Preserve missing values and fractional averaged values in DEM cache bands
+  sourced from integer rasters, and specify the dimension for chunk-index reductions.
+- Stabilize waveform noise estimation for constant and nearly constant samples
+  while retaining the Welch-test threshold.
 
 ## 0.2.9 - 2026-10-13
 

@@ -1,9 +1,25 @@
 import numpy as np
+import pytest
 import xarray as xr
 
 import cryoswath.l1b as l1b
 from cryoswath.l1b import noise_val
 from cryoswath.test_plots import waveform as waveform_plot
+
+
+@pytest.mark.filterwarnings("error:Precision loss occurred:RuntimeWarning")
+@pytest.mark.parametrize("baseline", [0.0, 100.0, 1e12])
+def test_noise_val_constant_segments(baseline):
+    assert noise_val(np.full(90, baseline)) == baseline
+    assert (
+        noise_val(np.r_[np.full(30, baseline), np.full(60, baseline + 1)]) == baseline
+    )
+
+
+@pytest.mark.filterwarnings("error:Precision loss occurred:RuntimeWarning")
+def test_noise_val_nearly_constant_segments():
+    noise = 1e12 + np.tile([-0.001, 0.0, 0.001], 10)
+    assert noise_val(np.r_[noise, noise + 1, noise + 1]) == np.mean(noise)
 
 
 def test_noise_val():

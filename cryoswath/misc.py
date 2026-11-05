@@ -577,7 +577,9 @@ def chunk_idx(ds, dim, values):
         if val < ds[dim][0] or val > ds[dim][-1]:
             return None
         return (
-            (ds[dim].isel({dim: np.cumsum(ds.chunks[dim]) - 1}) <= val).argmin().item(0)
+            (ds[dim].isel({dim: np.cumsum(ds.chunks[dim]) - 1}) <= val)
+            .argmin(dim=dim)
+            .item(0)
         )
 
     if isinstance(values, Iterable):
@@ -820,7 +822,9 @@ def _read_stac(item):
         xr.Dataset(
             {
                 da.name: da.drop_attrs()
-                .astype(da.attrs.get("data_type", da.dtype))
+                # Masked integer bands need floats for NaN and averaged reprojection.
+                .astype(np.result_type(da.attrs.get("data_type", da.dtype), np.float32))
+                .rio.write_nodata(np.nan)
                 .assign_attrs(
                     encoding={"_FillValue": da.attrs.get("nodata", np.nan)}
                 )

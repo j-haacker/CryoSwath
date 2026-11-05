@@ -54,7 +54,7 @@ import shapely
 import xarray as xr
 from numpy.typing import ArrayLike
 from pyproj import Transformer
-from scipy.stats import median_abs_deviation, ttest_ind
+from scipy.stats import median_abs_deviation, ttest_ind_from_stats
 
 from cryoswath.gis import (
     buffer_4326_shp,
@@ -129,13 +129,30 @@ def noise_val(vec: ArrayLike) -> float:
     """
     # use sufficiently large slices (well more than 6 members)
     n = 30  # slice_thickness
+    # Welch's test is invariant to a common offset. Center before calculating
+    # moments to retain small variations on a large power baseline.
+    centered = np.asarray(vec, dtype=float) - vec[0]
     # iterate over slices: use those of which the average
     # does not significantly differ from previous slices
     # collectively
     for i in range(round(len(vec) / n) - 1):  # look at first quarter samples
+        left = centered[: (i + 1) * n]
+        right = centered[(i + 1) * n : (i + 2) * n]
+        left_std, right_std = np.std(left, ddof=1), np.std(right, ddof=1)
+        if left_std == 0 and right_std == 0:
+            # Equal constants contain no transition; unequal constants do.
+            if left[0] != right[0]:
+                return np.mean(vec[: (i + 1) * n])
+            continue
         if (
-            ttest_ind(
-                vec[: (i + 1) * n], vec[(i + 1) * n : (i + 2) * n], equal_var=False
+            ttest_ind_from_stats(
+                np.mean(left),
+                left_std,
+                len(left),
+                np.mean(right),
+                right_std,
+                len(right),
+                equal_var=False,
             ).pvalue
             < 0.001
         ):
