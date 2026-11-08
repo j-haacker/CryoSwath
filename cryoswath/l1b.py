@@ -319,13 +319,15 @@ def read_esa_l1b(
             def noise_floor(noise):
                 # construct a lower envelope of the noise values
                 window_size = 5 * 20  # on the scale of the tracking loop (1 Hz)
-                fwd = noise.rolling(time_20_ku=window_size).min()
-                bwd = (
-                    noise.isel(time_20_ku=slice(None, None, -1))
-                    .rolling(time_20_ku=window_size)
-                    .min()
-                    .isel(time_20_ku=slice(None, None, -1))
-                )
+                # Minima select values without accumulating rounding error.
+                with xr.set_options(use_bottleneck=True, use_numbagg=False):
+                    fwd = noise.rolling(time_20_ku=window_size).min()
+                    bwd = (
+                        noise.isel(time_20_ku=slice(None, None, -1))
+                        .rolling(time_20_ku=window_size)
+                        .min()
+                        .isel(time_20_ku=slice(None, None, -1))
+                    )
                 # the upper envelope of the two lower envelope builds
                 # the collective lower envelope
                 upper_envelope = xr.concat([fwd, bwd], "ds").max("ds")
@@ -658,11 +660,13 @@ def get_phase_jump(ds):
     # ! implement choosing tolerance
     ph_diff_diff_tolerance = 0.1
     # ! implement find loc. max. + cmp. to threshold (prevents multiple jump bins)
-    jump_mask = np.logical_or(
-        np.abs(ph_diff_diff) > ph_diff_diff_tolerance,
-        np.abs(ph_diff_diff).rolling(ns_20_ku=2).sum()
-        > 2 * 0.8 * ph_diff_diff_tolerance,
-    )
+    # Keep acceleration local to the two-sample rolling sum.
+    with xr.set_options(use_bottleneck=True, use_numbagg=False):
+        jump_mask = np.logical_or(
+            np.abs(ph_diff_diff) > ph_diff_diff_tolerance,
+            np.abs(ph_diff_diff).rolling(ns_20_ku=2).sum()
+            > 2 * 0.8 * ph_diff_diff_tolerance,
+        )
     if "exclude_mask" not in ds.data_vars:
         ds = append_exclude_mask(ds)
     return xr.where(ds.exclude_mask.sel(ns_20_ku=jump_mask.ns_20_ku), False, jump_mask)
@@ -797,7 +801,9 @@ def tag_groups(ds) -> xr.Dataset:
     """
     phase_outlier = get_phase_outlier(ds)
     ignore_mask = (ds.exclude_mask + phase_outlier) != 0
-    gap_separator = ignore_mask.rolling(ns_20_ku=3).sum() == 3
+    # Counting three boolean values does not incur floating-point drift.
+    with xr.set_options(use_bottleneck=True, use_numbagg=False):
+        gap_separator = ignore_mask.rolling(ns_20_ku=3).sum() == 3
     any_separator = np.logical_or(
         *xr.align(get_phase_jump(ds), gap_separator, join="outer")
     )

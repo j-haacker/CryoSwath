@@ -34,7 +34,7 @@ stackstac = ">=0.5.1"
 statsmodels = "*"
 pytables = "*"
 tqdm = "*"
-xarray = ">=2026.4"
+xarray = ">=2026.9.0"
 zarr = "*"
 
 [feature.runtime.pypi-dependencies]

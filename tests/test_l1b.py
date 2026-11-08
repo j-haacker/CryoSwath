@@ -57,6 +57,40 @@ def test_noise_val():
     assert noise_val(test_vec__exp_increase) < np.mean(test_vec__exp_increase)
 
 
+def test_tag_groups_accelerates_rolling_without_changing_reduction_options(monkeypatch):
+    from xarray.computation.rolling import DataArrayRolling
+
+    dims = ("time_20_ku", "ns_20_ku")
+    excluded = np.array([[False] * 3 + [True] * 3 + [False] * 6])
+    ds = xr.Dataset(
+        {
+            "exclude_mask": (dims, excluded),
+            "power_waveform_20_ku": (dims, np.ones(excluded.shape)),
+        },
+        coords={"time_20_ku": [0], "ns_20_ku": np.arange(12)},
+    )
+    monkeypatch.setattr(
+        l1b, "get_phase_outlier", lambda _: xr.zeros_like(ds.exclude_mask)
+    )
+    monkeypatch.setattr(l1b, "get_phase_jump", lambda _: xr.zeros_like(ds.exclude_mask))
+    calls = []
+    original_reduce = DataArrayRolling._bottleneck_reduce
+
+    def record_reduce(self, func, *args, **kwargs):
+        calls.append(func.__name__)
+        return original_reduce(self, func, *args, **kwargs)
+
+    monkeypatch.setattr(DataArrayRolling, "_bottleneck_reduce", record_reduce)
+    with xr.set_options(use_bottleneck=False, use_numbagg=True):
+        result = l1b.tag_groups(ds)
+        assert not xr.get_options()["use_bottleneck"]
+        assert xr.get_options()["use_numbagg"]
+
+    assert calls == ["move_sum"]
+    assert result.group_id.isel(ns_20_ku=slice(3, 6)).isnull().all()
+    assert result.group_id.isel(ns_20_ku=1) != result.group_id.isel(ns_20_ku=7)
+
+
 def test_to_l2_omits_samples_without_a_valid_phase_candidate(monkeypatch):
     phase_wrap_factor = np.arange(-3, 4)
     dims = ("time_20_ku", "ns_20_ku", "phase_wrap_factor")

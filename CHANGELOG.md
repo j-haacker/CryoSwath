@@ -2,6 +2,12 @@
 
 This changelog is intentionally lightweight. It records user-visible changes and release notes that are useful to remember, without listing every commit.
 
+## Unreleased
+
+- Require Xarray 2026.9.0 or newer to avoid silently enabling inaccurate
+  Bottleneck reductions on large float32 arrays. Retain Bottleneck acceleration
+  locally for waveform rolling minima and short rolling sums.
+
 ## 0.2.10 - 2026-11-05
 
 - Fix `l4.append_elevation_reference()` to retain the averaged DEM reprojection
