@@ -4,6 +4,12 @@ This changelog is intentionally lightweight. It records user-visible changes and
 
 ## Unreleased
 
+- Add automatic EOLIS swath-track comparison with native-range association,
+  regional tile retrieval, coverage counts and point-difference statistics.
+- Preserve sub-nanosecond L1b window-delay precision previously lost during
+  timedelta decoding. The loss could shift every sample range in a waveform
+  by centimetres and bias derived elevations. Relative range-bin spacing is
+  unchanged. Existing L2 caches require explicit reprocessing to benefit.
 - Require Xarray 2026.9.0 or newer to avoid silently enabling inaccurate
   Bottleneck reductions on large float32 arrays. Retain Bottleneck acceleration
   locally for waveform rolling minima and short rolling sums.

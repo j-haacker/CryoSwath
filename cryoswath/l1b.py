@@ -85,6 +85,7 @@ from cryoswath.misc import (
     nan_unique,
     patched_xr_decode_scaling,
     patched_xr_decode_tDel,
+    reference_bin,
     request_workers,
     rgi_path,
     sample_width,
@@ -257,7 +258,13 @@ def read_esa_l1b(
     for i in range(2):
         try:
             with monkeypatch(patchdicts):
-                ds = xr.open_dataset(l1b_filename, decode_timedelta=True)
+                encoded = xr.open_dataset(l1b_filename, decode_cf=False)
+                ds = xr.decode_cf(
+                    encoded,
+                    decode_timedelta={
+                        name: name != "window_del_20_ku" for name in encoded.variables
+                    },
+                )
             break
         except (OSError, ValueError) as err:
             if i == 1:
@@ -607,15 +614,15 @@ def append_elev_diff_to_ref(ds):
 
 def from_id(track_id: str | pd.Timestamp, **kwargs) -> xr.Dataset:
     """Load and preprocess a single track by CryoSat time ID."""
+    if pd.Timestamp(track_id).nanosecond != 0:
+        kwargs.setdefault("waveform_selection", pd.Timestamp(track_id))
+    return read_esa_l1b(_resolve_l1b_file(track_id), **kwargs)
+
+
+def _resolve_l1b_file(track_id: str | pd.Timestamp) -> str:
+    """Resolve a cached raw product, downloading it only when absent."""
     track_id = pd.Timestamp(track_id)
-    # edge cases with exactly 0 nanoseconds may fail. however, since this is
-    # only relevant for detail inspection, edge cases are ignored
     if track_id.nanosecond != 0:
-        if kwargs is None:
-            kwargs = {}
-        if "waveform_selection" not in kwargs:
-            kwargs["waveform_selection"] = track_id
-        # file name list as look up table
         full_file_names = load_cs_full_file_names(update="no")
         idx_loc = full_file_names.index.get_indexer([track_id], method="pad")[0]
         track_id = full_file_names.index[idx_loc]
@@ -625,11 +632,11 @@ def from_id(track_id: str | pd.Timestamp, **kwargs) -> xr.Dataset:
         for file_name in os.listdir(l1b_data_dir):
             if (
                 fnmatch.fnmatch(file_name, "*CS_????_SIR_SIN_1B_*")
-                and os.path.split(file_name)[-1][19:34] == track_id
+                and file_name[19:34] == track_id
                 and file_name.endswith(".nc")
             ):
-                return read_esa_l1b(os.path.join(l1b_data_dir, file_name), **kwargs)
-    return read_esa_l1b(download_single_file(track_id), **kwargs)
+                return os.path.join(l1b_data_dir, file_name)
+    return download_single_file(track_id)
 
 
 def get_rgi_o2(ds) -> str:
@@ -713,7 +720,7 @@ def locate_ambiguous_origin(ds):
     # Add satellite height
     r_cs2 = r_N + ds.alt_20_ku
     # Calculate distance: satellite <--> echo origin
-    range_to_scat = ref_range(ds) + (ds.ns_20_ku - 512) * sample_width
+    range_to_scat = ref_range(ds) + (ds.ns_20_ku - reference_bin) * sample_width
     theta = np.arcsin(
         -(ds.ph_diff + ds.phase_wrap_factor * 2 * np.pi)
         * (speed_of_light / Ku_band_freq)
@@ -787,9 +794,12 @@ def ref_range(ds) -> xr.DataArray:
         + ds.solid_earth_tide_01
         + ds.load_tide_01
     )
-    return ds.window_del_20_ku / np.timedelta64(
-        1, "s"
-    ) / 2 * speed_of_light + np.interp(ds.time_20_ku, ds.time_cor_01, corrections)
+    delay = ds.window_del_20_ku
+    if np.issubdtype(delay.dtype, np.timedelta64):
+        delay = delay / np.timedelta64(1, "s")
+    return delay / 2 * speed_of_light + np.interp(
+        ds.time_20_ku, ds.time_cor_01, corrections
+    )
 
 
 @if_not_empty

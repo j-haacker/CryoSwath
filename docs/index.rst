@@ -18,6 +18,7 @@ Project repository:
    tests
    build_and_publish
    api_overview
+   eolis
    mission_portability
 
 .. toctree::
