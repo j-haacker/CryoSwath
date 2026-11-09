@@ -1,7 +1,13 @@
 """Compare CryoSwath swath tracks with ESA EOLIS point products."""
 
-__all__ = ["compare_track"]
+__all__ = [
+    "sample_ranges",
+    "associate_points",
+    "evaluate_associations",
+    "compare_track",
+]
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -81,7 +87,7 @@ def _tile_names(tiles, ground, along_track):
     left, bottom, right, top = projected.total_bounds
     corners = np.array([[left, bottom], [left, top], [right, bottom], [right, top]])
     # Tile-scale along padding absorbs projection/edge curvature in this coarse
-    # query. The exact 170 m velocity-plane gate is applied only in _associate.
+    # query. The exact velocity-plane gate is applied only in _associate.
     bounds = projected.bounds
     padding = np.hypot(bounds.maxx - bounds.minx, bounds.maxy - bounds.miny).max()
     strips = []
@@ -183,20 +189,66 @@ def _read_points(paths, track):
     return unique.reset_index(drop=True), len(points) - len(unique)
 
 
-def _associate(raw, swath, reference, along_track=170):
-    """Native-bin association and diagnostic differences, all in metres."""
-    own = swath.loc[np.isfinite(swath.height)].copy().reset_index()
-    if own.empty or not swath.index.is_unique:
-        raise ValueError(
-            "Comparison requires nonempty swath data with unique time/sample IDs."
-        )
+def sample_ranges(raw):
+    """Native sample centres and half-open range intervals, in metres.
+
+    Dimensions are ``time_20_ku`` and ``sample``. Native sample IDs are zero-based
+    positions, regardless of labels stored on the raw ``ns_20_ku`` coordinate.
+    Waveform timestamps retain the product's native TAI clock.
+    """
+    count = raw.sizes["ns_20_ku"]
+    if count <= 0:
+        raise ValueError("The raw waveform must contain native samples.")
+    native = l1b.ref_range(raw)
+    sample = xr.DataArray(np.arange(count), dims="sample", name="sample")
+    # Derive shared edges first so neighbouring intervals have identical bounds.
+    lower = native + (sample - misc.reference_bin - 0.5) * misc.sample_width
+    upper = native + (sample - misc.reference_bin + 0.5) * misc.sample_width
+    return xr.Dataset(
+        {
+            "centre_m": native + (sample - misc.reference_bin) * misc.sample_width,
+            "lower_m": lower,
+            "upper_m": upper,
+        },
+        attrs={
+            "waveform_time_scale": "TAI",
+            "range_interval": "[lower, upper)",
+            "reference_bin": misc.reference_bin,
+            "sample_width_m": misc.sample_width,
+        },
+    )
+
+
+def _raw_identity(raw):
+    """Bind portable associations to the raw geometry and, when present, file."""
+    digest = hashlib.sha256()
+    for name in (
+        "time_20_ku",
+        "lon_20_ku",
+        "lat_20_ku",
+        "alt_20_ku",
+        "sat_vel_vec_20_ku",
+    ):
+        digest.update(np.ascontiguousarray(raw[name].values).tobytes())
+    digest.update(np.ascontiguousarray(l1b.ref_range(raw).values).tobytes())
+    digest.update(
+        str((raw.sizes["ns_20_ku"], misc.reference_bin, misc.sample_width)).encode()
+    )
+    identity = {
+        "raw_product": str(raw.attrs.get("product_name", "")),
+        "raw_geometry_sha256": digest.hexdigest(),
+    }
+    source = raw.encoding.get("source")
+    if source and Path(source).is_file():
+        with Path(source).open("rb") as stream:
+            identity["raw_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return identity
+
+
+def _sensor_frame(raw):
     times = pd.DatetimeIndex(raw.time_20_ku.values)
-    own_times = pd.DatetimeIndex(own.time).tz_localize(None)
-    indices = times.get_indexer(own_times)
-    if (indices < 0).any():
-        raise ValueError(
-            "Cached swath waveform times do not match the raw L1b product."
-        )
+    if not times.is_unique:
+        raise ValueError("Raw waveform times must be unique.")
     sat = np.column_stack(
         _TO_ECEF.transform(raw.lon_20_ku, raw.lat_20_ku, raw.alt_20_ku)
     )
@@ -207,82 +259,165 @@ def _associate(raw, swath, reference, along_track=170):
     velocity = raw.sat_vel_vec_20_ku.values
     along = velocity - np.einsum("ij,ij->i", velocity, up)[:, None] * up
     along /= np.linalg.norm(along, axis=1)[:, None]
-    basis = np.stack([along, np.cross(along, up), -up], axis=1)
-    native = l1b.ref_range(raw).values
-    own_xyz = _ecef(own.rename(columns={"height": "elevation"}))
+    return times, sat, np.stack([along, np.cross(along, up), -up], axis=1)
+
+
+def associate_points(raw, reference, along_track=140):
+    """Associate EOLIS records with all raw waveforms, independently of L2.
+
+    Retain out-of-range and ambiguous candidates for diagnostics. Only in-range
+    records assigned to one waveform have ``candidate_matched=True``. Distinct
+    records assigned to the same sample remain separate observations.
+    """
+    if not np.isfinite(along_track) or along_track <= 0:
+        raise ValueError("along_track must be a positive finite distance in metres.")
+    ranges = sample_ranges(raw)
+    times, sat, basis = _sensor_frame(raw)
+    reference = reference.reset_index(drop=True)
     ref_xyz = _ecef(reference)
-    own_ranges = np.linalg.norm(own_xyz - sat[indices], axis=1)
+    native_reference = l1b.ref_range(raw).values
     parts = []
-    for k in np.unique(indices):
+    for k in range(len(times)):
         displacement = ref_xyz - sat[k]
-        along_offset = displacement @ along[k]
+        along_offset = displacement @ basis[k, 0]
         ri = np.flatnonzero(np.abs(along_offset) <= along_track)
         if not len(ri):
             continue
-        ranges = np.linalg.norm(displacement[ri], axis=1)
-        fractional_sample = (
-            misc.reference_bin + (ranges - native[k]) / misc.sample_width
+        distances = np.linalg.norm(displacement[ri], axis=1)
+        edges = np.r_[ranges.lower_m.values[k], ranges.upper_m.values[k, -1]]
+        if not np.isfinite(edges).all():
+            raise ValueError(f"Non-finite raw range intervals at waveform {times[k]}")
+        samples = np.searchsorted(edges, distances, side="right") - 1
+        in_range = (samples >= 0) & (samples < raw.sizes["ns_20_ku"])
+        native = (
+            native_reference[k] + (samples - misc.reference_bin) * misc.sample_width
         )
-        samples = np.rint(fractional_sample).astype(int)
-        native_ranges = native[k] + (samples - misc.reference_bin) * misc.sample_width
-        group = own.loc[indices == k]
-        lookup = pd.Index(group["sample"]).get_indexer(samples)
-        present = lookup >= 0
-        oi = group.index.to_numpy()[lookup[present]]
         part = reference.iloc[ri].copy()
         part["reference_position"] = ri
-        part["waveform_time"] = times[k]  # Native TAI clock, shared with cached L2.
+        part["waveform_time"] = times[k]
         part["sample"] = samples
-        part["radial_difference_m"] = native_ranges - ranges
-        part["matched"] = present & (
-            np.abs(native_ranges - ranges) <= misc.sample_width / 2
-        )
-        part["status"] = np.where(
-            part.matched,
-            "matched",
-            np.where(present, "outside radial tolerance", "missing cached sample"),
-        )
-        for metric in _METRICS[0:4] + ["geometry_range_bias_m"]:
-            part[metric] = np.nan
-        delta = (own_xyz[oi] - ref_xyz[ri[present]]) @ basis[k].T
-        part.loc[present, "height_difference_m"] = (
-            own.height.to_numpy()[oi] - reference.elevation.to_numpy()[ri[present]]
-        )
-        part.loc[present, "along_difference_m"] = delta[:, 0]
-        part.loc[present, "across_difference_m"] = delta[:, 1]
-        part.loc[present, "horizontal_distance_m"] = np.hypot(delta[:, 0], delta[:, 1])
-        part.loc[present, "geometry_range_bias_m"] = (
-            own_ranges[oi] - native_ranges[present]
-        )
+        part["native_range_m"] = native
+        part["radial_difference_m"] = native - distances
+        part["in_range"] = in_range
         parts.append(part)
     points = (
-        gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)
+        gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=reference.crs)
         if parts
         else reference.iloc[:0].copy()
     )
     if not parts:
-        for name in [
-            "reference_position",
-            "waveform_time",
-            "sample",
-            "status",
-            "matched",
-            *_METRICS,
-        ]:
-            points[name] = pd.Series(dtype=bool if name == "matched" else float)
-    matched = points.loc[points.matched]
-    duplicates = matched.duplicated("reference_position", keep=False)
-    if duplicates.any():
-        details = matched.loc[
-            duplicates, ["eolis_file", "row", "waveform_time", "sample"]
-        ]
-        raise ValueError(
-            f"Multiple waveform matches for {raw.attrs.get('product_name', 'track')}. "
-            "Please file a GitHub issue at "
-            "https://github.com/j-haacker/cryoswath/issues "
-            f"with these track/waveform/sample details:\n"
-            f"{details.to_string(index=False)}"
+        for name, dtype in {
+            "reference_position": "int64",
+            "waveform_time": "datetime64[ns]",
+            "sample": "int64",
+            "native_range_m": "float64",
+            "radial_difference_m": "float64",
+            "in_range": "bool",
+        }.items():
+            points[name] = pd.Series(dtype=dtype)
+    counts = points.loc[points.in_range].groupby("reference_position").size()
+    points["ambiguous"] = points.reference_position.map(counts).fillna(0).gt(1)
+    points["candidate_matched"] = points.in_range & ~points.ambiguous
+    points["along_track_m"] = along_track
+    points["eolis_observation_count"] = len(reference)
+    # Columns survive GeoParquet/Feather; dataframe attrs generally do not.
+    identity = _raw_identity(raw)
+    for name, value in identity.items():
+        points[name] = value
+    points["range_interval"] = "[lower, upper)"
+    points.attrs.update(
+        identity,
+        waveform_time_scale="TAI",
+        along_track_m=along_track,
+        range_interval="[lower, upper)",
+        eolis_observation_count=len(reference),
+    )
+    return points
+
+
+def evaluate_associations(raw, swath, associations):
+    """Evaluate saved raw associations against one version's L2 points.
+
+    Index labels on L2 ``time`` retain native TAI despite legacy UTC timezone
+    labels. Strip those labels for identity joins; do not shift the clock.
+    Persist the returned associations' provenance manifest alongside empty tables.
+    """
+    identity = _raw_identity(raw)
+    for name, expected in identity.items():
+        actual = (
+            associations[name].unique().tolist()
+            if len(associations) and name in associations
+            else [associations.attrs.get(name)]
         )
+        if actual != [expected]:
+            raise ValueError(f"Association raw source mismatch: {name}")
+    if len(associations) and not associations.range_interval.eq("[lower, upper)").all():
+        raise ValueError("Unsupported association range interval convention.")
+    points = associations.copy().reset_index(drop=True)
+    times, sat, basis = _sensor_frame(raw)
+    if not swath.index.is_unique:
+        raise ValueError("Swath data require unique time/sample IDs.")
+    if swath.empty:
+        own = gpd.GeoDataFrame(
+            {
+                "height": pd.Series(dtype=float),
+                "time": pd.Series(dtype="datetime64[ns]"),
+                "sample": pd.Series(dtype="int64"),
+            },
+            geometry=[],
+            crs=4326,
+        )
+    else:
+        own = swath.loc[np.isfinite(swath.height)].copy().reset_index()
+    own_times = pd.DatetimeIndex(own.time).tz_localize(None)
+    indices = times.get_indexer(own_times)
+    if (indices < 0).any():
+        raise ValueError(
+            "Cached swath waveform times do not match the raw L1b product."
+        )
+    own_index = pd.MultiIndex.from_arrays([own_times, own["sample"]])
+    target = pd.MultiIndex.from_arrays(
+        [pd.DatetimeIndex(points.waveform_time), points["sample"]]
+    )
+    lookup = own_index.get_indexer(target)
+    present = lookup >= 0
+    points["l2_available"] = present
+    points["matched"] = points.candidate_matched & present
+    points["status"] = np.select(
+        [~points.in_range, points.ambiguous, ~present],
+        ["outside raw sample intervals", "ambiguous waveform", "missing cached sample"],
+        default="matched",
+    )
+    for metric in _METRICS[:4] + [
+        "geometry_range_bias_m",
+        "own_height_m",
+        "own_longitude",
+        "own_latitude",
+    ]:
+        points[metric] = np.nan
+    if present.any():
+        oi = lookup[present]
+        k = times.get_indexer(pd.DatetimeIndex(points.loc[present, "waveform_time"]))
+        geographic = own.to_crs(4326)
+        points.loc[present, "own_height_m"] = own.height.to_numpy()[oi]
+        points.loc[present, "own_longitude"] = geographic.geometry.x.to_numpy()[oi]
+        points.loc[present, "own_latitude"] = geographic.geometry.y.to_numpy()[oi]
+        own_xyz = _ecef(own.rename(columns={"height": "elevation"}))
+        ref_xyz = _ecef(points.loc[present])
+        delta = np.einsum("ij,ikj->ik", own_xyz[oi] - ref_xyz, basis[k])
+        points.loc[present, "height_difference_m"] = (
+            own.height.to_numpy()[oi] - points.loc[present, "elevation"].to_numpy()
+        )
+        points.loc[present, "along_difference_m"] = delta[:, 0]
+        points.loc[present, "across_difference_m"] = delta[:, 1]
+        points.loc[present, "horizontal_distance_m"] = np.hypot(
+            delta[:, 0], delta[:, 1]
+        )
+        points.loc[present, "geometry_range_bias_m"] = (
+            np.linalg.norm(own_xyz[oi] - sat[k], axis=1)
+            - points.loc[present, "native_range_m"].to_numpy()
+        )
+    matched = points.loc[points.matched]
     values = matched[_METRICS]
     statistics = values.agg(["count", "mean", "median", "std"]).T
     statistics["rmse"] = np.sqrt(values.pow(2).mean())
@@ -294,31 +429,47 @@ def _associate(raw, swath, reference, along_track=170):
         )
     )
     statistics[["p2.5", "p97.5"]] = values.quantile([0.025, 0.975]).T
+    samples = matched[["waveform_time", "sample"]].drop_duplicates()
     coverage = pd.Series(
         {
             "cryoswath_points": len(own),
-            "eolis_observations": len(reference),
+            "eolis_observations": int(associations.eolis_observation_count.iloc[0])
+            if len(associations)
+            else int(associations.attrs.get("eolis_observation_count", 0)),
             "selected_observations": points.reference_position.nunique(),
             "matched_observations": len(matched),
+            "matched_samples": len(samples),
+            "records_sharing_samples": int(
+                matched.duplicated(["waveform_time", "sample"], keep=False).sum()
+            ),
+            "ambiguous_observations": points.loc[
+                points.ambiguous, "reference_position"
+            ].nunique(),
             "missing_cached_samples": int(
                 (points.status == "missing cached sample").sum()
             ),
-            "outside_radial_tolerance": int(
-                (points.status == "outside radial tolerance").sum()
-            ),
+            "outside_radial_tolerance": int((~points.in_range).sum()),
         }
     )
     points.attrs.update(
-        waveform_time_scale="TAI", difference_sign="CryoSwath minus EOLIS"
+        associations.attrs,
+        waveform_time_scale="TAI",
+        difference_sign="CryoSwath minus EOLIS",
     )
     return {"points": points, "coverage": coverage, "statistics": statistics}
+
+
+def _associate(raw, swath, reference, along_track=140):
+    return evaluate_associations(
+        raw, swath, associate_points(raw, reference, along_track)
+    )
 
 
 def compare_track(
     track_id,
     *,
     reprocess=False,
-    along_track=170,
+    along_track=140,
     cache_dir=None,
     version=None,
     **processing_kwargs,
@@ -329,7 +480,7 @@ def compare_track(
     is processed through l2.from_id; processing_kwargs apply when processing is
     needed. Set reprocess=True explicitly to replace processing results.
 
-    Returns a dictionary of points (GeoDataFrame, including unmatched cases),
+    Returns associations and points (GeoDataFrames, including unmatched cases),
     coverage (Series) and statistics (DataFrame). Point differences are metres.
 
     Timestamp fields in points use different clocks: waveform_time retains native
@@ -337,8 +488,9 @@ def compare_track(
     despite their UTC timezone labels. Convert clocks before comparing timestamps;
     a timezone change alone does not perform that conversion.
 
-    Association uses the ±along_track velocity-plane window and nearest native
-    range bin with half-bin tolerance.
+    Association uses the ±along_track velocity-plane window and
+    half-open native range intervals. Ambiguous waveform assignments are retained
+    but excluded from statistics.
     Height, across-track and approximate EOLIS timestamps do not gate matches.
     Statistics describe matched observations, not independent accuracy estimates.
     """
@@ -346,24 +498,9 @@ def compare_track(
         raise ValueError("along_track must be a positive finite distance in metres.")
     filename = l1b._resolve_l1b_file(track_id)
     track = Path(filename).name[19:34]
-    processing_kwargs.setdefault("cores", 1)
-    swath, _ = l2.from_id(
-        misc.cs_id_to_time(track),
-        reprocess=reprocess,
-        save_or_return="both",
-        **processing_kwargs,
-    )
-    if swath.empty:
-        raise ValueError(f"No CryoSwath swath points available for track {track}.")
     with xr.open_dataset(filename, decode_timedelta=False) as raw:
-        time_index = pd.DatetimeIndex(raw.time_20_ku.values)
-        selected = time_index.isin(
-            pd.DatetimeIndex(swath.index.get_level_values("time")).tz_localize(None)
-        )
         ground = gpd.GeoDataFrame(
-            geometry=gpd.points_from_xy(
-                raw.lon_20_ku.values[selected], raw.lat_20_ku.values[selected]
-            ),
+            geometry=gpd.points_from_xy(raw.lon_20_ku.values, raw.lat_20_ku.values),
             crs=4326,
         )
         if ground.empty:
@@ -381,7 +518,16 @@ def compare_track(
         )
         paths = _retrieve(filename, regions, ground, cache, version, along_track)
         reference, removed = _read_points(paths, track)
-        result = _associate(raw, swath, reference, along_track)
+        associations = associate_points(raw, reference, along_track)
+        processing_kwargs.setdefault("cores", 1)
+        swath, _ = l2.from_id(
+            misc.cs_id_to_time(track),
+            reprocess=reprocess,
+            save_or_return="both",
+            **processing_kwargs,
+        )
+        result = evaluate_associations(raw, swath, associations)
+        result["associations"] = associations
     result["coverage"]["exact_duplicates_removed"] = removed
     result["points"].attrs.update(
         track_id=track,

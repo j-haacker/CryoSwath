@@ -24,8 +24,8 @@ are reused, and missing L2 is processed automatically.
    ]
    matched = result["points"].loc[result["points"].matched]
 
-Points are associated using satellite geometry and the nearest native waveform
-range sample. Elevation agreement is not a condition for matching, so elevation
+Points are associated using satellite geometry and half-open native waveform
+range intervals before either version's L2 points are evaluated. Elevation agreement is not a condition for matching, so elevation
 differences remain available for comparison.
 
 Interpret the results
@@ -38,7 +38,11 @@ Check ``coverage`` before interpreting the differences:
   removing exact duplicates.
 * ``selected_observations`` counts distinct EOLIS observations within the
   along-track selection windows; ``matched_observations`` counts those associated
-  with an available CryoSwath sample and accepted by the range tolerance.
+  with an available CryoSwath sample and an unambiguous raw range interval.
+* ``matched_samples`` counts distinct waveform/sample IDs;
+  ``records_sharing_samples`` counts matched records in many-to-one groups.
+* ``ambiguous_observations`` counts records assigned to multiple raw waveforms.
+  Those candidates remain in the output but are excluded from statistics.
 * ``missing_cached_samples`` and ``outside_radial_tolerance`` count unsuccessful
   candidate associations. One EOLIS observation can be considered for several
   waveforms, so these counts do not partition the distinct selected observations.
@@ -70,12 +74,16 @@ listed in the point table's attributes; an entirely unsupported track raises an
 error.
 
 Association uses a satellite-centred frame derived from L1b position and velocity.
-The ``along_track`` window defaults to ±170 m. The nearest native sample must be
-within half a range bin (about 11.71 cm) of the EOLIS geometric range. Elevation,
+The ``along_track`` window defaults to ±140 m. Sample intervals are
+``[centre - half_bin, centre + half_bin)`` (half a range bin is about 11.71 cm).
+The upper edge belongs to the next sample. The first and last bounds are
+respected, and sample count comes from the raw waveform dimension. Elevation,
 across-track distance and EOLIS timestamps do not gate matches. Missing CryoSwath
-samples remain unmatched; ambiguous matches raise an error.
+samples remain unmatched; ambiguous waveform assignments are retained and flagged.
 
-``points`` is a GeoDataFrame in EPSG:4326 at EOLIS locations. Its attributes retain
+``points`` is a GeoDataFrame at EOLIS locations. ``own_height_m``,
+``own_longitude`` and ``own_latitude`` retain the evaluated processor's own
+position and elevation. Its attributes retain
 source files, regions and the difference convention. ``statistics`` reports count,
 mean, median, sample standard deviation, RMSE, NMAD and 2.5/97.5 percentiles for each
 metric. ``coverage`` also reports ``exact_duplicates_removed``.
@@ -90,3 +98,37 @@ Two additional metrics diagnose range consistency, in metres:
   used for association.
 
 .. autofunction:: cryoswath.eolis.compare_track
+
+Reuse associations across processing versions
+--------------------------------------------
+
+``sample_ranges(raw)`` returns centre/lower/upper ranges in metres on dimensions
+``time_20_ku`` and ``sample``. Sample IDs are zero-based native positions, even
+when the raw coordinate has other labels. Open raw L1b with
+``decode_timedelta=False`` to preserve window-delay precision.
+
+``associate_points(raw, reference)`` uses every raw waveform, independently of
+L2 filtering. ``reference`` is an EOLIS GeoDataFrame with an ``elevation`` column.
+The returned table retains original reference columns, ``reference_position``,
+``waveform_time``, ``sample``, ``native_range_m``, ``radial_difference_m``,
+``in_range``, ``ambiguous`` and ``candidate_matched``. Distinct EOLIS records
+assigned to one sample are retained. ``reference_position`` is a temporary
+row index; archive source product/checksum/row identities for durable reuse.
+
+``evaluate_associations(raw, swath, associations)`` joins another version's L2
+points by its ``(time, sample)`` index, recomputes position/elevation differences,
+and returns ``points``, ``coverage`` and ``statistics``. Empty L2 is permitted;
+missing samples are never replaced with neighbours. Legacy UTC labels on L2
+indices are removed for the native TAI identity join without moving timestamps.
+
+``compare_track`` returns the raw ``associations`` table alongside its evaluation.
+Raw product identity, geometry fingerprint and available source-file checksum
+are stored in portable columns and validated when evaluating saved associations.
+Keep the association attributes and parameter/source manifest separately when
+saving an empty table, because Feather/Parquet do not preserve dataframe attrs.
+The caller must also preserve and verify EOLIS source checksums and processing
+configuration in that manifest.
+
+.. autofunction:: cryoswath.eolis.sample_ranges
+.. autofunction:: cryoswath.eolis.associate_points
+.. autofunction:: cryoswath.eolis.evaluate_associations

@@ -5,7 +5,11 @@ This changelog is intentionally lightweight. It records user-visible changes and
 ## Unreleased
 
 - Add automatic EOLIS swath-track comparison with native-range association,
-  regional tile retrieval, coverage counts and point-difference statistics.
+  regional tile retrieval, coverage counts and point-difference statistics,
+  using a default along-track association window of ±140 m. Construct half-open
+  intervals from all native samples before L2 filtering, retain ambiguous
+  waveform assignments as diagnostics, and support reusing associations across
+  processing versions with raw-source validation.
 - Preserve sub-nanosecond L1b window-delay precision previously lost during
   timedelta decoding. The loss could shift every sample range in a waveform
   by centimetres and bias derived elevations. Relative range-bin spacing is

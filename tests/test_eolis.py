@@ -44,6 +44,7 @@ def raw_track(n=1):
             "time_20_ku": times,
             "time_cor_01": times,
             "space_3d": [0, 1, 2],
+            "ns_20_ku": np.arange(1024),
         },
         attrs={
             "product_name": "CS_OFFL_SIR_SIN_1B_20240215T195335_20240215T195420_E001"
@@ -99,21 +100,28 @@ def test_missing_sample_is_not_replaced():
     assert result["statistics"].loc["height_difference_m", "count"] == 0
 
 
-def test_along_gate_and_empty_reference():
+@pytest.mark.parametrize(
+    "latitude, selected",
+    [(0.00125, 1), (-0.00125, 1), (0.00130, 0), (-0.00130, 0), (0.002, 0)],
+)
+def test_along_gate_and_empty_reference(latitude, selected):
     raw, own, ref = raw_track()
-    ref.geometry = [shapely.Point(0, 0.002)]  # About 221 m along northward flight.
+    # About ±138 m is inside the default window; ±144 m is outside.
+    ref.geometry = [shapely.Point(0, latitude)]
     result = eolis._associate(raw, own, ref)
-    assert result["coverage"].selected_observations == 0
+    assert result["coverage"].selected_observations == selected
     assert eolis._associate(raw, own, ref.iloc[:0])["points"].empty
 
 
-def test_multiple_waveforms_raise_actionable_error():
+def test_multiple_waveforms_are_flagged_before_l2_filtering():
     raw, own, ref = raw_track(2)
-    with pytest.raises(ValueError, match="GitHub issue") as error:
-        eolis._associate(raw, own, ref)
-    assert "20240215T195335" in str(error.value)
-    assert "2024-02-15" in str(error.value)
-    assert str(misc.reference_bin) in str(error.value)
+    associations = eolis.associate_points(raw, ref)
+    assert associations.ambiguous.all()
+    # Losing one modern waveform must not resolve a raw ambiguity.
+    result = eolis.evaluate_associations(raw, own.iloc[:1], associations)
+    assert result["coverage"].ambiguous_observations == 1
+    assert result["coverage"].matched_observations == 0
+    assert len(result["points"]) == 2
 
 
 def test_full_precision_reference_range_and_legacy_timedelta(tmp_path):
@@ -307,6 +315,7 @@ def test_compare_track_reuses_processing_and_reports_unsupported_region(
 
     def retrieve(filename, regions, ground, cache, version, along_track):
         assert regions == ["ICELAND"]
+        assert along_track == 140
         return [tile]
 
     monkeypatch.setattr(eolis, "_retrieve", retrieve)
@@ -326,7 +335,7 @@ def test_compare_track_reuses_processing_and_reports_unsupported_region(
 def test_delay_precision_shifts_whole_waveform_not_bin_spacing():
     raw, _, _ = raw_track()
     raw["window_del_20_ku"][:] = 0.004851310927
-    raw = raw.assign_coords(
+    raw = raw.isel(ns_20_ku=slice(0, 2)).assign_coords(
         ns_20_ku=[misc.reference_bin, misc.reference_bin + 1], phase_wrap_factor=[0]
     )
     raw["ph_diff"] = xr.DataArray([[0.0, 0.0]], dims=("time_20_ku", "ns_20_ku"))
@@ -344,3 +353,202 @@ def test_delay_precision_shifts_whole_waveform_not_bin_spacing():
     np.testing.assert_allclose(
         np.diff(quantized), -misc.sample_width, rtol=0, atol=2e-6
     )
+
+
+def test_intervals_use_native_positions_and_shared_half_open_edges():
+    raw, _, _ = raw_track()
+    raw = raw.isel(ns_20_ku=slice(0, 3)).assign_coords(ns_20_ku=[100, 200, 300])
+    intervals = eolis.sample_ranges(raw)
+    assert intervals.centre_m.shape == (1, 3)
+    np.testing.assert_array_equal(intervals["sample"], [0, 1, 2])
+    np.testing.assert_array_equal(
+        intervals.upper_m.values[:, :-1], intervals.lower_m.values[:, 1:]
+    )
+    np.testing.assert_allclose(np.diff(intervals.centre_m.values), misc.sample_width)
+
+
+def test_first_last_sample_edges_and_outside_intervals(monkeypatch):
+    raw, _, ref = raw_track()
+    ranges = eolis.sample_ranges(raw)
+    # Supply exact ECEF ranges to isolate half-open boundary assignment from
+    # geodetic conversion rounding at sub-nanometre boundaries.
+    distances = np.array(
+        [
+            ranges.lower_m.values[0, 0] - 0.01,
+            ranges.lower_m.values[0, 0],
+            ranges.upper_m.values[0, 0],
+            ranges.upper_m.values[0, -1] - 0.01,
+            ranges.upper_m.values[0, -1],
+        ]
+    )
+    refs = gpd.GeoDataFrame(
+        {"elevation": 700000 - distances},
+        geometry=[shapely.Point(0, 0)] * len(distances),
+        crs=4326,
+    )
+    monkeypatch.setattr(
+        eolis,
+        "_sensor_frame",
+        lambda raw: (
+            pd.DatetimeIndex(raw.time_20_ku.values),
+            np.zeros((1, 3)),
+            np.array([[[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]]),
+        ),
+    )
+    monkeypatch.setattr(
+        eolis,
+        "_ecef",
+        lambda ref: np.column_stack([distances, np.zeros((len(distances), 2))]),
+    )
+    points = eolis.associate_points(raw, refs)
+    assert points["sample"].tolist() == [-1, 0, 1, 1023, 1024]
+    assert points.in_range.tolist() == [False, True, True, True, False]
+
+
+def test_empty_l2_and_many_records_per_sample():
+    raw, own, ref = raw_track()
+    refs = gpd.GeoDataFrame(
+        pd.concat([ref, ref.assign(row=11)], ignore_index=True), crs=ref.crs
+    )
+    associations = eolis.associate_points(raw, refs)
+    assert associations.candidate_matched.all()
+    empty = eolis.evaluate_associations(raw, own.iloc[:0], associations)
+    assert empty["coverage"].missing_cached_samples == 2
+    assert empty["coverage"].matched_observations == 0
+    result = eolis.evaluate_associations(raw, own, associations)
+    assert result["coverage"].matched_observations == 2
+    assert result["coverage"].matched_samples == 1
+    assert result["coverage"].records_sharing_samples == 2
+
+
+def test_saved_associations_reuse_both_versions_and_reject_other_raw(tmp_path):
+    raw, own, ref = raw_track()
+    associations = eolis.associate_points(raw, ref)
+    path = tmp_path / "associations.feather"
+    associations.to_feather(path)
+    restored = gpd.read_feather(path)
+    first = eolis.evaluate_associations(raw, own, restored)
+    legacy = own.copy()
+    legacy["height"] = 4.0
+    legacy.index = legacy.index.set_levels(
+        legacy.index.levels[0].tz_localize(None), level="time"
+    )
+    second = eolis.evaluate_associations(raw, legacy, restored)
+    assert first["points"].height_difference_m.iloc[0] == 0
+    assert second["points"].height_difference_m.iloc[0] == 4
+    assert second["points"].own_height_m.iloc[0] == 4
+    assert second["points"].own_longitude.iloc[0] == 0
+    assert second["points"].own_latitude.iloc[0] == 0
+    other = raw.copy(deep=True)
+    other["window_del_20_ku"] += 1e-6
+    with pytest.raises(ValueError, match="raw source mismatch"):
+        eolis.evaluate_associations(other, own, restored)
+
+
+def test_compare_track_associates_waveforms_absent_in_modern_l2(monkeypatch, tmp_path):
+    raw, own, ref = raw_track(2)
+    # Move the second reference outside the first waveform's along-track gate.
+    raw["lat_20_ku"][:] = [0, 0.01]
+    ref.geometry = [shapely.Point(0, 0.01)]
+    filename = tmp_path / (raw.attrs["product_name"] + ".nc")
+    raw.to_netcdf(filename)
+    monkeypatch.setattr(l1b, "_resolve_l1b_file", lambda _: str(filename))
+    monkeypatch.setattr(misc, "find_region_id", lambda *a, **kw: ["06"])
+    calls = []
+
+    def retrieve(filename, regions, ground, cache, version, along_track):
+        assert len(ground) == 2
+        calls.append("retrieve")
+        return []
+
+    monkeypatch.setattr(eolis, "_retrieve", retrieve)
+    monkeypatch.setattr(eolis, "_read_points", lambda *a: (ref, 0))
+
+    def process(*a, **kw):
+        assert calls == ["retrieve"]
+        return own.iloc[:0], None
+
+    monkeypatch.setattr(eolis.l2, "from_id", process)
+    result = eolis.compare_track("20240215T195335")
+    assert len(result["associations"]) == 1
+    assert result["coverage"].missing_cached_samples == 1
+
+
+def test_exact_along_track_boundary_is_inclusive(monkeypatch):
+    raw, _, ref = raw_track()
+    offsets = np.array([-140.001, -140.0, 140.0, 140.001])
+    refs = gpd.GeoDataFrame(
+        {"elevation": np.zeros(4)}, geometry=[shapely.Point(0, 0)] * 4, crs=4326
+    )
+    monkeypatch.setattr(
+        eolis,
+        "_sensor_frame",
+        lambda raw: (
+            pd.DatetimeIndex(raw.time_20_ku.values),
+            np.zeros((1, 3)),
+            np.array([[[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]]),
+        ),
+    )
+    monkeypatch.setattr(
+        eolis,
+        "_ecef",
+        lambda ref: np.column_stack(
+            [np.sqrt(700000**2 - offsets**2), offsets, np.zeros(4)]
+        ),
+    )
+    points = eolis.associate_points(raw, refs)
+    assert points.reference_position.tolist() == [1, 2]
+
+
+def test_nonfinite_raw_ranges_are_not_silent_missing_samples():
+    raw, _, ref = raw_track()
+    raw["window_del_20_ku"][:] = np.nan
+    with pytest.raises(ValueError, match="Non-finite raw range"):
+        eolis.associate_points(raw, ref)
+
+
+def test_file_checksum_detects_changes_outside_geometry(tmp_path):
+    raw, own, ref = raw_track()
+    filename = tmp_path / "raw.nc"
+    raw.to_netcdf(filename)
+    with xr.open_dataset(filename, decode_timedelta=False) as opened:
+        associations = eolis.associate_points(opened, ref)
+    raw.attrs["unrelated_metadata"] = "changed file identity"
+    raw.to_netcdf(filename)
+    with xr.open_dataset(filename, decode_timedelta=False) as opened:
+        with pytest.raises(ValueError, match="raw_sha256"):
+            eolis.evaluate_associations(opened, own, associations)
+
+
+def test_empty_associations_roundtrip_with_manifest_attributes(tmp_path):
+    raw, own, ref = raw_track()
+    associations = eolis.associate_points(raw, ref.iloc[:0])
+    path = tmp_path / "empty.feather"
+    associations.to_feather(path)
+    restored = gpd.read_feather(path)
+    restored.attrs.update(associations.attrs)
+    result = eolis.evaluate_associations(raw, own, restored)
+    assert result["points"].empty
+    assert result["coverage"].matched_observations == 0
+
+
+def test_runner_roundtrip_raw_json_provenance_and_l2_multiindex(tmp_path):
+    import json
+
+    raw, own, ref = raw_track()
+    filename = tmp_path / "raw.nc"
+    raw.to_netcdf(filename)
+    with xr.open_dataset(filename, decode_timedelta=False) as opened:
+        associations = eolis.associate_points(opened, ref)
+    attributes = json.loads(json.dumps(associations.attrs, allow_nan=False))
+    associations.to_feather(tmp_path / "associations.feather")
+    own.to_crs(3413).to_feather(tmp_path / "l2.feather")
+    restored = gpd.read_feather(tmp_path / "associations.feather")
+    restored.attrs.update(attributes)
+    points = gpd.read_feather(tmp_path / "l2.feather")
+    assert points.index.names == ["time", "sample"]
+    with xr.open_dataset(filename, decode_timedelta=False) as opened:
+        result = eolis.evaluate_associations(opened, points, restored)
+    assert result["coverage"].matched_observations == 1
+    assert result["points"].height_difference_m.iloc[0] == 0
+    assert result["points"].own_longitude.iloc[0] == pytest.approx(0, abs=1e-8)
