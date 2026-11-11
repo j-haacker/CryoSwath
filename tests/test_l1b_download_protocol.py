@@ -867,3 +867,127 @@ def test_download_files_via_ftp_prefers_current_directory(monkeypatch, tmp_path)
 
     assert (tmp_path / "2020" / "01" / current_file).is_file()
     assert context.ftp.cwd_calls == [current_directory]
+
+
+def _native_repair_path(tmp_path):
+    return tmp_path / "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.nc"
+
+
+def _write_valid_l1b_fixture(path):
+    import xarray as xr
+
+    xr.Dataset({"values": ("row", [1.0, 2.0])}).to_netcdf(path, engine="h5netcdf")
+
+
+def test_validate_l1b_repairs_exact_product_atomically(tmp_path, monkeypatch):
+    path = _native_repair_path(tmp_path)
+    path.write_bytes(b"<html>failed transfer</html>")
+    original = path.read_bytes()
+    calls = []
+
+    def download(filename, candidate):
+        assert path.read_bytes() == original
+        assert candidate.name == path.name == filename
+        assert candidate != path
+        _write_valid_l1b_fixture(candidate)
+        calls.append(filename)
+
+    monkeypatch.setattr(l1b, "_download_exact_l1b_product", download)
+    assert l1b.validate_l1b_file(path, repair=True) == path
+    assert calls == [path.name]
+    l1b.validate_l1b_file(path)
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("transfer_fails", [False, True])
+def test_failed_l1b_repair_preserves_original(tmp_path, monkeypatch, transfer_fails):
+    path = _native_repair_path(tmp_path)
+    path.write_bytes(b"invalid original")
+
+    def download(filename, candidate):
+        candidate.write_bytes(b"invalid replacement")
+        if transfer_fails:
+            raise OSError("transfer interrupted")
+
+    monkeypatch.setattr(l1b, "_download_exact_l1b_product", download)
+    with pytest.raises((OSError, RuntimeError)):
+        l1b.validate_l1b_file(path, repair=True)
+    assert path.read_bytes() == b"invalid original"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_validate_l1b_confirms_physical_truncation(tmp_path, monkeypatch):
+    path = _native_repair_path(tmp_path)
+    _write_valid_l1b_fixture(path)
+    payload = path.read_bytes()
+    path.write_bytes(payload[: len(payload) // 2])
+    with pytest.raises(ValueError, match="truncated"):
+        l1b.validate_l1b_file(path)
+    monkeypatch.setattr(
+        l1b, "_download_exact_l1b_product", lambda name, dst: dst.write_bytes(payload)
+    )
+    l1b.validate_l1b_file(path, repair=True)
+    assert path.read_bytes() == payload
+
+
+def test_generic_hdf5_error_does_not_repair(tmp_path, monkeypatch):
+    path = _native_repair_path(tmp_path)
+    _write_valid_l1b_fixture(path)
+    payload = path.read_bytes()
+
+    def unreadable(*args, **kwargs):
+        raise OSError(-101, "Error at HDF5 layer")
+
+    monkeypatch.setattr(l1b.xr, "open_dataset", unreadable)
+    monkeypatch.setattr(
+        l1b,
+        "_download_exact_l1b_product",
+        lambda *args: pytest.fail("No proven damage"),
+    )
+    with pytest.raises(OSError):
+        l1b.validate_l1b_file(path, repair=True)
+    assert path.read_bytes() == payload
+
+
+def test_cf_decode_failure_never_repairs_or_deletes(tmp_path, monkeypatch):
+    import xarray as xr
+
+    path = _native_repair_path(tmp_path)
+    _write_valid_l1b_fixture(path)
+    payload = path.read_bytes()
+    encoded = xr.Dataset({"x": ("row", [1.0])})
+    closed = []
+    encoded.set_close(lambda: closed.append(True))
+    monkeypatch.setattr(l1b.xr, "open_dataset", lambda *args, **kwargs: encoded)
+
+    def invalid_cf(*args, **kwargs):
+        raise ValueError("unsupported CF units")
+
+    monkeypatch.setattr(l1b.xr, "decode_cf", invalid_cf)
+    monkeypatch.setattr(
+        l1b,
+        "validate_l1b_file",
+        lambda *args, **kwargs: pytest.fail("CF errors are not corruption"),
+    )
+    with pytest.raises(ValueError, match="CF units"):
+        l1b.read_esa_l1b(str(path))
+    assert closed == [True]
+    assert path.read_bytes() == payload
+
+
+def test_exact_repair_does_not_select_alternate_filename(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    target = _native_repair_path(tmp_path)
+    alternate = target.name.replace("OFFL", "LTA_")
+    monkeypatch.setattr(l1b, "ftp_cs2_server", lambda **kwargs: nullcontext(object()))
+    monkeypatch.setattr(
+        l1b, "_ftp_l1b_month_listings", lambda *args: iter([("folder", [alternate])])
+    )
+    monkeypatch.setattr(
+        l1b,
+        "_download_remote_file_via_ftp_atomic",
+        lambda *args: pytest.fail("No alternate product allowed"),
+    )
+    with pytest.raises(FileNotFoundError, match="Exact L1b"):
+        l1b._download_exact_l1b_product(target.name, tmp_path / "candidate.nc")

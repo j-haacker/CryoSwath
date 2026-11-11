@@ -63,6 +63,7 @@ __all__ = [
     "Ku_band_freq",
     "nanoseconds_per_year",
     "sample_width",
+    "reference_bin",
     "speed_of_light",
     "WGS84_ellpsoid",
     # patches
@@ -497,6 +498,7 @@ pd.options.mode.copy_on_write = True
 antenna_baseline = 1.1676
 Ku_band_freq = 13.575e9
 sample_width = speed_of_light / (320e6 * 2) / 2
+reference_bin = 512
 cryosat_id_pattern = re.compile(
     "20[12][0-9][01][0-9][0-3][0-9]T[0-2][0-9]([0-5][0-9]){2}"
 )
@@ -1405,7 +1407,9 @@ def filter_kwargs(
     }
 
 
-def find_region_id(location: any, scope: str = "o2") -> str:
+def find_region_id(
+    location: any, scope: str = "o2", *, all_matches: bool = False
+) -> str | list[str]:
     """Returns RGI id for multitude of inputs
 
     Special behavior in Greenland! If o2 region is requested, return id of
@@ -1417,6 +1421,8 @@ def find_region_id(location: any, scope: str = "o2") -> str:
             geopandas.GeoDataFrame or Series, or a shapely.Geometry.
         scope (str, optional): One of "o1", "o2", or "basin". Defaults to
             "o2".
+        all_matches (bool): For scope="o1", return all region codes intersecting
+            the geometry instead of classifying its centroid. Defaults to False.
 
     Raises:
         Exception: `scope` is "o2" and `location` is in Greenland but
@@ -1432,7 +1438,9 @@ def find_region_id(location: any, scope: str = "o2") -> str:
     if isinstance(location, gpd.GeoDataFrame):
         location = location.geometry
     if isinstance(location, gpd.GeoSeries):
-        location = location.to_crs(4326).union_all("coverage")
+        location = location.to_crs(4326).union_all(
+            "unary" if all_matches else "coverage"
+        )
     if not isinstance(location, shapely.Geometry):
         if isinstance(location, tuple) or (
             isinstance(location, list) and len(location) < 3
@@ -1443,6 +1451,12 @@ def find_region_id(location: any, scope: str = "o2") -> str:
     rgi_o2_gpdf = gpd.read_feather(
         os.path.join(rgi_path, "RGI2000-v7.0-o2regions.feather")
     )
+    if all_matches:
+        if scope != "o1":
+            raise ValueError("all_matches is supported only for scope='o1'.")
+        return sorted(
+            rgi_o2_gpdf.loc[rgi_o2_gpdf.intersects(location), "o1region"].unique()
+        )
     rgi_region = rgi_o2_gpdf[rgi_o2_gpdf.contains(location.centroid)]
     if rgi_region.empty:
         raise ValueError(f"Location {location} is not in any RGI o2 region.")

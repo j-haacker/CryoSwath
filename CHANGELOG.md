@@ -4,12 +4,25 @@ This changelog is intentionally lightweight. It records user-visible changes and
 
 ## Unreleased
 
+- Repair only verified invalid/truncated L1b payloads using a validated, atomic
+  replacement of the same product; preserve inputs on decoding/ambiguous errors.
+
 - Preserve glacier rows for Greenland subdivision and avoid polygon union for
   its preliminary bounding rectangle.
 
 - Fix L1b glacier masks for overlapping regional outlines by using general
   polygon union rather than the non-overlapping coverage optimization.
 
+- Add automatic EOLIS swath-track comparison with native-range association,
+  regional tile retrieval, coverage counts and point-difference statistics,
+  using a default along-track association window of ±140 m. Construct half-open
+  intervals from all native samples before L2 filtering, retain ambiguous
+  waveform assignments as diagnostics, and support reusing associations across
+  processing versions with raw-source validation.
+- Preserve sub-nanosecond L1b window-delay precision previously lost during
+  timedelta decoding. The loss could shift every sample range in a waveform
+  by centimetres and bias derived elevations. Relative range-bin spacing is
+  unchanged. Existing L2 caches require explicit reprocessing to benefit.
 - Require Xarray 2026.9.0 or newer to avoid silently enabling inaccurate
   Bottleneck reductions on large float32 arrays. Retain Bottleneck acceleration
   locally for waveform rolling minima and short rolling sums.

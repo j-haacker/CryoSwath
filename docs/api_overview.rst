@@ -27,6 +27,8 @@ Supporting modules
   Geospatial helper functions for CRS handling and geometry operations.
 - :mod:`cryoswath.provenance`
   CF-style history helpers and richer provenance serialization for output stores.
+- :mod:`cryoswath.eolis`
+  Track comparisons with EOLIS swath points; see :doc:`eolis`.
 - :mod:`cryoswath.test_plots`
   Plotting utilities for quick validation and diagnostics.
 
