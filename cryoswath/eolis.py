@@ -48,9 +48,9 @@ _METRICS = [
     "along_difference_m",
     "across_difference_m",
     "horizontal_distance_m",
-    "radial_difference_m",
-    "geometry_range_bias_m",
+    "range_difference_m",
 ]
+_DIAGNOSTICS = ["sample_assignment_residual_m", "range_reconstruction_error_m"]
 
 
 def _ecef(points):
@@ -297,7 +297,7 @@ def associate_points(raw, reference, along_track=140):
         part["waveform_time"] = times[k]
         part["sample"] = samples
         part["native_range_m"] = native
-        part["radial_difference_m"] = native - distances
+        part["sample_assignment_residual_m"] = native - distances
         part["in_range"] = in_range
         parts.append(part)
     points = (
@@ -311,7 +311,7 @@ def associate_points(raw, reference, along_track=140):
             "waveform_time": "datetime64[ns]",
             "sample": "int64",
             "native_range_m": "float64",
-            "radial_difference_m": "float64",
+            "sample_assignment_residual_m": "float64",
             "in_range": "bool",
         }.items():
             points[name] = pd.Series(dtype=dtype)
@@ -388,8 +388,8 @@ def evaluate_associations(raw, swath, associations):
         ["outside raw sample intervals", "ambiguous waveform", "missing cached sample"],
         default="matched",
     )
-    for metric in _METRICS[:4] + [
-        "geometry_range_bias_m",
+    for metric in _METRICS + [
+        "range_reconstruction_error_m",
         "own_height_m",
         "own_longitude",
         "own_latitude",
@@ -413,12 +413,15 @@ def evaluate_associations(raw, swath, associations):
         points.loc[present, "horizontal_distance_m"] = np.hypot(
             delta[:, 0], delta[:, 1]
         )
-        points.loc[present, "geometry_range_bias_m"] = (
+        points.loc[present, "range_reconstruction_error_m"] = (
             np.linalg.norm(own_xyz[oi] - sat[k], axis=1)
             - points.loc[present, "native_range_m"].to_numpy()
         )
+        points.loc[present, "range_difference_m"] = np.linalg.norm(
+            own_xyz[oi] - sat[k], axis=1
+        ) - np.linalg.norm(ref_xyz - sat[k], axis=1)
     matched = points.loc[points.matched]
-    values = matched[_METRICS]
+    values = matched[_METRICS + _DIAGNOSTICS]
     statistics = values.agg(["count", "mean", "median", "std"]).T
     statistics["rmse"] = np.sqrt(values.pow(2).mean())
     statistics["nmad"] = values.apply(
@@ -456,7 +459,12 @@ def evaluate_associations(raw, swath, associations):
         waveform_time_scale="TAI",
         difference_sign="CryoSwath minus EOLIS",
     )
-    return {"points": points, "coverage": coverage, "statistics": statistics}
+    return {
+        "points": points,
+        "coverage": coverage,
+        "statistics": statistics.loc[_METRICS],
+        "diagnostics": statistics.loc[_DIAGNOSTICS],
+    }
 
 
 def _associate(raw, swath, reference, along_track=140):

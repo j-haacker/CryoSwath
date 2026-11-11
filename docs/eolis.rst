@@ -88,12 +88,17 @@ source files, regions and the difference convention. ``statistics`` reports coun
 mean, median, sample standard deviation, RMSE, NMAD and 2.5/97.5 percentiles for each
 metric. ``coverage`` also reports ``exact_duplicates_removed``.
 
-Two additional metrics diagnose range consistency, in metres:
+The comparison statistic ``range_difference_m`` is reconstructed CryoSwath
+satellite-to-point range minus EOLIS satellite-to-point range. Positive means
+CryoSwath is farther from the satellite. It remains conditional on association.
 
-* ``radial_difference_m`` is native sample range minus EOLIS geometric range.
+Two metrics are retained in point data and the separate ``diagnostics`` summary,
+not in the headline ``statistics``, in metres:
+
+* ``sample_assignment_residual_m`` is native sample range minus EOLIS geometric range.
   For matched points it is constrained by the half-bin matching tolerance and
   does not independently measure product agreement.
-* ``geometry_range_bias_m`` is cached CryoSwath geometric range minus native
+* ``range_reconstruction_error_m`` is cached CryoSwath geometric range minus native
   sample range. It checks consistency of the cached geometry with the sample
   used for association.
 
@@ -110,7 +115,7 @@ when the raw coordinate has other labels. Open raw L1b with
 ``associate_points(raw, reference)`` uses every raw waveform, independently of
 L2 filtering. ``reference`` is an EOLIS GeoDataFrame with an ``elevation`` column.
 The returned table retains original reference columns, ``reference_position``,
-``waveform_time``, ``sample``, ``native_range_m``, ``radial_difference_m``,
+``waveform_time``, ``sample``, ``native_range_m``, ``sample_assignment_residual_m``,
 ``in_range``, ``ambiguous`` and ``candidate_matched``. Distinct EOLIS records
 assigned to one sample are retained. ``reference_position`` is a temporary
 row index; archive source product/checksum/row identities for durable reuse.

@@ -81,13 +81,32 @@ def test_radial_identity_and_no_height_or_across_gate():
     result = eolis._associate(raw, own, ref)
     point = result["points"].iloc[0]
     assert point.matched and point["sample"] == misc.reference_bin
-    assert abs(point.radial_difference_m) < 1e-8
+    assert abs(point.sample_assignment_residual_m) < 1e-8
+    assert point.range_difference_m == pytest.approx(
+        point.sample_assignment_residual_m + point.range_reconstruction_error_m,
+        abs=1e-8,
+    )
+    assert "sample_assignment_residual_m" not in result["statistics"].index
+    assert set(result["diagnostics"].index) == {
+        "sample_assignment_residual_m",
+        "range_reconstruction_error_m",
+    }
     assert abs(point.across_difference_m) > 2000
     assert abs(point.height_difference_m) > 3
     assert result["statistics"].loc["height_difference_m", "mean"] == pytest.approx(
         -ref.elevation.iloc[0]
     )
     assert result["points"].attrs["waveform_time_scale"] == "TAI"
+
+
+def test_range_comparison_exposes_offset_despite_exact_assignment():
+    raw, own, ref = raw_track()
+    own["height"] = 0.05
+    result = eolis._associate(raw, own, ref)
+    point = result["points"].loc[lambda p: p.matched].iloc[0]
+    assert point.sample_assignment_residual_m == pytest.approx(0, abs=1e-8)
+    assert point.range_difference_m == pytest.approx(-0.05, abs=1e-8)
+    assert point.range_reconstruction_error_m == pytest.approx(-0.05, abs=1e-8)
 
 
 def test_missing_sample_is_not_replaced():
