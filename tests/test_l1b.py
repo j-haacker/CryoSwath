@@ -166,3 +166,72 @@ def test_dem_transect_samples_partial_xarray_dem(monkeypatch):
 
 
 test_noise_val()
+
+
+@pytest.mark.parametrize("greenland", [False, True])
+def test_read_esa_l1b_unions_overlapping_region_outlines(monkeypatch, greenland):
+    import geopandas as gpd
+    import shapely
+
+    class ReachedMaskBuffer(Exception):
+        pass
+
+    ds = xr.Dataset(
+        {
+            "lat_20_ku": ("time_20_ku", np.linspace(1.1, 1.2, 6)),
+            "lon_20_ku": ("time_20_ku", np.linspace(1.1, 1.2, 6)),
+            "pwr_waveform_20_ku": (("time_20_ku", "ns_20_ku"), np.ones((6, 4))),
+            "echo_scale_factor_20_ku": 1.0,
+            "echo_scale_pwr_20_ku": 0,
+            "transmit_pwr_20_ku": 1.0,
+            "noise_power_20_ku": ("time_20_ku", np.ones(6)),
+        },
+        coords={"time_20_ku": np.arange(6), "ns_20_ku": np.arange(4)},
+    )
+    regions = gpd.GeoDataFrame(
+        {"o2region": ["01-01", "01-02"]},
+        geometry=[shapely.box(0, 0, 4, 4)] * 2,
+        crs=4326,
+    )
+    outlines = {
+        "01-01": gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 2, 2)], crs=4326),
+        "01-02": gpd.GeoDataFrame(geometry=[shapely.box(1, 1, 3, 3)], crs=4326),
+    }
+    if greenland:
+        regions = regions.iloc[:1].assign(o2region="05-01")
+        outlines = {"05-01": gpd.GeoDataFrame({"cenlat": [1., 2.], "cenlon": [1., 2.]},
+            geometry=[shapely.box(0, 0, 2, 2), shapely.box(1, 1, 3, 3)], crs=4326)}
+        def subdivide(frame, **kwargs):
+            assert "cenlat" in frame and "cenlon" in frame
+            assert kwargs == {"lat_bin_width_degree": 4.5, "lon_bin_width_degree": 4.5}
+            return [frame]
+        monkeypatch.setattr(l1b, "subdivide_region", subdivide)
+    monkeypatch.setattr(l1b.xr, "open_dataset", lambda *args, **kwargs: ds)
+    monkeypatch.setattr(l1b.gpd, "read_feather", lambda *args, **kwargs: regions)
+    def load(code, *, union):
+        assert union is False
+        return outlines[code]
+    monkeypatch.setattr(l1b, "load_glacier_outlines", load)
+    monkeypatch.setattr(l1b, "find_planar_crs", lambda **kwargs: 3857)
+
+    calls = []
+    def buffer(geometry, distance):
+        calls.append(geometry)
+        if greenland and len(calls) == 1:
+            assert geometry.equals(shapely.box(0, 0, 3, 3))
+            return geometry
+        assert geometry.is_valid
+        assert geometry.equals(
+            shapely.union_all([geometry for frame in outlines.values() for geometry in frame.geometry])
+        )
+        assert geometry.area == pytest.approx(7)
+        raise ReachedMaskBuffer
+
+    monkeypatch.setattr(l1b, "buffer_4326_shp", buffer)
+    with pytest.raises(ReachedMaskBuffer):
+        l1b.read_esa_l1b(
+            "CS_OFFL_SIR_SIN_1B_20200101T000000_20200101T000100_E001.nc",
+            drop_waveforms_by_flag=None,
+            mask_coherence_gt1=False,
+            use_original_noise_estimates=True,
+        )

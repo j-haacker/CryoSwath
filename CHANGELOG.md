@@ -4,6 +4,12 @@ This changelog is intentionally lightweight. It records user-visible changes and
 
 ## Unreleased
 
+- Preserve glacier rows for Greenland subdivision and avoid polygon union for
+  its preliminary bounding rectangle.
+
+- Fix L1b glacier masks for overlapping regional outlines by using general
+  polygon union rather than the non-overlapping coverage optimization.
+
 - Require Xarray 2026.9.0 or newer to avoid silently enabling inaccurate
   Bottleneck reductions on large float32 arrays. Retain Bottleneck acceleration
   locally for waveform rolling minima and short rolling sums.

@@ -399,22 +399,23 @@ def read_esa_l1b(
                         # !tbi: instead of using the arbitrary chunks, use the custom
                         # subregions 05-11--05-15 (added in commit 2265523)
                         for grnlnd_part in subdivide_region(
-                            load_glacier_outlines("05-01"),
+                            load_glacier_outlines("05-01", union=False),
                             lat_bin_width_degree=4.5,
                             lon_bin_width_degree=4.5,
                         ):
                             if buffer_4326_shp(
-                                grnlnd_part.union_all(method="coverage").envelope,
+                                shapely.box(*grnlnd_part.total_bounds),
                                 drop_outside,
                             ).intersects(
                                 ground_track_points_4326.union_all(method="unary")
                             ):
                                 o2region_complexes.append(grnlnd_part)
+                # Regional outlines may overlap; coverage union is not valid here.
                 # below, using geopandas as shapely wrapper for readability
                 buffered_complexes = (
                     gpd.GeoSeries(
                         buffer_4326_shp(
-                            pd.concat(o2region_complexes).union_all(method="coverage"),
+                            pd.concat(o2region_complexes).union_all(method="unary"),
                             drop_outside,
                         ),
                         crs=4326,
