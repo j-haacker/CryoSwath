@@ -9,6 +9,7 @@ referencing, and conversion-ready outputs for L2 generation.
 __all__ = [
     "from_id",
     "read_esa_l1b",
+    "validate_l1b_file",
     "download_wrapper",
     "append_ambiguous_reference_elevation",
     "append_best_fit_phase_index",
@@ -36,6 +37,7 @@ import ftplib
 import numbers
 import operator
 import os
+import re
 import tempfile
 import time
 import warnings
@@ -255,30 +257,24 @@ def read_esa_l1b(
             ],
         },
     ]
-    for i in range(2):
+    with monkeypatch(patchdicts):
         try:
-            with monkeypatch(patchdicts):
-                encoded = xr.open_dataset(l1b_filename, decode_cf=False)
-                ds = xr.decode_cf(
-                    encoded,
-                    decode_timedelta={
-                        name: name != "window_del_20_ku" for name in encoded.variables
-                    },
-                )
-            break
-        except (OSError, ValueError) as err:
-            if i == 1:
-                print("Renewing the file didn't help or failed again.")
-                raise err
-            if isinstance(err, OSError):
-                if not err.errno == -101:
-                    raise err
-                else:
-                    warnings.warn(err.strerror + " was raised. Downloading file again.")
-            else:
-                warnings.warn(str(err) + " was raised. Downloading file again.")
-            os.remove(l1b_filename)
-            download_single_file(os.path.split(l1b_filename)[-1][19:34])
+            encoded = xr.open_dataset(l1b_filename, decode_cf=False)
+        except (OSError, ValueError):
+            # Only diagnosed structural damage may replace an input. CF decoding
+            # below is deliberately outside this repair path.
+            validate_l1b_file(l1b_filename, repair=True)
+            encoded = xr.open_dataset(l1b_filename, decode_cf=False)
+        try:
+            ds = xr.decode_cf(
+                encoded,
+                decode_timedelta={
+                    name: name != "window_del_20_ku" for name in encoded.variables
+                },
+            )
+        except BaseException:
+            encoded.close()
+            raise
     # at least until baseline E ns_20_ku needs to be made a coordinate
     ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))  # pyright: ignore[reportPossiblyUnboundVariable]
     # remove data that will not be used to reduce memory footprint
@@ -1364,6 +1360,86 @@ def _validate_netcdf_payload(path: str | Path) -> None:
     raise RuntimeError(
         f"Downloaded payload for {path.name} is not recognized as NetCDF."
     )
+
+
+def _check_l1b_structure(path: Path) -> None:
+    _validate_netcdf_payload(path)
+    with path.open("rb") as stream:
+        is_hdf5 = stream.read(8) == b"\x89HDF\r\n\x1a\n"
+    if is_hdf5:
+        import h5py
+
+        with h5py.File(path, "r"):
+            pass
+    with xr.open_dataset(path, decode_cf=False):
+        pass
+
+
+def validate_l1b_file(path: str | Path, *, repair: bool = False) -> Path:
+    """Validate local structure, optionally repairing only confirmed bad payloads.
+
+    This checks metadata/signatures, not every compressed data chunk. Generic
+    HDF5 errors and CF-decoding failures do not establish file corruption.
+    Repair preserves the input until a structurally readable replacement of the
+    exact same product has been downloaded successfully.
+    """
+    path = Path(path)
+    try:
+        _validate_netcdf_payload(path)
+    except RuntimeError:
+        damaged = True
+    else:
+        damaged = False
+        try:
+            _check_l1b_structure(path)
+        except OSError as error:
+            match = re.search(
+                r"truncated file:.*?eof\s*=\s*(\d+).*?stored_eof\s*=\s*(\d+)",
+                str(error),
+            )
+            if match is None or not (
+                int(match[1]) == path.stat().st_size < int(match[2])
+            ):
+                raise
+            damaged = True
+    if not damaged:
+        return path
+    if not repair:
+        raise ValueError(f"Confirmed invalid or truncated L1b payload: {path.name}")
+    if not fnmatch.fnmatch(path.name, "CS_????_SIR_SIN_1B_*.nc"):
+        raise ValueError("Repair requires an exact native L1b product filename")
+    with tempfile.TemporaryDirectory(
+        prefix=f".{path.name}.repair-", dir=path.parent
+    ) as directory:
+        candidate = Path(directory) / path.name
+        _download_exact_l1b_product(path.name, candidate)
+        _check_l1b_structure(candidate)
+        candidate.replace(path)
+    return path
+
+
+def _download_exact_l1b_product(filename: str, destination: Path) -> None:
+    """Retrieve a named product without substituting another track variant."""
+    timestamp = pd.to_datetime(filename[19:34])
+    catalog = _load_cs_l1b_track_catalog_for(pd.DatetimeIndex([timestamp]))
+    row = _catalog_row_for_track_id(catalog, filename[19:34])
+    if (
+        row is not None
+        and row["filename"] == filename
+        and isinstance(row.get("href"), str)
+        and row["href"].strip()
+    ):
+        token, _ = _resolve_esa_maap_offline_token()
+        with closing(_create_maap_session(token)) as session:
+            _download_named_file_maap(filename, destination, session, row["href"])
+        return
+    with ftp_cs2_server(timeout=120) as ftp:
+        for _, names in _ftp_l1b_month_listings(ftp, timestamp.strftime("%Y/%m")):
+            for remote in names:
+                if Path(remote).name == filename:
+                    _download_remote_file_via_ftp_atomic(ftp, remote, destination)
+                    return
+    raise FileNotFoundError(f"Exact L1b product is unavailable: {filename}")
 
 
 def _l1b_product_name_candidates(remote_file: str) -> list[str]:
