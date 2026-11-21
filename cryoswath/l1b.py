@@ -275,6 +275,7 @@ def read_esa_l1b(
         except BaseException:
             encoded.close()
             raise
+    ds = drop_short_final_waveform(ds)
     # at least until baseline E ns_20_ku needs to be made a coordinate
     ds = ds.assign_coords(ns_20_ku=("ns_20_ku", np.arange(len(ds.ns_20_ku))))  # pyright: ignore[reportPossiblyUnboundVariable]
     # remove data that will not be used to reduce memory footprint
@@ -1915,6 +1916,17 @@ def download_single_file(track_id: str) -> str:
     if track_id in downloaded:
         return downloaded[track_id]
     raise _delivery_download_error([(track_id, "no file was downloaded")])
+
+
+def drop_short_final_waveform(ds):
+    """Drop a trailing waveform with an anomalously short positive gap."""
+    times = ds.time_20_ku.values
+    gaps = np.diff(times) / np.timedelta64(1, "s")
+    if len(gaps) >= 3 and np.all(np.isfinite(gaps) & (gaps > 0)):
+        if gaps[-1] < gaps.mean() - 3 * gaps.std():
+            ds = ds.isel(time_20_ku=slice(None, -1))
+            ds.attrs["dropped_short_final_waveform_tai"] = str(times[-1])
+    return ds
 
 
 def drop_waveform(cs_l1b_ds, time_20_ku_mask):

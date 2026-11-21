@@ -424,20 +424,36 @@ def test_first_last_sample_edges_and_outside_intervals(monkeypatch):
     assert points.in_range.tolist() == [False, True, True, True, False]
 
 
-def test_empty_l2_and_many_records_per_sample():
+def test_shared_bin_excludes_all_observations():
     raw, own, ref = raw_track()
     refs = gpd.GeoDataFrame(
         pd.concat([ref, ref.assign(row=11)], ignore_index=True), crs=ref.crs
     )
     associations = eolis.associate_points(raw, refs)
-    assert associations.candidate_matched.all()
+    assert associations.shared_range_bin.all()
+    assert not associations.candidate_matched.any()
     empty = eolis.evaluate_associations(raw, own.iloc[:0], associations)
-    assert empty["coverage"].missing_cached_samples == 2
+    assert empty["coverage"].missing_cached_samples == 0
     assert empty["coverage"].matched_observations == 0
     result = eolis.evaluate_associations(raw, own, associations)
-    assert result["coverage"].matched_observations == 2
-    assert result["coverage"].matched_samples == 1
-    assert result["coverage"].records_sharing_samples == 2
+    assert result["coverage"].matched_observations == 0
+    assert result["coverage"].matched_samples == 0
+    assert result["points"].status.eq("shared range bin").all()
+
+
+def test_short_final_waveform_uses_file_cadence():
+    gaps = np.full(189, 45, dtype="timedelta64[ms]")
+    gaps[-1] = np.timedelta64(2, "ms")
+    times = np.datetime64("2017-09-11") + np.r_[np.timedelta64(0, "ms"), gaps.cumsum()]
+    raw = xr.Dataset(coords={"time_20_ku": times})
+    trimmed = eolis.l1b.drop_short_final_waveform(raw)
+    np.testing.assert_array_equal(trimmed.time_20_ku.values, raw.time_20_ku.values[:-1])
+    assert pd.Timestamp(trimmed.attrs["dropped_short_final_waveform_tai"]) == pd.Timestamp(times[-1])
+    uniform = raw.assign_coords(time_20_ku=pd.date_range("2017-09-11", periods=len(times), freq="45ms"))
+    assert eolis.l1b.drop_short_final_waveform(uniform) is uniform
+    gaps[0], gaps[-1] = gaps[-1], gaps[0]
+    interior = raw.assign_coords(time_20_ku=np.datetime64("2017-09-11") + np.r_[np.timedelta64(0, "ms"), gaps.cumsum()])
+    assert eolis.l1b.drop_short_final_waveform(interior) is interior
 
 
 def test_saved_associations_reuse_both_versions_and_reject_other_raw(tmp_path):

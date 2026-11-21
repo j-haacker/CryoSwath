@@ -265,12 +265,12 @@ def _sensor_frame(raw):
 def associate_points(raw, reference, along_track=140):
     """Associate EOLIS records with all raw waveforms, independently of L2.
 
-    Retain out-of-range and ambiguous candidates for diagnostics. Only in-range
-    records assigned to one waveform have ``candidate_matched=True``. Distinct
-    records assigned to the same sample remain separate observations.
+    Retain rejected candidates for diagnostics. A candidate match requires
+    one in-range waveform and a sample unique among unambiguous observations.
     """
     if not np.isfinite(along_track) or along_track <= 0:
         raise ValueError("along_track must be a positive finite distance in metres.")
+    raw = l1b.drop_short_final_waveform(raw)
     ranges = sample_ranges(raw)
     times, sat, basis = _sensor_frame(raw)
     reference = reference.reset_index(drop=True)
@@ -317,7 +317,12 @@ def associate_points(raw, reference, along_track=140):
             points[name] = pd.Series(dtype=dtype)
     counts = points.loc[points.in_range].groupby("reference_position").size()
     points["ambiguous"] = points.reference_position.map(counts).fillna(0).gt(1)
-    points["candidate_matched"] = points.in_range & ~points.ambiguous
+    eligible = points.in_range & ~points.ambiguous
+    points["shared_range_bin"] = False
+    points.loc[eligible, "shared_range_bin"] = points.loc[eligible].duplicated(
+        ["waveform_time", "sample"], keep=False
+    )
+    points["candidate_matched"] = eligible & ~points.shared_range_bin
     points["along_track_m"] = along_track
     points["eolis_observation_count"] = len(reference)
     # Columns survive GeoParquet/Feather; dataframe attrs generally do not.
@@ -332,6 +337,8 @@ def associate_points(raw, reference, along_track=140):
         range_interval="[lower, upper)",
         eolis_observation_count=len(reference),
     )
+    if "dropped_short_final_waveform_tai" in raw.attrs:
+        points.attrs["dropped_short_final_waveform_tai"] = raw.attrs["dropped_short_final_waveform_tai"]
     return points
 
 
@@ -342,6 +349,7 @@ def evaluate_associations(raw, swath, associations):
     labels. Strip those labels for identity joins; do not shift the clock.
     Persist the returned associations' provenance manifest alongside empty tables.
     """
+    raw = l1b.drop_short_final_waveform(raw)
     identity = _raw_identity(raw)
     for name, expected in identity.items():
         actual = (
@@ -370,6 +378,11 @@ def evaluate_associations(raw, swath, associations):
     else:
         own = swath.loc[np.isfinite(swath.height)].copy().reset_index()
     own_times = pd.DatetimeIndex(own.time).tz_localize(None)
+    dropped = raw.attrs.get("dropped_short_final_waveform_tai")
+    if dropped is not None:
+        retained = own_times != pd.Timestamp(dropped)
+        own = own.loc[retained]
+        own_times = own_times[retained]
     indices = times.get_indexer(own_times)
     if (indices < 0).any():
         raise ValueError(
@@ -384,8 +397,8 @@ def evaluate_associations(raw, swath, associations):
     points["l2_available"] = present
     points["matched"] = points.candidate_matched & present
     points["status"] = np.select(
-        [~points.in_range, points.ambiguous, ~present],
-        ["outside raw sample intervals", "ambiguous waveform", "missing cached sample"],
+        [~points.in_range, points.ambiguous, points.shared_range_bin, ~present],
+        ["outside raw sample intervals", "ambiguous waveform", "shared range bin", "missing cached sample"],
         default="matched",
     )
     for metric in _METRICS + [
