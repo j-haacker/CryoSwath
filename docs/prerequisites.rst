@@ -332,3 +332,62 @@ If you change dependency manifests (``pyproject.toml`` and/or ``pixi.toml``):
    pixi lock
    pixi run -e test test-unit
    pixi run -e docs docs-build
+
+Speed-up imports moving code to fast-access storage
+---------------------------------------------------
+
+Unpacking the environment onto a local SSD can reduce Python import time
+from shared filesystems. The instructions below use `pixi-pack and
+pixi-unpack <https://pixi.prefix.dev/latest/deployment/pixi_pack/>`_ to
+this end. If you have a project that installs CryoSwath from PyPI or
+conda-forge, first, pixi-enable your project by creating a ``pixi.toml``.
+Then, ``pixi-pack --output-file project-linux-64.tar pixi.toml`` assembles
+the archive. If instead you work within CryoSwath clone, combine the
+locked Pixi dependencies with a CryoSwath wheel built from the same
+checkout, like the below. Replace the wheel filename with the one
+produced by the build.
+
+.. code-block:: bash
+
+   pixi run -e test python -m build --wheel
+   tools/pack_slurm_runtime.sh "dist/cryoswath-<version>-py3-none-any.whl" \
+       cryoswath-linux-64.tar
+
+Packing only needs to be repeated when the code changes. You can now use
+the environment in a fast-access location, e.g., ``/tmp/workdir``, after
+running ``pixi-unpack --output-directory /tmp/workdir /path/to/archive``.
+
+In the case of Slurm clusters, keep the archive and ``pixi-unpack``
+accessible from the compute node. The following batch script takes the
+archive path as its first argument, installs the environment from the
+archive, and checks the installed CLI. Add the partition, account, time,
+and resource options required by your cluster to the ``sbatch`` command.
+
+.. code-block:: bash
+
+   #!/usr/bin/env bash
+   #SBATCH --nodes=1
+   #SBATCH --ntasks=1
+   set -eo pipefail
+
+   bundle=$(realpath -- "$1")
+   workdir=$(mktemp -d "${SLURM_TMPDIR:-/tmp}/cryoswath.${SLURM_JOB_ID}.XXXXXX")
+   trap 'rm -rf -- "$workdir"' EXIT
+   trap 'exit 143' TERM
+
+   pixi-unpack --output-directory "$workdir" "$bundle"
+   source "$workdir/activate.sh"
+   unset PYTHONPATH
+   srun cryoswath --help
+
+Save the script as ``run_cryoswath.sh`` and submit it with the archive path.
+
+.. code-block:: bash
+
+   sbatch run_cryoswath.sh "$PWD/cryoswath-linux-64.tar"
+
+Replace the CLI check with your processing command. Keep inputs and outputs
+on shared storage and configure those paths as usual.
+
+The strategy would likely work for similar job managers, too. However,
+you will need to adapt the submit-script.
