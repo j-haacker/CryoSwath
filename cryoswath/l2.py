@@ -15,6 +15,7 @@ import shutil
 
 # from threading import Event, Thread
 import warnings
+from contextlib import ExitStack
 from pathlib import Path
 
 import geopandas as gpd
@@ -173,63 +174,70 @@ def from_id(
     swath_list = []
     poca_list = []
     kwargs["cs_full_file_names"] = load_cs_full_file_names(update="no")
-    for current_month in pd.date_range(
-        start_datetime.normalize() - pd.DateOffset(day=1), end_datetime, freq="MS"
-    ):
-        if (
-            not reprocess
-            and cache_fullname is not None
-            and save_or_return != "return"
-            and current_month.tz_localize(None) in skip_months
+    with ExitStack() as workers:
+        pool = None
+        for current_month in pd.date_range(
+            start_datetime.normalize() - pd.DateOffset(day=1), end_datetime, freq="MS"
         ):
-            print("Skipping cached month", current_month.strftime("%Y-%m"))
-            continue
-        current_subdir = current_month.strftime(f"%Y{os.path.sep}%m")
-        l2_paths = pd.DataFrame(columns=["swath", "poca"])
-        for l2_type, l2_base_path in (
-            ("swath", l2_swath_path),
-            ("poca", l2_poca_path),
-        ):
-            current_l2_dir = Path(l2_base_path, current_subdir)
-            if current_l2_dir.is_dir():
-                for filename in os.listdir(current_l2_dir):
-                    match = re.search(cryosat_id_pattern, filename)
-                    if match is not None:
-                        l2_paths.loc[cs_id_to_time(match.group()), l2_type] = filename
-            else:
-                current_l2_dir.mkdir(parents=True, exist_ok=True)
-        print("start processing", current_month)
-        # # indices per month with work-around :/ should be easier
-        # current_track_indices = pd.Series(index=track_idx).loc[
-        #       current_month:current_month+pd.offsets.MonthBegin(1)
-        # ].index
-        current_track_indices = track_idx[
-            np.logical_and(
-                track_idx >= current_month,
-                track_idx < current_month + pd.offsets.MonthBegin(1),
-            )
-        ]
-        if len(current_track_indices) == 0:
-            warnings.warn(f"No tracks to load data from for month {current_month}.")
-            continue
-        collective_swath_poca_list = []
-        try:
-            from itertools import batched
-        except ImportError:
-            # task specific, less than perfect implementation
-            def batched(dtx: pd.DatetimeIndex, batchsize):
-                n_batches = int(np.ceil(len(dtx) / batchsize))
-                out = [None] * n_batches
-                for i in range(n_batches):
-                    out[i] = dtx[i * batchsize : (i + 1) * batchsize]
-                return out
+            if (
+                not reprocess
+                and cache_fullname is not None
+                and save_or_return != "return"
+                and current_month.tz_localize(None) in skip_months
+            ):
+                print("Skipping cached month", current_month.strftime("%Y-%m"))
+                continue
+            current_subdir = current_month.strftime(f"%Y{os.path.sep}%m")
+            l2_paths = pd.DataFrame(columns=["swath", "poca"])
+            for l2_type, l2_base_path in (
+                ("swath", l2_swath_path),
+                ("poca", l2_poca_path),
+            ):
+                current_l2_dir = Path(l2_base_path, current_subdir)
+                if current_l2_dir.is_dir():
+                    for filename in os.listdir(current_l2_dir):
+                        match = re.search(cryosat_id_pattern, filename)
+                        if match is not None:
+                            l2_paths.loc[cs_id_to_time(match.group()), l2_type] = (
+                                filename
+                            )
+                else:
+                    current_l2_dir.mkdir(parents=True, exist_ok=True)
+            print("start processing", current_month)
+            # # indices per month with work-around :/ should be easier
+            # current_track_indices = pd.Series(index=track_idx).loc[
+            #       current_month:current_month+pd.offsets.MonthBegin(1)
+            # ].index
+            current_track_indices = track_idx[
+                np.logical_and(
+                    track_idx >= current_month,
+                    track_idx < current_month + pd.offsets.MonthBegin(1),
+                )
+            ]
+            if len(current_track_indices) == 0:
+                warnings.warn(f"No tracks to load data from for month {current_month}.")
+                continue
+            collective_swath_poca_list = []
+            try:
+                from itertools import batched
+            except ImportError:
+                # task specific, less than perfect implementation
+                def batched(dtx: pd.DatetimeIndex, batchsize):
+                    n_batches = int(np.ceil(len(dtx) / batchsize))
+                    out = [None] * n_batches
+                    for i in range(n_batches):
+                        out[i] = dtx[i * batchsize : (i + 1) * batchsize]
+                    return out
 
-        for batch in batched(current_track_indices, cores):
-            if cores > 1 and len(batch) > 1:
-                with _get_parallel_pool()(processes=cores) as p:
+            for batch in batched(current_track_indices, cores):
+                if cores > 1 and len(batch) > 1:
+                    if pool is None:
+                        pool = workers.enter_context(
+                            _get_parallel_pool()(processes=cores)
+                        )
                     # function is defined at the bottom of this module
                     collective_swath_poca_list.extend(
-                        p.starmap(
+                        pool.starmap(
                             process_track,
                             [
                                 (
@@ -245,175 +253,178 @@ def from_id(
                             chunksize=1,
                         )
                     )
-            else:
-                for idx in batch:
-                    collective_swath_poca_list.append(
-                        process_track(
-                            idx,
-                            reprocess,
-                            l2_paths,
-                            "return" if save_or_return == "return" else "both",
-                            current_subdir,
-                            kwargs.copy(),
-                        )
-                    )
-        # ensure all data within `max_elev_diff`, in same CRS, and clip to bbox
-        # note: if no crs is provided, check will not be done. if CRS mismatch,
-        #       error occurs later
-        if any(key in kwargs for key in ["max_elev_diff", "crs", "bbox"]):
-            for i in range(len(collective_swath_poca_list)):
-                tmp = list(collective_swath_poca_list[i])
-                for j in range(len(tmp)):
-                    if not tmp[j].empty:
-                        if "max_elev_diff" in kwargs:
-                            tmp[j] = limit_filter(
-                                tmp[j], "h_diff", kwargs["max_elev_diff"]
-                            )
-                        if "crs" in kwargs:
-                            tmp[j] = tmp[j].to_crs(kwargs["crs"])
-                        # bbox must be `shapely.(Multi)Polygon` in same crs
-                        if "bbox" in kwargs:
-                            tmp[j] = tmp[j].clip(kwargs["bbox"])
-                collective_swath_poca_list[i] = tuple(tmp)
-        if cache_fullname is not None:
-            Path(cache_fullname).parent.mkdir(parents=True, exist_ok=True)
-            # when postprocessing, loading the data caching here takes a substatial
-            # amount of time. not sure, but maybe the format can be improved. there
-            # is parquet or the data could be saved per month using
-            # to_hdf(format="fixed")
-
-            # in the next step, the data will be cached on disk for later use. this
-            # bears the risk of introducing data gaps that are very difficult to
-            # detect. the main rationale is: be sure not to damage the data and be
-            # careful not to loose the cache.
-            # this implementation balances the chance loosing the current data with
-            # the cost of copying by backing up once per hour
-            if os.path.isfile(cache_fullname):
-                if os.path.isfile(cache_fullname + "__backup"):
-                    # if backup older than 1 hour, renew
-                    if (
-                        pd.Timestamp.now()
-                        - pd.to_datetime(
-                            os.stat(cache_fullname + "__backup").st_mtime, unit="s"
-                        )
-                    ) > pd.to_timedelta(1, unit="h"):
-                        os.remove(cache_fullname + "__backup")
-                        shutil.copyfile(cache_fullname, cache_fullname + "__backup")
-                # if no backup, make one
                 else:
-                    shutil.copyfile(cache_fullname, cache_fullname + "__backup")
-            for l2_type, i in zip(["swath", "poca"], [0, 1]):
-                try:
-                    l2_data = pd.concat(
-                        [
-                            item[i]
-                            for item in collective_swath_poca_list
-                            if not item[i].empty
-                        ]
-                    )
-                except ValueError as err:
-                    if str(err) != "No objects to concatenate":
-                        raise
+                    for idx in batch:
+                        collective_swath_poca_list.append(
+                            process_track(
+                                idx,
+                                reprocess,
+                                l2_paths,
+                                "return" if save_or_return == "return" else "both",
+                                current_subdir,
+                                kwargs.copy(),
+                            )
+                        )
+            # ensure all data within `max_elev_diff`, in same CRS, and clip to bbox
+            # note: if no crs is provided, check will not be done. if CRS mismatch,
+            #       error occurs later
+            if any(key in kwargs for key in ["max_elev_diff", "crs", "bbox"]):
+                for i in range(len(collective_swath_poca_list)):
+                    tmp = list(collective_swath_poca_list[i])
+                    for j in range(len(tmp)):
+                        if not tmp[j].empty:
+                            if "max_elev_diff" in kwargs:
+                                tmp[j] = limit_filter(
+                                    tmp[j], "h_diff", kwargs["max_elev_diff"]
+                                )
+                            if "crs" in kwargs:
+                                tmp[j] = tmp[j].to_crs(kwargs["crs"])
+                            # bbox must be `shapely.(Multi)Polygon` in same crs
+                            if "bbox" in kwargs:
+                                tmp[j] = tmp[j].clip(kwargs["bbox"])
+                    collective_swath_poca_list[i] = tuple(tmp)
+            if cache_fullname is not None:
+                Path(cache_fullname).parent.mkdir(parents=True, exist_ok=True)
+                # when postprocessing, loading the data caching here takes a substatial
+                # amount of time. not sure, but maybe the format can be improved. there
+                # is parquet or the data could be saved per month using
+                # to_hdf(format="fixed")
+
+                # in the next step, the data will be cached on disk for later use. this
+                # bears the risk of introducing data gaps that are very difficult to
+                # detect. the main rationale is: be sure not to damage the data and be
+                # careful not to loose the cache.
+                # this implementation balances the chance loosing the current data with
+                # the cost of copying by backing up once per hour
+                if os.path.isfile(cache_fullname):
+                    if os.path.isfile(cache_fullname + "__backup"):
+                        # if backup older than 1 hour, renew
+                        if (
+                            pd.Timestamp.now()
+                            - pd.to_datetime(
+                                os.stat(cache_fullname + "__backup").st_mtime, unit="s"
+                            )
+                        ) > pd.to_timedelta(1, unit="h"):
+                            os.remove(cache_fullname + "__backup")
+                            shutil.copyfile(cache_fullname, cache_fullname + "__backup")
+                    # if no backup, make one
                     else:
-                        print(collective_swath_poca_list)
+                        shutil.copyfile(cache_fullname, cache_fullname + "__backup")
+                for l2_type, i in zip(["swath", "poca"], [0, 1]):
+                    try:
+                        l2_data = pd.concat(
+                            [
+                                item[i]
+                                for item in collective_swath_poca_list
+                                if not item[i].empty
+                            ]
+                        )
+                    except ValueError as err:
+                        if str(err) != "No objects to concatenate":
+                            raise
+                        else:
+                            print(collective_swath_poca_list)
+                            warnings.warn(
+                                f"No {l2_type} data at all for month {current_month}."
+                            )
+                            continue
+                    if (
+                        l2_data.empty
+                    ):  # for older pandas versions this is still necessary
                         warnings.warn(
                             f"No {l2_type} data at all for month {current_month}."
                         )
                         continue
-                if l2_data.empty:  # for older pandas versions this is still necessary
-                    warnings.warn(
-                        f"No {l2_type} data at all for month {current_month}."
-                    )
-                    continue
-                if l2_type == "swath":
-                    l2_data.index = l2_data.index.get_level_values(0).astype(
-                        np.int64
-                    ) + l2_data.index.get_level_values(1)
-                else:
-                    l2_data.index = l2_data.index.astype(np.int64)
-                l2_data.rename_axis("time", inplace=True)
-                l2_data.sort_index(inplace=True)
-                chunks = xycut(l2_data)
+                    if l2_type == "swath":
+                        l2_data.index = l2_data.index.get_level_values(0).astype(
+                            np.int64
+                        ) + l2_data.index.get_level_values(1)
+                    else:
+                        l2_data.index = l2_data.index.astype(np.int64)
+                    l2_data.rename_axis("time", inplace=True)
+                    l2_data.sort_index(inplace=True)
+                    chunks = xycut(l2_data)
 
-                # now, try to add current data to cache. if anything happens, restore
-                # backup to ensure integrity
-                try:
-                    for chunk in chunks:
-                        tmp = pd.DataFrame(
-                            index=chunk["data"].index,
-                            data=pd.concat(
-                                [
-                                    chunk["data"].h_diff,
-                                    chunk["data"].geometry.get_coordinates(),
-                                ],
-                                axis=1,
-                                copy=False,
-                            ),
+                    # If a cache write fails, restore the backup.
+                    try:
+                        for chunk in chunks:
+                            tmp = pd.DataFrame(
+                                index=chunk["data"].index,
+                                data=pd.concat(
+                                    [
+                                        chunk["data"].h_diff,
+                                        chunk["data"].geometry.get_coordinates(),
+                                    ],
+                                    axis=1,
+                                    copy=False,
+                                ),
+                            )
+                            # Approximate floor before storing coordinates as integers
+                            # so rounding does not move points into an adjacent chunk.
+                            tmp[["x", "y"]] = (tmp[["x", "y"]] - 0.5).round()
+                            # Negative chunk coordinates are valid HDF5 node names.
+                            warnings.filterwarnings(
+                                "ignore", category=NaturalNameWarning
+                            )
+                            tmp.astype(
+                                dict(h_diff=np.float32, x=np.int32, y=np.int32)
+                            ).to_hdf(
+                                cache_fullname,
+                                key="/".join(
+                                    [
+                                        l2_type,
+                                        "_".join(
+                                            [
+                                                "x",
+                                                f"{chunk['x_interval_start']:.0f}",
+                                                f"{chunk['x_interval_stop']:.0f}",
+                                            ]
+                                        ),
+                                        "_".join(
+                                            [
+                                                "y",
+                                                f"{chunk['y_interval_start']:.0f}",
+                                                f"{chunk['y_interval_stop']:.0f}",
+                                            ]
+                                        ),
+                                        current_month.strftime("t_%Y-%m"),
+                                    ]
+                                ),
+                                mode="a",
+                                format="fixed",
+                            )
+                            warnings.filterwarnings(
+                                "default", category=NaturalNameWarning
+                            )
+                    except Exception:
+                        if not os.path.isfile(cache_fullname):
+                            raise
+                        os.remove(cache_fullname)
+                        warnings.warn(
+                            "There was an error while caching l2 data. Since this can "
+                            "lead to missing data, the cache has been removed and it "
+                            "was attempted to restore a backup. If this was "
+                            "successful, "
+                            "there should NOT be a __backup file in data/tmp. If there "
+                            "still is, please decide how to proceed yourself (you "
+                            "could remove all temporary files and have them produced "
+                            "freshly)."
                         )
-                        # below, x and y will be stored as integers which rounds them
-                        # implicitly. this introduces a logic-flaw in the chunking,
-                        # where floor-division is used. this makes an extra step
-                        # necessary. note that pandas does not offer `.floor()`. w/out
-                        # testing, I assume `round(x-.5)` to perform better than x//1.
-                        tmp[["x", "y"]] = (tmp[["x", "y"]] - 0.5).round()
-                        # below hides warnings about a minus sign in node names. this
-                        # can safely be ignored.
-                        warnings.filterwarnings("ignore", category=NaturalNameWarning)
-                        tmp.astype(
-                            dict(h_diff=np.float32, x=np.int32, y=np.int32)
-                        ).to_hdf(
-                            cache_fullname,
-                            key="/".join(
-                                [
-                                    l2_type,
-                                    "_".join(
-                                        [
-                                            "x",
-                                            f"{chunk['x_interval_start']:.0f}",
-                                            f"{chunk['x_interval_stop']:.0f}",
-                                        ]
-                                    ),
-                                    "_".join(
-                                        [
-                                            "y",
-                                            f"{chunk['y_interval_start']:.0f}",
-                                            f"{chunk['y_interval_stop']:.0f}",
-                                        ]
-                                    ),
-                                    current_month.strftime("t_%Y-%m"),
-                                ]
-                            ),
-                            mode="a",
-                            format="fixed",
-                        )
-                        warnings.filterwarnings("default", category=NaturalNameWarning)
-                except Exception:
-                    if not os.path.isfile(cache_fullname):
+                        shutil.move(cache_fullname + "__backup", cache_fullname)
                         raise
-                    os.remove(cache_fullname)
-                    warnings.warn(
-                        "There was an error while caching l2 data. Since this can lead "
-                        "to missing data, the cache has been removed and it was "
-                        "attempted to restore a backup. If this was successful, there "
-                        "should NOT be a __backup file in data/tmp. If there still is, "
-                        "please decide how to proceed yourself (you could remove all "
-                        "temporary files and have them produced freshly)."
-                    )
-                    shutil.move(cache_fullname + "__backup", cache_fullname)
-                    raise
-                # tidying up the backup was moved to parent process
-                # else:
-                #     if os.path.isfile(cache+"__backup"):
-                #         os.remove(cache+"__backup")
-        if save_or_return != "save":
-            swath_list.append(
-                pd.concat([item[0] for item in collective_swath_poca_list])
-            )
-            poca_list.append(
-                pd.concat([item[1] for item in collective_swath_poca_list])
-            )
-        del collective_swath_poca_list
-        print("done processing", current_month)
+                    # tidying up the backup was moved to parent process
+                    # else:
+                    #     if os.path.isfile(cache+"__backup"):
+                    #         os.remove(cache+"__backup")
+            if save_or_return != "save":
+                swath_list.append(
+                    pd.concat([item[0] for item in collective_swath_poca_list])
+                )
+                poca_list.append(
+                    pd.concat([item[1] for item in collective_swath_poca_list])
+                )
+            del collective_swath_poca_list
+            print("done processing", current_month)
     if save_or_return != "save":
         if swath_list == []:
             swath_list = pd.DataFrame()
