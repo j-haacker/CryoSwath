@@ -439,6 +439,8 @@ def append_elevation_reference(
         geospatial_ds,
         join="right",
     )[0]
+    # The DEM cache's source nodata metadata is a dict, which NetCDF cannot store.
+    geospatial_ds[ref_elev_name].attrs.pop("encoding", None)
     geospatial_ds[ref_elev_name].attrs.update({"_FillValue": np.nan})
     return geospatial_ds
 

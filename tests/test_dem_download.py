@@ -301,7 +301,7 @@ def test_l4_uses_encoded_fill_value_from_xarray_dem(monkeypatch):
 @pytest.mark.parametrize("target_crs", [4326, 3857])
 @pytest.mark.parametrize("nodata", [-9999.0, np.nan])
 def test_l4_reprojects_reference_elevations_with_average(
-    monkeypatch, target_crs, nodata
+    monkeypatch, tmp_path, target_crs, nodata
 ):
     # Three-by-three footprints: a partial void, a full void, and an outlier.
     values = np.array(
@@ -323,6 +323,7 @@ def test_l4_reprojects_reference_elevations_with_average(
         )
         .rio.write_crs(4326)
         .rio.write_nodata(nodata)
+        .assign_attrs(encoding={"_FillValue": -9999})
     )
     bounds = rasterio.warp.transform_bounds(4326, target_crs, *dem.rio.bounds())
     transform = rasterio.transform.from_bounds(*bounds, width=2, height=2)
@@ -355,6 +356,7 @@ def test_l4_reprojects_reference_elevations_with_average(
 
     np.testing.assert_allclose(result.ref_elev.values, expected, equal_nan=True)
     assert np.isnan(result.ref_elev.rio.nodata)
+    result.to_netcdf(tmp_path / "reference.nc")
 
 
 @pytest.mark.parametrize("dtype", ["float32", "int16"])
